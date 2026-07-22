@@ -6,6 +6,7 @@ import {
   CLI_RUNTIME_UPDATE_CHECK_INTERVAL_MS,
   buildCliRuntimeUpdateCard,
   cliRuntimeUpdateStorePathIn,
+  fetchCodexReleaseNotes,
   probeCodexRuntimeUpdate,
   readCliRuntimeUpdateStoreFrom,
   runCliRuntimeUpdateAudit,
@@ -148,6 +149,41 @@ describe('runCliRuntimeUpdateAudit', () => {
     expect(probe).toHaveBeenCalledTimes(1);
   });
 
+  it('retries an undelivered reminder inside the probe TTL without probing again', async () => {
+    let store: CliRuntimeUpdateStore = {
+      entries: {
+        'codex:/usr/bin/codex': {
+          cliId: 'codex',
+          binPath: '/usr/bin/codex',
+          current: '0.144.3',
+          latest: '0.145.0',
+          updateAvailable: true,
+          updateCommand: 'codex update',
+          lastCheckedAt: 1_000,
+        },
+      },
+    };
+    const probe = vi.fn();
+    const notify = vi.fn()
+      .mockRejectedValueOnce(new Error('release notes unavailable'))
+      .mockResolvedValueOnce(undefined);
+    const deps = {
+      now: () => 2_000,
+      targets: () => [{ cliId: 'codex' as const, binPath: '/usr/bin/codex' }],
+      readStore: () => store,
+      writeStore: (next: CliRuntimeUpdateStore) => { store = structuredClone(next); },
+      probe,
+      notify,
+    };
+
+    await runCliRuntimeUpdateAudit(deps);
+    await runCliRuntimeUpdateAudit(deps);
+
+    expect(probe).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(store.entries['codex:/usr/bin/codex'].lastNotifiedVersion).toBe('0.145.0');
+  });
+
   it('removes persisted runtimes that are no longer configured', async () => {
     let store: CliRuntimeUpdateStore = {
       entries: {
@@ -205,11 +241,60 @@ describe('CLI runtime update store and card', () => {
       updateAvailable: true,
       updateCommand: 'codex update',
       lastCheckedAt: 123,
-    }, { dashboardUrl: 'http://dashboard', locale: 'zh' });
+    }, {
+      dashboardUrl: 'http://dashboard',
+      locale: 'zh',
+      releaseNotes: {
+        summary: '**New Features**\n- Added paginated thread history.',
+        url: 'https://github.com/openai/codex/releases/tag/rust-v0.145.0',
+      },
+    });
     expect(card).toContain('0.144.1');
     expect(card).toContain('0.144.3');
     expect(card).toContain('codex update');
+    expect(card).toContain('更新内容');
+    expect(card).toContain('Added paginated thread history');
+    expect(card).toContain('rust-v0.145.0');
     expect(card).toContain('不会自动安装');
     expect(card).not.toContain('button');
+  });
+});
+
+describe('fetchCodexReleaseNotes', () => {
+  it('keeps only the curated release sections and removes pull-request references', async () => {
+    const release = await fetchCodexReleaseNotes('0.145.0', {
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+        body: [
+          '## New Features',
+          '- Added paginated thread history. ([#33364](https://github.com/openai/codex/pull/33364))',
+          '## Bug Fixes',
+          '- Fixed long conversation rendering. ([#34045](https://github.com/openai/codex/pull/34045))',
+          '## Changelog',
+          '- internal commit list',
+        ].join('\n'),
+        html_url: 'https://github.com/openai/codex/releases/tag/rust-v0.145.0',
+      }), { status: 200 })) as typeof fetch,
+    });
+
+    expect(release).toEqual({
+      summary: '**New Features**\n- Added paginated thread history.\n**Bug Fixes**\n- Fixed long conversation rendering.',
+      url: 'https://github.com/openai/codex/releases/tag/rust-v0.145.0',
+    });
+  });
+
+  it('falls back to the public release page when the GitHub API is rate-limited', async () => {
+    const release = await fetchCodexReleaseNotes('0.145.0', {
+      fetchImpl: vi.fn(async () => new Response('{}', { status: 403 })) as typeof fetch,
+      fetchHtml: vi.fn(async () => [
+        '<div data-test-selector="body-content" class="markdown-body tmp-my-3">',
+        '<h2>New Features</h2><ul>',
+        '<li>Added audio inputs. (<a href="/openai/codex/pull/1">#1</a>)</li>',
+        '</ul><h2>Bug Fixes</h2><ul>',
+        '<li>Fixed MCP startup timeouts.</li>',
+        '</ul><h2>Changelog</h2>',
+      ].join('')),
+    });
+
+    expect(release?.summary).toBe('**New Features**\n- Added audio inputs.\n**Bug Fixes**\n- Fixed MCP startup timeouts.');
   });
 });

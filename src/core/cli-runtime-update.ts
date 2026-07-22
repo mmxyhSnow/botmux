@@ -8,8 +8,11 @@
  */
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { get as httpsGet } from 'node:https';
 import { dirname, join } from 'node:path';
+import { ProxyAgent } from 'proxy-agent';
 import { isNewerVersion, parseVersion } from './update-check.js';
+import { githubAuthHeaders } from './github-auth.js';
 import { localeForBot, t, type Locale } from '../i18n/index.js';
 
 export const CLI_RUNTIME_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1_000;
@@ -53,6 +56,18 @@ export interface CodexUpdateProbeResult {
 export interface CodexUpdateProbeDeps {
   runFile?: (bin: string, args: string[], timeoutMs: number) => Promise<string>;
   fetchLatest?: () => Promise<string | null>;
+}
+
+/** Codex 官方发布页中适合直接展示给用户的高层更新摘要。 */
+export interface CodexReleaseNotes {
+  summary: string;
+  url: string;
+}
+
+export interface CodexReleaseNotesDeps {
+  fetchImpl?: typeof fetch;
+  fetchHtml?: (url: string) => Promise<string>;
+  timeoutMs?: number;
 }
 
 export interface CliRuntimeUpdateAuditDeps {
@@ -202,6 +217,170 @@ async function fetchLatestCodexVersion(): Promise<string | null> {
   }
 }
 
+const CODEX_RELEASES_BASE = 'https://github.com/openai/codex/releases/tag';
+const CODEX_RELEASE_API_BASE = 'https://api.github.com/repos/openai/codex/releases/tags';
+const MAX_RELEASE_HTML_BYTES = 2 * 1024 * 1024;
+const MAX_RELEASE_SUMMARY_CHARS = 6_000;
+
+/** 将普通语义版本号转成 Codex 仓库使用的 `rust-v*` 标签。 */
+function codexReleaseTag(version: string): string {
+  return `rust-v${version.replace(/^v/i, '')}`;
+}
+
+/** 将版本号转成 Codex 官方 GitHub Release 页地址。 */
+function codexReleaseUrl(version: string): string {
+  return `${CODEX_RELEASES_BASE}/${encodeURIComponent(codexReleaseTag(version))}`;
+}
+
+/** 去掉发布说明尾部冗长的 PR 编号，保留真正面向用户的功能描述。 */
+function cleanReleaseBullet(value: string): string {
+  return value
+    .replace(/\s*\((?:\[#\d+\]\([^)]+\)(?:\s*,\s*)?)+\)\s*$/, '')
+    .replace(/\s*\(\s*(?:#\d+\s*(?:,\s*)?)+\)\s*$/, '')
+    .trim();
+}
+
+/** 限制飞书卡片摘要体积，且不产出空内容。 */
+function capReleaseSummary(lines: string[]): string | null {
+  const summary = lines.join('\n').trim();
+  if (!summary) return null;
+  return summary.length <= MAX_RELEASE_SUMMARY_CHARS
+    ? summary
+    : `${summary.slice(0, MAX_RELEASE_SUMMARY_CHARS - 1).trimEnd()}…`;
+}
+
+/** 只保留 GitHub Release 的高层章节，排除后面的逐提交 Changelog。 */
+function releaseSummaryFromMarkdown(markdown: string): string | null {
+  const lines: string[] = [];
+  for (const rawLine of markdown.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const heading = line.match(/^##\s+(.+)$/)?.[1]?.trim();
+    if (heading) {
+      if (/^changelog$/i.test(heading)) break;
+      lines.push(`**${heading}**`);
+      continue;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/)?.[1];
+    if (bullet) lines.push(`- ${cleanReleaseBullet(bullet)}`);
+  }
+  return capReleaseSummary(lines);
+}
+
+/** 解码发布页文本里常见的 HTML 实体与数字实体。 */
+function decodeHtml(value: string): string {
+  return value.replace(/&(#x?[0-9a-f]+|amp|lt|gt|quot|apos);/gi, (_match, entity: string) => {
+    const normalized = entity.toLowerCase();
+    if (normalized === 'amp') return '&';
+    if (normalized === 'lt') return '<';
+    if (normalized === 'gt') return '>';
+    if (normalized === 'quot') return '"';
+    if (normalized === 'apos') return "'";
+    const radix = normalized.startsWith('#x') ? 16 : 10;
+    const rawCode = normalized.replace(/^#x?/, '');
+    const code = Number.parseInt(rawCode, radix);
+    return Number.isFinite(code) ? String.fromCodePoint(code) : _match;
+  });
+}
+
+/** 将单个标题或列表项 HTML 转为可在卡片中展示的纯文本。 */
+function htmlFragmentText(fragment: string): string {
+  return decodeHtml(fragment
+    .replace(/<code[^>]*>/gi, '`')
+    .replace(/<\/code>/gi, '`')
+    .replace(/<[^>]+>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** GitHub API 被共享出口限流时，从公开 Release HTML 回退提取同一份摘要。 */
+function releaseSummaryFromHtml(html: string): string | null {
+  const bodyStart = html.search(/<div[^>]*data-test-selector=["']body-content["'][^>]*>/i);
+  if (bodyStart < 0) return null;
+  const body = html.slice(bodyStart);
+  const lines: string[] = [];
+  const tokens = body.matchAll(/<h2[^>]*>([\s\S]*?)<\/h2>|<li[^>]*>([\s\S]*?)<\/li>/gi);
+  for (const token of tokens) {
+    if (token[1] !== undefined) {
+      const heading = htmlFragmentText(token[1]);
+      if (/^changelog$/i.test(heading)) break;
+      lines.push(`**${heading}**`);
+      continue;
+    }
+    const bullet = cleanReleaseBullet(htmlFragmentText(token[2] ?? ''));
+    if (bullet) lines.push(`- ${bullet}`);
+  }
+  return capReleaseSummary(lines);
+}
+
+/** 通过宿主代理下载发布页，并对超时和响应体体积设硬限。 */
+function fetchHtmlWithProxy(url: string, timeoutMs = 10_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const request = httpsGet(url, {
+      agent: new ProxyAgent(),
+      headers: { 'User-Agent': 'botmux' },
+      timeout: timeoutMs,
+    }, (response) => {
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`release page returned ${response.statusCode ?? 'unknown'}`));
+        return;
+      }
+      let size = 0;
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > MAX_RELEASE_HTML_BYTES) {
+          request.destroy(new Error('release page exceeded size limit'));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    });
+    request.on('timeout', () => request.destroy(new Error('release page timed out')));
+    request.on('error', reject);
+  });
+}
+
+/** 获取指定 Codex 版本的官方更新摘要；API 失败时自动回退公开发布页。 */
+export async function fetchCodexReleaseNotes(
+  version: string,
+  deps: CodexReleaseNotesDeps = {},
+): Promise<CodexReleaseNotes | null> {
+  const releaseUrl = codexReleaseUrl(version);
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  try {
+    const response = await fetchImpl(`${CODEX_RELEASE_API_BASE}/${encodeURIComponent(codexReleaseTag(version))}`, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'botmux',
+        ...githubAuthHeaders(),
+      },
+      signal: AbortSignal.timeout(deps.timeoutMs ?? 8_000),
+    });
+    if (response.ok) {
+      const body = await response.json() as { body?: unknown; html_url?: unknown };
+      const summary = typeof body.body === 'string' ? releaseSummaryFromMarkdown(body.body) : null;
+      if (summary) {
+        return {
+          summary,
+          url: typeof body.html_url === 'string' && body.html_url ? body.html_url : releaseUrl,
+        };
+      }
+    }
+  } catch {
+    // 继续尝试不受 GitHub API 共享限流影响的公开发布页。
+  }
+
+  try {
+    const html = await (deps.fetchHtml ?? ((url) => fetchHtmlWithProxy(url, deps.timeoutMs ?? 10_000)))(releaseUrl);
+    const summary = releaseSummaryFromHtml(html);
+    return summary ? { summary, url: releaseUrl } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Read-only probe. `codex doctor --json` supplies install provenance; the npm
  * registry is a fallback when the doctor is unavailable or its network probe
  * failed. No update command is executed. */
@@ -284,6 +463,19 @@ export async function runCliRuntimeUpdateAudit(deps: CliRuntimeUpdateAuditDeps):
   const store = deps.readStore();
   const targets = dedupeTargets(deps.targets());
   const configuredKeys = new Set(targets.map(targetKey));
+  /** 已拿到更新内容并成功发卡后才推进水位；失败会在下个小时继续尝试。 */
+  const notifyPending = async (key: string, entry: CliRuntimeUpdateEntry): Promise<void> => {
+    if (!entry.updateAvailable || !entry.latest || entry.lastNotifiedVersion === entry.latest || !deps.notify) return;
+    try {
+      await deps.notify(entry);
+      entry.lastNotifiedVersion = entry.latest;
+      store.entries[key] = entry;
+      deps.writeStore(store);
+      log(`owner notified for ${entry.binPath}: ${entry.current} → ${entry.latest}`);
+    } catch (error) {
+      log(`owner notification failed for ${entry.binPath}: ${error instanceof Error ? error.message : error}`);
+    }
+  };
   let pruned = false;
   for (const key of Object.keys(store.entries)) {
     if (configuredKeys.has(key)) continue;
@@ -295,7 +487,10 @@ export async function runCliRuntimeUpdateAudit(deps: CliRuntimeUpdateAuditDeps):
   for (const target of targets) {
     const key = targetKey(target);
     const previous = store.entries[key];
-    if (previous && now - previous.lastCheckedAt < CLI_RUNTIME_UPDATE_CHECK_INTERVAL_MS) continue;
+    if (previous && now - previous.lastCheckedAt < CLI_RUNTIME_UPDATE_CHECK_INTERVAL_MS) {
+      await notifyPending(key, previous);
+      continue;
+    }
 
     let next: CliRuntimeUpdateEntry;
     try {
@@ -329,17 +524,7 @@ export async function runCliRuntimeUpdateAudit(deps: CliRuntimeUpdateAuditDeps):
     }
     store.entries[key] = next;
     deps.writeStore(store);
-
-    if (!next.updateAvailable || !next.latest || next.lastNotifiedVersion === next.latest || !deps.notify) continue;
-    try {
-      await deps.notify(next);
-      next.lastNotifiedVersion = next.latest;
-      store.entries[key] = next;
-      deps.writeStore(store);
-      log(`owner notified for ${target.binPath}: ${next.current} → ${next.latest}`);
-    } catch (error) {
-      log(`owner notification failed for ${target.binPath}: ${error instanceof Error ? error.message : error}`);
-    }
+    await notifyPending(key, next);
   }
 }
 
@@ -349,7 +534,7 @@ function inlineCode(value: string): string {
 
 export function buildCliRuntimeUpdateCard(
   entry: CliRuntimeUpdateEntry,
-  opts: { dashboardUrl?: string; locale?: Locale } = {},
+  opts: { dashboardUrl?: string; locale?: Locale; releaseNotes?: CodexReleaseNotes } = {},
 ): string {
   const locale = opts.locale;
   const lines = [
@@ -357,6 +542,11 @@ export function buildCliRuntimeUpdateCard(
     t('cli_update.version_delta', { current: entry.current ?? '?', latest: entry.latest ?? '?' }, locale),
     t('cli_update.binary', { path: `\`${inlineCode(entry.binPath)}\`` }, locale),
   ];
+  if (opts.releaseNotes) {
+    lines.push(t('cli_update.release_notes', undefined, locale));
+    lines.push(opts.releaseNotes.summary);
+    lines.push(t('cli_update.release_details', { url: opts.releaseNotes.url }, locale));
+  }
   if (entry.installTarget) lines.push(t('cli_update.install_target', { path: `\`${inlineCode(entry.installTarget)}\`` }, locale));
   lines.push(t('cli_update.command', { command: `\`${inlineCode(entry.updateCommand)}\`` }, locale));
   lines.push(t('cli_update.manual_only', undefined, locale));
@@ -389,13 +579,17 @@ export function startCliRuntimeUpdateMonitor(wiring: CliRuntimeUpdateMonitorWiri
         readStore: () => readCliRuntimeUpdateStoreFrom(wiring.dataDir),
         writeStore: (store) => writeCliRuntimeUpdateStoreTo(wiring.dataDir, store),
         probe: (target) => probeCodexRuntimeUpdate(target),
-        notify: async (entry) => {
+                notify: async (entry) => {
           const owner = wiring.ownerOpenId();
-          if (!owner) throw new Error('no primary owner configured');
-          const card = buildCliRuntimeUpdateCard(entry, {
-            dashboardUrl: wiring.dashboardUrl?.(),
-            locale: localeForBot(wiring.primaryLarkAppId),
-          });
+                  if (!owner) throw new Error('no primary owner configured');
+                  if (!entry.latest) throw new Error('latest version unavailable');
+                  const releaseNotes = await fetchCodexReleaseNotes(entry.latest);
+                  if (!releaseNotes) throw new Error(`release notes unavailable for ${entry.latest}`);
+                  const card = buildCliRuntimeUpdateCard(entry, {
+                    dashboardUrl: wiring.dashboardUrl?.(),
+                    locale: localeForBot(wiring.primaryLarkAppId),
+                    releaseNotes,
+                  });
           await wiring.sendCard(owner, card);
         },
         log,
