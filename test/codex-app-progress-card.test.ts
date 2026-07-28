@@ -166,7 +166,7 @@ describe('Codex App 即时进度卡', () => {
     expect(h.card.snapshot()?.content).toContain('最终结果见最新回复');
     expect(JSON.parse(h.patches.at(-1)!.cardJson).header).toMatchObject({
       template: 'green',
-      title: { content: '已完成 · 完成测试' },
+      title: { content: '已完成 · 完成测试（进度 1）' },
     });
   });
 

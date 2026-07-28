@@ -1,9 +1,16 @@
 import { createHash } from 'node:crypto';
-import { buildCardBodyElements } from '../im/lark/md-card.js';
 import type {
+  CodexAppProgressCardArchivedPage,
   CodexAppProgressCardPhase,
   CodexAppProgressCardSessionState,
 } from '../types.js';
+import {
+  countProgressCardEntries,
+  shouldStartProgressCardPage,
+} from './codex-app-progress-pagination.js';
+import { renderCodexAppProgressCard } from './codex-app-progress-card-renderer.js';
+
+export { renderCodexAppProgressCard } from './codex-app-progress-card-renderer.js';
 
 export interface CodexAppProgressCardOperations {
   post(cardJson: string, turnId: string): Promise<string>;
@@ -33,46 +40,23 @@ function cloneState(state: CodexAppProgressCardSessionState): CodexAppProgressCa
     ...state,
     acceptedTurnIds: [...state.acceptedTurnIds],
     pendingTurns: state.pendingTurns.map(turn => ({ ...turn })),
+    archivedPages: state.archivedPages?.map(page => ({ ...page })),
   };
+}
+
+/** 把旧单页状态补成可继续写入的第 1 页，不要求离线迁移。 */
+function restoreState(state: CodexAppProgressCardSessionState): CodexAppProgressCardSessionState {
+  const restored = cloneState(state);
+  restored.pageNumber ??= 1;
+  restored.currentEntryCount ??= countProgressCardEntries(restored.content);
+  restored.archivedPages ??= [];
+  return restored;
 }
 
 function terminalText(phase: Exclude<CodexAppProgressCardPhase, 'running'>): string {
   if (phase === 'completed') return '本轮已完成，最终结果见最新回复。';
   if (phase === 'failed') return '本轮处理失败，错误详情见最新回复。';
   return '本轮已中断。';
-}
-
-function titlePrefix(phase: CodexAppProgressCardPhase): string {
-  if (phase === 'running') return '处理中';
-  if (phase === 'completed') return '已完成';
-  if (phase === 'failed') return '处理失败';
-  return '已中断';
-}
-
-function cardTemplate(phase: CodexAppProgressCardPhase): string {
-  if (phase === 'running') return 'turquoise';
-  if (phase === 'completed') return 'green';
-  if (phase === 'failed') return 'red';
-  return 'grey';
-}
-
-/** 使用官方 markdown 渲染链生成可 PATCH 的飞书卡片。 */
-export function renderCodexAppProgressCard(state: CodexAppProgressCardSessionState): string {
-  return JSON.stringify({
-    schema: '2.0',
-    config: { update_multi: true },
-    header: {
-      template: cardTemplate(state.phase),
-      title: {
-        tag: 'plain_text',
-        content: `${titlePrefix(state.phase)} · ${state.title}`,
-      },
-    },
-    body: {
-      direction: 'vertical',
-      elements: buildCardBodyElements(state.content),
-    },
-  });
 }
 
 function fingerprint(content: string): string {
@@ -91,7 +75,7 @@ export class CodexAppProgressCard {
     private readonly operations: CodexAppProgressCardOperations,
     initialState?: CodexAppProgressCardSessionState,
   ) {
-    this.state = initialState ? cloneState(initialState) : undefined;
+    this.state = initialState ? restoreState(initialState) : undefined;
   }
 
   snapshot(): CodexAppProgressCardSessionState | undefined {
@@ -128,7 +112,7 @@ export class CodexAppProgressCard {
       if (!pending) return;
       if (current.phase === 'running') {
         current.phase = 'completed';
-        current.content = `${current.content}\n\n${timestampedContent(terminalText('completed'), this.now())}`;
+        this.appendEntry(timestampedContent(terminalText('completed'), this.now()));
         this.persist();
         await this.syncCard();
       }
@@ -163,7 +147,7 @@ export class CodexAppProgressCard {
       const nextFingerprint = fingerprint(trimmed);
       if (this.state.lastFingerprint === nextFingerprint) return;
       this.state.lastFingerprint = nextFingerprint;
-      this.state.content = `${this.state.content}\n\n${timestampedContent(trimmed, this.now())}`;
+      this.appendEntry(timestampedContent(trimmed, this.now()));
       this.persist();
       await this.syncCard();
     });
@@ -181,7 +165,7 @@ export class CodexAppProgressCard {
         || !this.state.acceptedTurnIds.includes(turnId)
       ) return;
       this.state.phase = phase;
-      this.state.content = `${this.state.content}\n\n${timestampedContent(terminalText(phase), this.now())}`;
+      this.appendEntry(timestampedContent(terminalText(phase), this.now()));
       this.persist();
       await this.syncCard();
     });
@@ -201,8 +185,45 @@ export class CodexAppProgressCard {
       pendingTurns: remainingPending,
       title,
       content: timestampedContent(INITIAL_CONTENT, this.now()),
+      pageNumber: 1,
+      currentEntryCount: 1,
+      archivedPages: [],
     };
     this.persist();
+  }
+
+  /** 在完整内容块边界换页；没有已发送当前卡时继续原页，等待 POST 恢复。 */
+  private appendEntry(entry: string): void {
+    if (!this.state) return;
+    const pageNumber = this.state.pageNumber ?? 1;
+    const entryCount = this.state.currentEntryCount
+      ?? countProgressCardEntries(this.state.content);
+    if (
+      this.state.messageId
+      && shouldStartProgressCardPage({
+        currentContent: this.state.content,
+        currentEntryCount: entryCount,
+        nextEntry: entry,
+      })
+    ) {
+      const archivedPage: CodexAppProgressCardArchivedPage = {
+        pageNumber,
+        messageId: this.state.messageId,
+        content: this.state.content,
+      };
+      this.state.archivedPages ??= [];
+      this.state.archivedPages.push(archivedPage);
+      this.state.pageNumber = pageNumber + 1;
+      this.state.messageId = undefined;
+      this.state.content = entry;
+      this.state.currentEntryCount = 1;
+      return;
+    }
+    this.state.content = this.state.content
+      ? `${this.state.content}\n\n${entry}`
+      : entry;
+    this.state.pageNumber = pageNumber;
+    this.state.currentEntryCount = entryCount + 1;
   }
 
   /** 每个新增事件只读取一次时钟，保证持久化与卡片展示一致。 */
@@ -220,7 +241,6 @@ export class CodexAppProgressCard {
     if (this.state.messageId) {
       try {
         await this.operations.patch(this.state.messageId, cardJson);
-        return;
       } catch (error) {
         if (
           this.state.repostedAfterWithdraw
@@ -231,9 +251,33 @@ export class CodexAppProgressCard {
         this.persist();
       }
     }
-    const messageId = await this.operations.post(cardJson, this.state.activeTurnId);
-    this.state.messageId = messageId;
-    this.persist();
+    if (!this.state.messageId) {
+      const messageId = await this.operations.post(cardJson, this.state.activeTurnId);
+      this.state.messageId = messageId;
+      this.persist();
+    }
+    await this.syncArchivedPages();
+  }
+
+  /** 新页可见后再归档旧页；失败标记保留到下一次同步继续重试。 */
+  private async syncArchivedPages(): Promise<void> {
+    if (!this.state) return;
+    for (const page of this.state.archivedPages ?? []) {
+      if (page.archivedSynced) continue;
+      const cardJson = renderCodexAppProgressCard(this.state, {
+        content: page.content,
+        pageNumber: page.pageNumber,
+        archived: true,
+      });
+      try {
+        await this.operations.patch(page.messageId, cardJson);
+      } catch (error) {
+        // 历史页已撤回时没有补发价值，直接完成归档；其它错误保留重试。
+        if (!this.operations.canRepostAfterPatchFailure?.(error)) throw error;
+      }
+      page.archivedSynced = true;
+      this.persist();
+    }
   }
 
   private enqueue(operation: () => Promise<void>): Promise<void> {
