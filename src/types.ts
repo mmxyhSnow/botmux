@@ -117,6 +117,14 @@ export type StreamStatus = ScreenStatus | 'starting';
 /** Codex App 即时进度卡的持久化阶段。 */
 export type CodexAppProgressCardPhase = 'running' | 'completed' | 'failed' | 'interrupted';
 
+/** 已冻结的历史进度页；未同步的归档 PATCH 会在后续更新中重试。 */
+export interface CodexAppProgressCardArchivedPage {
+  pageNumber: number;
+  messageId: string;
+  content: string;
+  archivedSynced?: boolean;
+}
+
 /** Codex App 即时进度卡的会话级投影，进程重启后可继续更新原卡片。 */
 export interface CodexAppProgressCardSessionState {
   phase: CodexAppProgressCardPhase;
@@ -126,6 +134,9 @@ export interface CodexAppProgressCardSessionState {
   messageId?: string;
   title: string;
   content: string;
+  pageNumber?: number;
+  currentEntryCount?: number;
+  archivedPages?: CodexAppProgressCardArchivedPage[];
   lastFingerprint?: string;
   repostedAfterWithdraw?: boolean;
 }
