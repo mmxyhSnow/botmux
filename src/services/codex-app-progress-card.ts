@@ -10,9 +10,23 @@ export interface CodexAppProgressCardOperations {
   patch(messageId: string, cardJson: string): Promise<void>;
   canRepostAfterPatchFailure?(error: unknown): boolean;
   persist(state: CodexAppProgressCardSessionState): void;
+  /** 返回内容事件的发生时间；测试可注入固定时钟，生产环境缺省使用系统时间。 */
+  now?(): Date;
 }
 
 const INITIAL_CONTENT = '已收到，开始处理。';
+const PROGRESS_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Shanghai',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+});
+
+/** 在内容写入状态时固定北京时间，避免后续 PATCH 或重启改变旧时间。 */
+function timestampedContent(content: string, now: Date): string {
+  return `[${PROGRESS_TIME_FORMATTER.format(now)}] ${content}`;
+}
 
 function cloneState(state: CodexAppProgressCardSessionState): CodexAppProgressCardSessionState {
   return {
@@ -114,7 +128,7 @@ export class CodexAppProgressCard {
       if (!pending) return;
       if (current.phase === 'running') {
         current.phase = 'completed';
-        current.content = `${current.content}\n\n${terminalText('completed')}`;
+        current.content = `${current.content}\n\n${timestampedContent(terminalText('completed'), this.now())}`;
         this.persist();
         await this.syncCard();
       }
@@ -149,7 +163,7 @@ export class CodexAppProgressCard {
       const nextFingerprint = fingerprint(trimmed);
       if (this.state.lastFingerprint === nextFingerprint) return;
       this.state.lastFingerprint = nextFingerprint;
-      this.state.content = `${this.state.content}\n\n${trimmed}`;
+      this.state.content = `${this.state.content}\n\n${timestampedContent(trimmed, this.now())}`;
       this.persist();
       await this.syncCard();
     });
@@ -167,7 +181,7 @@ export class CodexAppProgressCard {
         || !this.state.acceptedTurnIds.includes(turnId)
       ) return;
       this.state.phase = phase;
-      this.state.content = `${this.state.content}\n\n${terminalText(phase)}`;
+      this.state.content = `${this.state.content}\n\n${timestampedContent(terminalText(phase), this.now())}`;
       this.persist();
       await this.syncCard();
     });
@@ -186,9 +200,14 @@ export class CodexAppProgressCard {
       acceptedTurnIds: [turnId],
       pendingTurns: remainingPending,
       title,
-      content: INITIAL_CONTENT,
+      content: timestampedContent(INITIAL_CONTENT, this.now()),
     };
     this.persist();
+  }
+
+  /** 每个新增事件只读取一次时钟，保证持久化与卡片展示一致。 */
+  private now(): Date {
+    return this.operations.now?.() ?? new Date();
   }
 
   private persist(): void {

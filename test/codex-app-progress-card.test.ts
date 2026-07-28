@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CodexAppProgressCard,
   renderCodexAppProgressCard,
@@ -24,6 +24,15 @@ function harness(initial?: CodexAppProgressCardSessionState) {
 }
 
 describe('Codex App 即时进度卡', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-28T11:11:58.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('收到消息后先持久化 running，再立即创建一张卡', async () => {
     const h = harness();
     await h.card.accept('om_turn_1', '检查部署情况');
@@ -31,7 +40,7 @@ describe('Codex App 即时进度卡', () => {
     expect(h.states[0]).toMatchObject({
       phase: 'running',
       activeTurnId: 'om_turn_1',
-      content: '已收到，开始处理。',
+      content: '[19:11:58] 已收到，开始处理。',
     });
     expect(h.states[0]).not.toHaveProperty('messageId');
     expect(h.posts).toHaveLength(1);
@@ -52,8 +61,40 @@ describe('Codex App 即时进度卡', () => {
     expect(h.card.snapshot()).toMatchObject({
       acceptedTurnIds: ['om_turn_1', 'om_steer'],
       pendingTurns: [],
-      content: '已收到，开始处理。\n\n源码差异已经定位。',
+      content: '[19:11:58] 已收到，开始处理。\n\n[19:11:58] 源码差异已经定位。',
     });
+  });
+
+  it('首条、真实进展和终态分别记录北京时间', async () => {
+    const h = harness();
+    await h.card.accept('om_turn', '时间测试');
+    vi.setSystemTime(new Date('2026-07-28T11:12:07.000Z'));
+    await h.card.append('om_turn', '源码差异已经定位。');
+    vi.setSystemTime(new Date('2026-07-28T11:13:09.000Z'));
+    await h.card.settle('om_turn', 'completed');
+
+    expect(h.card.snapshot()?.content).toBe(
+      '[19:11:58] 已收到，开始处理。'
+      + '\n\n[19:12:07] 源码差异已经定位。'
+      + '\n\n[19:13:09] 本轮已完成，最终结果见最新回复。',
+    );
+  });
+
+  it('恢复旧状态后只给新增内容记录时间', async () => {
+    const h = harness({
+      phase: 'running',
+      activeTurnId: 'om_turn',
+      acceptedTurnIds: ['om_turn'],
+      pendingTurns: [],
+      title: '旧任务',
+      content: '已收到，开始处理。',
+      messageId: 'om_existing',
+    });
+    await h.card.append('om_turn', '新进展。');
+
+    expect(h.card.snapshot()?.content).toBe(
+      '已收到，开始处理。\n\n[19:11:58] 新进展。',
+    );
   });
 
   it('steer 被拒并排队后，在 turn/start 创建新卡', async () => {
