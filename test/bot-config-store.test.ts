@@ -87,6 +87,7 @@ describe('bot-config store', () => {
     expect(keys).toContain('skills');
     expect(keys).toContain('silentTurnReactions');
     expect(keys).toContain('codexAppCleanInput');
+    expect(keys).toContain('codexAppImmediateProgressCard');
   });
 
   it('parseBooleanValue accepts on/off variants and rejects junk', async () => {
@@ -215,6 +216,20 @@ describe('bot-config store', () => {
     expect(off.codexAppCleanInput).toBeUndefined();
     expect(invalid.codexAppCleanInput).toBeUndefined();
     expect(missing.codexAppCleanInput).toBeUndefined();
+  });
+
+  it('parses codexAppImmediateProgressCard strictly and defaults it off', async () => {
+    const { registry } = await freshModules();
+    const [on, off, invalid, missing] = registry.parseBotConfigsFromText(JSON.stringify([
+      { larkAppId: 'progress-on', larkAppSecret: 's', cliId: 'codex-app', codexAppImmediateProgressCard: true },
+      { larkAppId: 'progress-off', larkAppSecret: 's', cliId: 'codex-app', codexAppImmediateProgressCard: false },
+      { larkAppId: 'progress-invalid', larkAppSecret: 's', cliId: 'codex-app', codexAppImmediateProgressCard: 'true' },
+      { larkAppId: 'progress-missing', larkAppSecret: 's', cliId: 'codex-app' },
+    ]));
+    expect(on.codexAppImmediateProgressCard).toBe(true);
+    expect(off.codexAppImmediateProgressCard).toBeUndefined();
+    expect(invalid.codexAppImmediateProgressCard).toBeUndefined();
+    expect(missing.codexAppImmediateProgressCard).toBeUndefined();
   });
 
   it('parses substituteMode, retaining a disabled config\'s targets', async () => {
@@ -404,6 +419,22 @@ describe('bot-config store', () => {
     await store.applyConfigField('app_default', spec, false);
     expect(readConfig().codexAppCleanInput).toBeUndefined();
     expect(registry.getBot('app_default').config.codexAppCleanInput).toBeUndefined();
+  });
+
+  it('codexAppImmediateProgressCard is immediate, default-off, and deletes its key when disabled', async () => {
+    const { registry, store } = await loaded({ cliId: 'codex-app' });
+    const spec = store.findConfigField('codexAppImmediateProgressCard')!;
+    expect(spec.effect).toBe('immediate');
+    expect(registry.getBot('app_default').config.codexAppImmediateProgressCard).toBeUndefined();
+
+    const enabled = await store.applyConfigField('app_default', spec, true);
+    expect(enabled).toMatchObject({ ok: true, oldText: 'off', newText: 'on', effect: 'immediate' });
+    expect(readConfig().codexAppImmediateProgressCard).toBe(true);
+    expect(registry.getBot('app_default').config.codexAppImmediateProgressCard).toBe(true);
+
+    await store.applyConfigField('app_default', spec, false);
+    expect(readConfig().codexAppImmediateProgressCard).toBeUndefined();
+    expect(registry.getBot('app_default').config.codexAppImmediateProgressCard).toBeUndefined();
   });
 
   it('silentTurnReactions writes true / deletes key on false (keeps bots.json tidy)', async () => {

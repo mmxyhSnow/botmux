@@ -18,6 +18,7 @@ const RUNNER_PATH = resolve('src/codex-app-runner.ts');
 const FAKE_SERVER_FIXTURE = resolve('test/fixtures/fake-codex-app-server.mjs');
 const CONTROL_PREFIX = '::botmux-codex-app:';
 const FINAL_MARKER = /\x1b\]777;botmux:final:([A-Za-z0-9+/=]+)\x07/;
+const PROGRESS_MARKER = /\x1b\]777;botmux:progress:([A-Za-z0-9+/=]+)\x07/g;
 const LIFECYCLE_MARKER = /\x1b\]777;botmux:lifecycle:([A-Za-z0-9+/=]+)\x07/g;
 
 interface Harness {
@@ -139,7 +140,7 @@ function readRequests(logPath: string): Array<Record<string, any>> {
 
 async function exerciseRunner(opts: {
   version: string;
-  behavior?: 'success' | 'capability-error' | 'generic-error' | 'osc-injection';
+  behavior?: 'success' | 'capability-error' | 'generic-error' | 'osc-injection' | 'progress';
   includeMissingImage?: boolean;
   includeSidecar?: boolean;
 }): Promise<RunResult> {
@@ -195,6 +196,21 @@ afterEach(async () => {
 });
 
 describe('codex-app-runner app-server protocol integration', () => {
+  it('emits complete commentary as progress and keeps final_answer separate', async () => {
+    const result = await exerciseRunner({ version: '0.136.0', behavior: 'progress' });
+    const progress = [...result.output.matchAll(PROGRESS_MARKER)].map(match => (
+      JSON.parse(Buffer.from(match[1], 'base64').toString('utf8'))
+    ));
+
+    expect(progress).toEqual([{
+      content: '源码差异已经定位。',
+      updatedAtMs: expect.any(Number),
+      replyTurnId: 'om_integration_123',
+    }]);
+    expect(progress.map(item => item.content)).not.toContain(result.final.content);
+    expect(result.final.content).toBe('fake answer 1');
+  });
+
   it('sends clean text, hidden context, localImage, and clientUserMessageId on codex >= 0.136', async () => {
     const result = await exerciseRunner({ version: '0.136.0', includeMissingImage: true });
     const initialize = result.requests.find(request => request.method === 'initialize');

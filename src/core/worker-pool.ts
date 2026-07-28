@@ -31,6 +31,8 @@ import { botLocale, localeForBot, t as tr } from '../i18n/index.js';
 import { claudeJsonlPathForSession } from '../adapters/cli/claude-code.js';
 import { findUniqueClaudeSessionByCwd } from './session-discovery.js';
 import { buildMarkdownCard, buildContextualReplyCard, type LocalHomeLinkMode } from '../im/lark/md-card.js';
+import { CodexAppProgressCard } from '../services/codex-app-progress-card.js';
+import { codexAppProgressCardTitle } from '../services/codex-app-progress.js';
 import { renderBrandTemplate } from '../im/lark/brand-template.js';
 import { replyToDocComment, chunkCommentText, unsubscribeDocFile, removeCommentReaction } from '../im/lark/doc-comment.js';
 import { listDocSubscriptionsForSession, removeDocSubscription } from '../services/doc-subs-store.js';
@@ -47,6 +49,7 @@ import { runtimeBuildIdentity } from '../utils/runtime-build-id.js';
  *  distinguishable from a pane surviving a daemon restart (different id). */
 const DAEMON_BOOT_ID = randomUUID();
 const restartCoordinator = new RestartCoordinator();
+const codexAppProgressCards = new WeakMap<DaemonSession, CodexAppProgressCard>();
 
 export function getDaemonBootId(): string {
   return DAEMON_BOOT_ID;
@@ -239,6 +242,52 @@ export function initWorkerPool(cb: WorkerPoolCallbacks): void {
 function requireCallbacks(): WorkerPoolCallbacks {
   if (!callbacks) throw new Error('WorkerPool not initialised — call initWorkerPool() first');
   return callbacks;
+}
+
+function codexAppProgressEnabled(ds: DaemonSession): boolean {
+  try {
+    const bot = getBot(ds.larkAppId).config;
+    return (ds.session.cliId ?? bot.cliId) === 'codex-app'
+      && bot.codexAppImmediateProgressCard === true;
+  } catch {
+    return false;
+  }
+}
+
+function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
+  let card = codexAppProgressCards.get(ds);
+  if (card) return card;
+  const cb = requireCallbacks();
+  card = new CodexAppProgressCard({
+    post: (cardJson, turnId) => cb.sessionReply(
+      sessionAnchorId(ds),
+      cardJson,
+      'interactive',
+      ds.larkAppId,
+      fallbackTurnId(ds, turnId),
+    ),
+    patch: (messageId, cardJson) => updateMessage(ds.larkAppId, messageId, cardJson),
+    canRepostAfterPatchFailure: error => error instanceof MessageWithdrawnError,
+    persist: state => {
+      ds.session.codexAppProgressCard = state;
+      sessionStore.updateSession(ds.session);
+    },
+  }, ds.session.codexAppProgressCard);
+  codexAppProgressCards.set(ds, card);
+  return card;
+}
+
+/** 入站消息被接受后的最早状态投影；调用方必须先等待它，再派发给 worker。 */
+export async function beginCodexAppProgressTurn(
+  ds: DaemonSession,
+  turnId: string,
+  prompt?: string,
+): Promise<void> {
+  if (!turnId.startsWith('om_') || !codexAppProgressEnabled(ds)) return;
+  await codexAppProgressCardFor(ds).accept(
+    turnId,
+    codexAppProgressCardTitle(prompt ?? ds.lastUserPrompt ?? ds.session.title),
+  );
 }
 
 // ─── Active session registry (daemon-owned, accessor for IPC) ───────────────
@@ -3758,6 +3807,32 @@ function setupWorkerHandlers(
         break;
       }
 
+      case 'progress_output': {
+        if (ds.worker !== worker || !codexAppProgressEnabled(ds)) break;
+        try {
+          await codexAppProgressCardFor(ds).append(msg.turnId, msg.content);
+        } catch (error) {
+          logger.warn(
+            `[${t}] Codex App 进度卡更新失败: `
+            + `${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        break;
+      }
+
+      case 'codex_app_turn_started': {
+        if (ds.worker !== worker || !codexAppProgressEnabled(ds)) break;
+        try {
+          await codexAppProgressCardFor(ds).turnStarted(msg.turnId);
+        } catch (error) {
+          logger.warn(
+            `[${t}] Codex App 新回合状态卡创建失败: `
+            + `${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        break;
+      }
+
       case 'steer_accepted': {
         if (ds.worker !== worker) {
           logger.warn(`[${t}] Ignored steer_accepted from stale worker generation`);
@@ -3767,6 +3842,17 @@ function setupWorkerHandlers(
           `[${t}] Codex App steer accepted `
           + `appTurn=${msg.appTurnId.slice(0, 12)} replyTurn=${msg.turnId.slice(0, 12)}`,
         );
+        if (codexAppProgressEnabled(ds)) {
+          try {
+            await codexAppProgressCardFor(ds).steerAccepted(msg.turnId);
+          } catch (error) {
+            logger.warn(
+              `[${t}] Codex App steer 状态卡复用失败: `
+              + `${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+          break;
+        }
         if (managedAuxUiSuppressed(msg.turnId, undefined)) break;
         try {
           await scopedReply(tr('worker.steer_accepted', undefined, loc), 'text', msg.turnId);
@@ -3791,6 +3877,21 @@ function setupWorkerHandlers(
             `(worker=${msg.sessionId}, daemon=${ds.session.sessionId}, turn=${msg.turnId.substring(0, 8)})`,
           );
           break;
+        }
+        if (codexAppProgressEnabled(ds)) {
+          const phase = msg.status === 'completed'
+            ? 'completed'
+            : msg.status === 'failed'
+              ? 'failed'
+              : 'interrupted';
+          try {
+            await codexAppProgressCardFor(ds).settle(msg.turnId, phase);
+          } catch (error) {
+            logger.warn(
+              `[${t}] Codex App 进度卡终态更新失败: `
+              + `${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
         }
         // Defense in depth: the worker sends a token-matched revoke before the
         // terminal IPC, but an older/mixed worker must still lose authority at
@@ -3978,6 +4079,14 @@ function setupWorkerHandlers(
     // A stale takeover worker never clears the replacement — during takeover the
     // old worker's exit fires AFTER the new worker has been assigned.
     if (ds.worker === worker) {
+      if (codexAppProgressEnabled(ds)) {
+        void codexAppProgressCardFor(ds).interrupt().catch(error => {
+          logger.warn(
+            `[${t}] Codex App 进度卡中断状态更新失败: `
+            + `${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+      }
       restartCoordinator.failSession(ds.session.sessionId);
       ds.worker = null;
       ds.workerPort = null;

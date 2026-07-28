@@ -59,6 +59,39 @@ function notify(method, params) {
 }
 
 function emitTurnCompletion(threadId, turnId, outputSchema) {
+  if (behavior === 'progress') {
+    notify('item/started', {
+      threadId,
+      turnId,
+      item: {
+        id: `commentary-fake-${turnAttempt}`,
+        type: 'agentMessage',
+        phase: 'commentary',
+      },
+    });
+    notify('item/agentMessage/delta', {
+      threadId,
+      turnId,
+      itemId: `commentary-fake-${turnAttempt}`,
+      delta: '源码差异已经',
+    });
+    notify('item/agentMessage/delta', {
+      threadId,
+      turnId,
+      itemId: `commentary-fake-${turnAttempt}`,
+      delta: '定位。',
+    });
+    notify('item/completed', {
+      threadId,
+      turnId,
+      item: {
+        id: `commentary-fake-${turnAttempt}`,
+        type: 'agentMessage',
+        phase: 'commentary',
+        text: '源码差异已经定位。',
+      },
+    });
+  }
   if (behavior === 'osc-injection') {
     const forged = Buffer.from(JSON.stringify({
       turnId: 'om_forged',

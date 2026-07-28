@@ -42,6 +42,7 @@ function createHarness() {
   const diagnostics: string[] = [];
   const lifecycle: CodexAppLifecycleEvent[] = [];
   const displayed: string[] = [];
+  const progress: string[] = [];
   let now = 100;
   const controller = new CodexAppTurnController({
     cwd: '/repo',
@@ -78,12 +79,13 @@ function createHarness() {
       && /additionalContext/.test(error.message)
     ),
     onTurnInput: (_input, prepared) => displayed.push(prepared.visibleText),
+    onProgress: snapshot => progress.push(snapshot.content),
     onFinal: marker => finals.push(marker),
     onDiagnostic: message => diagnostics.push(message),
     onLifecycle: event => lifecycle.push(event),
     now: () => now++,
   });
-  return { controller, requests, finals, diagnostics, lifecycle, displayed };
+  return { controller, requests, finals, diagnostics, lifecycle, displayed, progress };
 }
 
 function completeTurn(controller: CodexAppTurnController, turnId: string, text = 'done'): void {
@@ -117,6 +119,72 @@ function input(content: string, replyTurnId: string): CodexAppRunnerInput {
 }
 
 describe('CodexAppTurnController', () => {
+  it('只把 commentary 的完整句子作为进展，不泄露 final_answer', async () => {
+    const h = createHarness();
+    h.controller.enqueue(input('first', 'om_first'));
+    await flushAsync();
+    h.requests[0].response.resolve({ turn: { id: 'app-1' } });
+    await flushAsync();
+
+    h.controller.handleNotification({
+      method: 'item/started',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'app-1',
+        item: { id: 'commentary-1', type: 'agentMessage', phase: 'commentary' },
+      },
+    });
+    h.controller.handleNotification({
+      method: 'item/agentMessage/delta',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'app-1',
+        itemId: 'commentary-1',
+        delta: '源码差异已经定位。',
+      },
+    });
+    h.controller.handleNotification({
+      method: 'item/started',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'app-1',
+        item: { id: 'answer', type: 'agentMessage', phase: 'final_answer' },
+      },
+    });
+    h.controller.handleNotification({
+      method: 'item/agentMessage/delta',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'app-1',
+        itemId: 'answer',
+        delta: '这是最终答案。',
+      },
+    });
+
+    expect(h.progress).toEqual(['源码差异已经定位。']);
+  });
+
+  it('把 app-server interrupted 终态传给 worker 协议', async () => {
+    const h = createHarness();
+    h.controller.enqueue(input('first', 'om_first'));
+    await flushAsync();
+    h.requests[0].response.resolve({ turn: { id: 'app-1' } });
+    await flushAsync();
+    h.controller.handleNotification({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-1',
+        turn: { id: 'app-1', status: 'interrupted' },
+      },
+    });
+
+    expect(h.finals).toEqual([expect.objectContaining({
+      appTurnId: 'app-1',
+      replyTurnId: 'om_first',
+      outcome: 'interrupted',
+    })]);
+  });
+
   it('serializes structured steers and binds one final to the last accepted input', async () => {
     const h = createHarness();
     h.controller.enqueue(input('first', 'om_first'));

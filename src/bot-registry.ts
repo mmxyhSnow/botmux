@@ -917,6 +917,8 @@ export interface BotConfig {
    * `additionalContext`, so the desktop user bubble stays clean. Missing/false
    * preserves the legacy XML-ish prompt byte-for-byte. Codex App only. */
   codexAppCleanInput?: boolean;
+  /** Codex App 专用即时进度卡。严格 opt-in，缺省和 false 均关闭。 */
+  codexAppImmediateProgressCard?: boolean;
   /**
    * Codex only (opt-in, experimental): deliver user input via the app-server
    * JSON-RPC channel instead of a tmux paste. The pane runs `codex --remote`
@@ -2094,6 +2096,7 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
         : undefined,
       disableCliBypass: entry.disableCliBypass === true,
       codexAppCleanInput: entry.codexAppCleanInput === true || undefined,
+      codexAppImmediateProgressCard: entry.codexAppImmediateProgressCard === true || undefined,
       codexRpcInput: entry.codexRpcInput === true,
       sandbox: entry.sandbox === true,
       sandboxPaths: entry.sandboxPaths && typeof entry.sandboxPaths === 'object' && !Array.isArray(entry.sandboxPaths)

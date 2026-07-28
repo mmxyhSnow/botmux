@@ -124,6 +124,7 @@ import {
   writableTerminalLinkFor,
   findActiveBySessionId,
   getDaemonBootId,
+  beginCodexAppProgressTurn,
   type WorkerSessionReplyOptions,
 } from './core/worker-pool.js';
 import { AbortDeadlineError, hasExactSafeJsonKeys, ipcRoute, isTrustedHostIpcRequest, JsonBodyTooLargeError, jsonRes, readJsonBody, runWithAbortDeadline, setBotName, setLarkAppId, startIpcServer, setBotRenamer, setBotAvatarChanger } from './core/dashboard-ipc-server.js';
@@ -2615,9 +2616,9 @@ function readSessionFreshFromDisk(sessionId: string, larkAppId: string): import(
 export async function noteTurnReceived(
   ds: DaemonSession,
   triggerMessageId: string,
-  _prompt?: string,
+  prompt?: string,
   _sender?: { name?: string },
-  _turnId?: string,
+  turnId?: string,
   receivedReactionEmoji?: string,
 ): Promise<void> {
   // Replaces the old 「处理中」 placeholder card. That card existed only to be
@@ -2636,6 +2637,14 @@ export async function noteTurnReceived(
   // each get their own ✋. `finishTurnReactions` flips every pending ✋ to ✅ when
   // the worker next goes idle.
   if (ds.session.vcMeetingReceiver) return;
+  try {
+    await beginCodexAppProgressTurn(ds, turnId ?? triggerMessageId, prompt);
+  } catch (error) {
+    logger.warn(
+      `[${ds.session.sessionId.slice(0, 8)}] Codex App 即时进度卡创建失败，不阻塞消息派发: `
+      + `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   // Turn-exact card-off check: the reaction ack belongs to THIS message's turn,
   // not to whichever turn most recently overwrote currentReplyTarget.
   if (!streamingCardDisabledFor(ds, triggerMessageId)) return;

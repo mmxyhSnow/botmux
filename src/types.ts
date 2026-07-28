@@ -114,6 +114,22 @@ export type ScreenStatus = 'working' | 'idle' | 'analyzing' | 'limited';
 /** Status shown on a streaming card — adds the pre-spawn 'starting' phase. */
 export type StreamStatus = ScreenStatus | 'starting';
 
+/** Codex App 即时进度卡的持久化阶段。 */
+export type CodexAppProgressCardPhase = 'running' | 'completed' | 'failed' | 'interrupted';
+
+/** Codex App 即时进度卡的会话级投影，进程重启后可继续更新原卡片。 */
+export interface CodexAppProgressCardSessionState {
+  phase: CodexAppProgressCardPhase;
+  activeTurnId: string;
+  acceptedTurnIds: string[];
+  pendingTurns: Array<{ turnId: string; title: string }>;
+  messageId?: string;
+  title: string;
+  content: string;
+  lastFingerprint?: string;
+  repostedAfterWithdraw?: boolean;
+}
+
 export interface Session {
   sessionId: string;
   /** Build fingerprint of the last fresh owned Codex App runner that became ready. */
@@ -398,6 +414,8 @@ export interface Session {
     paneCols?: number;
     paneRows?: number;
   };
+  /** 仅在 bot 显式开启时持久化 Codex App 即时进度卡状态。 */
+  codexAppProgressCard?: CodexAppProgressCardSessionState;
 }
 
 export interface LarkAttachment {
@@ -677,6 +695,10 @@ export type WorkerToDaemon =
   | { type: 'tui_keys_delivered'; nonce: number; turnId?: string; dispatchAttempt?: number }
   | { type: 'screenshot_uploaded'; imageKey: string; status: ScreenStatus; usageLimit?: CliUsageLimitState; turnId?: string; dispatchAttempt?: number }
   | { type: 'user_notify'; message: string; turnId?: string; dispatchAttempt?: number }
+  /** Codex App assistant commentary 的完整增量句子。 */
+  | { type: 'progress_output'; content: string; turnId: string }
+  /** Codex App 开始消费一个已提交输入；用于区分 steer 与排队的新回合。 */
+  | { type: 'codex_app_turn_started'; turnId: string }
   /** A normal success acknowledgement for one app-server accepted steer.
    * `appTurnId` is diagnostic/protocol identity; `turnId` is the immutable
    * botmux/Lark reply route. This must never enter the attention path. */

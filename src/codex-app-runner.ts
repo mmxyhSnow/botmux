@@ -430,6 +430,14 @@ controller = new CodexAppTurnController({
     writeLine();
   },
   onOutput: text => output.display(text),
+  onProgress: snapshot => {
+    if (!snapshot.turnId) return;
+    emitMarker('progress', {
+      content: snapshot.content,
+      updatedAtMs: snapshot.updatedAtMs,
+      replyTurnId: snapshot.turnId,
+    });
+  },
   onDiagnostic: writeLine,
   onLifecycle: event => emitMarker('lifecycle', event),
   onFinal: marker => {

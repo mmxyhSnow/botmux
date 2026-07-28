@@ -252,6 +252,7 @@ import { resolveCodexAppFinalTurnIdentity } from './adapters/cli/codex-app-turn.
 import { RunnerControlDecoder } from './adapters/cli/runner-control-channel.js';
 import {
   normalizeAppRunnerFinalMarker,
+  normalizeCodexAppProgressMarker,
   normalizeCodexAppLifecycleEvent,
   projectAppRunnerFinalIds,
 } from './services/codex-app-runner-protocol.js';
@@ -4884,6 +4885,20 @@ function handleCodexAppMarker(body: string): void {
     return;
   }
 
+  if (kind === 'progress') {
+    const progress = normalizeCodexAppProgressMarker(payload);
+    if (!progress || !submittedCodexAppReplyTurnIds.has(progress.replyTurnId)) {
+      log(`${cliName()} rejected malformed or unsubmitted progress marker`);
+      return;
+    }
+    send({
+      type: 'progress_output',
+      content: progress.content,
+      turnId: progress.replyTurnId,
+    });
+    return;
+  }
+
   if (kind === 'lifecycle') {
     const event = normalizeCodexAppLifecycleEvent(payload);
     if (!event) {
@@ -4897,6 +4912,10 @@ function handleCodexAppMarker(body: string): void {
       + `${event.queueLength !== undefined ? ` queue=${event.queueLength}` : ''}`,
     );
     if (!event.replyTurnId || !submittedCodexAppReplyTurnIds.has(event.replyTurnId)) return;
+    if (event.kind === 'turn_start_attempt') {
+      send({ type: 'codex_app_turn_started', turnId: event.replyTurnId });
+      return;
+    }
     if (event.kind === 'steer_attempt') {
       rememberBoundedMap(pendingCodexAppSteerAckIds, event.replyTurnId, event.appTurnId);
       return;
@@ -4923,6 +4942,11 @@ function handleCodexAppMarker(body: string): void {
     }
     const startedAtMs = marker.startedAtMs;
     const completedAtMs = marker.completedAtMs ?? Date.now();
+    const terminalStatus = marker.outcome === 'failed'
+      ? 'failed'
+      : marker.outcome === 'interrupted'
+        ? 'cancelled'
+        : 'completed';
     if (marker.appTurnId) {
       const trustedReplyTurnId = marker.replyTurnId
         && submittedCodexAppReplyTurnIds.has(marker.replyTurnId)
@@ -4953,7 +4977,7 @@ function handleCodexAppMarker(body: string): void {
         false,
       )) {
         log(`${cliName()} final_output suppressed (model already called botmux send)`);
-        emitTurnTerminal(identity.turnId, 'completed', undefined, dispatchAttempt);
+        emitTurnTerminal(identity.turnId, terminalStatus, undefined, dispatchAttempt);
         return;
       }
       send({
@@ -4963,7 +4987,7 @@ function handleCodexAppMarker(body: string): void {
         turnId: identity.turnId,
         ...(dispatchAttempt !== undefined ? { dispatchAttempt } : {}),
       });
-      emitTurnTerminal(identity.turnId, 'completed', undefined, dispatchAttempt);
+      emitTurnTerminal(identity.turnId, terminalStatus, undefined, dispatchAttempt);
       return;
     }
 
@@ -5007,7 +5031,7 @@ function handleCodexAppMarker(body: string): void {
       );
       if (sentByModel) {
         log(`${cliName()} final_output suppressed (model already called botmux send)`);
-        emitTurnTerminal(turnId, 'completed', undefined, dispatchAttempt);
+        emitTurnTerminal(turnId, terminalStatus, undefined, dispatchAttempt);
         return;
       }
     }
@@ -5018,7 +5042,7 @@ function handleCodexAppMarker(body: string): void {
       turnId,
       ...(dispatchAttempt !== undefined ? { dispatchAttempt } : {}),
     });
-    emitTurnTerminal(turnId, 'completed', undefined, dispatchAttempt);
+    emitTurnTerminal(turnId, terminalStatus, undefined, dispatchAttempt);
   }
 }
 
