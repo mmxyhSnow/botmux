@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  coveringBridgeSendMarker,
   shouldEmitEmptyCompletedBridgeFallback,
   shouldSuppressBridgeEmit,
   type BridgeSendMarker,
@@ -18,6 +19,33 @@ const markerForContent = (sentAtMs: number, content: string): BridgeSendMarker =
 };
 
 describe('shouldSuppressBridgeEmit', () => {
+  it('返回覆盖当前轮次最终结论的显式发送回执', () => {
+    const markers: BridgeSendMarker[] = [
+      {
+        sentAtMs: 150,
+        messageId: 'om_explicit_final',
+        turnId: 'om_turn',
+        contentLength: 18,
+      },
+      {
+        sentAtMs: 170,
+        messageId: 'om_other_turn',
+        turnId: 'om_other',
+        contentLength: 18,
+      },
+    ];
+
+    expect(coveringBridgeSendMarker(
+      { ...turn(100), turnId: 'om_turn', finalText: '十八个字符的最终结论正文内容' },
+      200,
+      markers,
+      false,
+    )).toEqual(expect.objectContaining({
+      messageId: 'om_explicit_final',
+      turnId: 'om_turn',
+    }));
+  });
+
   it('adopt mode never suppresses, even with markers in window', () => {
     const markers: BridgeSendMarker[] = [{ sentAtMs: 150 }];
     expect(shouldSuppressBridgeEmit(turn(100), 200, markers, true)).toBe(false);

@@ -30,6 +30,7 @@
  *     nextBoundaryMs) — without that, a model that's still mid-tool-use
  *     for turn N+1 could leak a send credit into turn N's window.
  */
+import { createHash } from 'node:crypto';
 import { normaliseForFingerprint } from './bridge-turn-queue.js';
 
 const MATERIAL_FINAL_LENGTH_RATIO = 2;
@@ -38,7 +39,9 @@ const MATERIAL_FINAL_MIN_EXTRA_CHARS = 120;
 export interface BridgeSendMarker {
   sentAtMs: number;
   messageId?: string;
+  turnId?: string;
   contentLength?: number;
+  contentHash?: string;
 }
 
 export interface BridgeGateInput {
@@ -52,15 +55,22 @@ export interface BridgeGateInput {
   /** Transcript final text for this turn, when available. Lets structured
    *  send markers distinguish final-answer sends from earlier progress sends. */
   finalText?: string;
+  /** Botmux 的稳定轮次 id；新版显式发送回执用它避免跨轮次借用。 */
+  turnId?: string;
   /** Explicit transcript terminal semantics. Undefined preserves the
    * historical "assistant_final means completed" behavior. */
   terminalStatus?: 'completed' | 'failed' | 'ambiguous';
 }
 
-export function buildBridgeSendMarkerContent(content: string): Pick<BridgeSendMarker, 'contentLength'> | undefined {
+export function buildBridgeSendMarkerContent(
+  content: string,
+): Pick<BridgeSendMarker, 'contentLength' | 'contentHash'> | undefined {
   const normalized = normaliseForFingerprint(content);
   if (!normalized) return undefined;
-  return { contentLength: normalized.length };
+  return {
+    contentLength: normalized.length,
+    contentHash: createHash('sha256').update(normalized).digest('hex'),
+  };
 }
 
 type StructuredBridgeSendMarker = BridgeSendMarker & {
@@ -77,18 +87,42 @@ function finalIsMateriallyLongerThanSends(finalLength: number, markers: readonly
     && finalLength - maxSentLength >= MATERIAL_FINAL_MIN_EXTRA_CHARS;
 }
 
-function markerSetCoversFinal(markers: readonly BridgeSendMarker[], finalText: string | undefined): boolean {
-  if (markers.length === 0) return false;
+function markerSetCoversFinal(
+  markers: readonly BridgeSendMarker[],
+  finalText: string | undefined,
+): BridgeSendMarker | undefined {
+  if (markers.length === 0) return undefined;
 
   // Back-compat: old marker files only have sentAtMs/messageId. Keep the old
   // conservative behavior for those entries instead of risking duplicates.
-  if (markers.some(m => !hasStructuredContentMarker(m))) return true;
+  const legacy = markers.find(marker => !hasStructuredContentMarker(marker));
+  if (legacy) return legacy;
 
   const finalNormalized = normaliseForFingerprint(finalText ?? '');
-  if (!finalNormalized) return true;
+  if (!finalNormalized) return markers[markers.length - 1];
 
   const structuredMarkers = markers.filter(hasStructuredContentMarker);
-  return !finalIsMateriallyLongerThanSends(finalNormalized.length, structuredMarkers);
+  if (finalIsMateriallyLongerThanSends(finalNormalized.length, structuredMarkers)) return undefined;
+  return structuredMarkers.reduce((longest, marker) =>
+    marker.contentLength >= longest.contentLength ? marker : longest);
+}
+
+/** 返回足以覆盖本轮最终结论的显式发送回执，供 Worker 把 provider message id
+ * 一并交给 Daemon 落账；旧 marker 没有 turnId 时仍按时间窗兼容。 */
+export function coveringBridgeSendMarker(
+  turn: BridgeGateInput,
+  nextBoundaryMs: number | undefined,
+  markers: readonly BridgeSendMarker[],
+  adoptMode: boolean,
+): BridgeSendMarker | undefined {
+  if (adoptMode || turn.isLocal || turn.markTimeMs === undefined) return undefined;
+  const lower = turn.markTimeMs;
+  const upper = nextBoundaryMs ?? Number.POSITIVE_INFINITY;
+  const markersInWindow = markers.filter(marker =>
+    marker.sentAtMs >= lower
+    && marker.sentAtMs < upper
+    && (!turn.turnId || !marker.turnId || marker.turnId === turn.turnId));
+  return markerSetCoversFinal(markersInWindow, turn.finalText);
 }
 
 export function shouldSuppressBridgeEmit(
@@ -99,11 +133,7 @@ export function shouldSuppressBridgeEmit(
 ): boolean {
   if (adoptMode) return false;
   if (turn.isLocal) return true;
-  if (turn.markTimeMs === undefined) return false;
-  const lower = turn.markTimeMs;
-  const upper = nextBoundaryMs ?? Number.POSITIVE_INFINITY;
-  const markersInWindow = markers.filter(m => m.sentAtMs >= lower && m.sentAtMs < upper);
-  return markerSetCoversFinal(markersInWindow, turn.finalText);
+  return coveringBridgeSendMarker(turn, nextBoundaryMs, markers, adoptMode) !== undefined;
 }
 
 /** Some structured CLIs can report a durable completed turn while their

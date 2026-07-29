@@ -709,7 +709,7 @@ export type WorkerToDaemon =
   /** Codex App assistant commentary 的完整增量句子。 */
   | { type: 'progress_output'; content: string; turnId: string }
   /** Codex App 开始消费一个已提交输入；用于区分 steer 与排队的新回合。 */
-  | { type: 'codex_app_turn_started'; turnId: string }
+  | { type: 'codex_app_turn_started'; turnId: string; nativeTurnId?: string }
   /** A normal success acknowledgement for one app-server accepted steer.
    * `appTurnId` is diagnostic/protocol identity; `turnId` is the immutable
    * botmux/Lark reply route. This must never enter the attention path. */
@@ -744,6 +744,9 @@ export type WorkerToDaemon =
       content: string;
       lastUuid: string;
       turnId: string;
+      /** 模型已通过显式 send 投递同一最终结论时的飞书回执。Daemon 只落账，
+       * 不再创建第二条消息。 */
+      alreadyDeliveredMessageId?: string;
       /** Durable receiver attempt attribution. Final output suppression is
        *  attempt-scoped so a late attempt-N event cannot affect attempt N+1. */
       dispatchAttempt?: number;

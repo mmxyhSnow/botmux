@@ -37,7 +37,12 @@ import { killPersistentBackendTarget, killPersistentSession, probePersistentBack
 import { readProcessStartIdentity } from './core/session-marker.js';
 import { drainTranscript, joinAssistantText, trailingAssistantText, findJsonlContainingFingerprint, findJsonlsContainingExactContent, findLatestJsonl, extractLastAssistantTurn, stringifyUserContent, extractTurnStartText, splitTranscriptEventsByCutoff, isTranscriptRateLimitEvent, apiErrorMessageText, type TranscriptEvent } from './services/claude-transcript.js';
 import { BridgeTurnQueue, makeFingerprint, normaliseForFingerprint } from './services/bridge-turn-queue.js';
-import { shouldEmitEmptyCompletedBridgeFallback, shouldSuppressBridgeEmit, type BridgeSendMarker } from './services/bridge-fallback-gate.js';
+import {
+  coveringBridgeSendMarker,
+  shouldEmitEmptyCompletedBridgeFallback,
+  shouldSuppressBridgeEmit,
+  type BridgeSendMarker,
+} from './services/bridge-fallback-gate.js';
 import {
   decideHardTimeoutAction,
   decideSettleMarkReady,
@@ -3201,9 +3206,26 @@ function emitReadyTurns(opts: { explicitTerminalOnly?: boolean } = {}): void {
     if (assistantText.length === 0) continue;
     const lastUuid = turn.assistantUuids[turn.assistantUuids.length - 1];
 
-    if (shouldSuppressBridgeEmit({ markTimeMs: turn.markTimeMs, isLocal: turn.isLocal, finalText: assistantText }, nextBoundaryMs, markers, adoptMode)) {
+    const gateInput = {
+      markTimeMs: turn.markTimeMs,
+      isLocal: turn.isLocal,
+      finalText: assistantText,
+      turnId: turn.turnId,
+    };
+    const coveringMarker = coveringBridgeSendMarker(gateInput, nextBoundaryMs, markers, adoptMode);
+    if (coveringMarker) {
       const reason = turn.isLocal ? 'local-typed' : 'model called botmux send within window';
       log(`Bridge fallback suppressed for turn ${turn.turnId.substring(0, 8)} (${reason})`);
+      if (coveringMarker.messageId) {
+        send({
+          type: 'final_output',
+          content: assistantText,
+          lastUuid,
+          turnId: turn.turnId,
+          ...(turn.dispatchAttempt !== undefined ? { dispatchAttempt: turn.dispatchAttempt } : {}),
+          alreadyDeliveredMessageId: coveringMarker.messageId,
+        });
+      }
       continue;
     }
 
@@ -3894,6 +3916,7 @@ function emitReadyCodexTurns(): void {
       isLocal: turn.isLocal,
       finalText: turn.finalText,
       terminalStatus: turn.terminalStatus,
+      turnId: turn.turnId,
     };
     const content = turn.finalText && turn.finalText.trim()
       ? turn.finalText
@@ -3901,8 +3924,20 @@ function emitReadyCodexTurns(): void {
         ? emptyCompletedBridgeFallbackContent()
         : '';
     if (!content) continue;
-    if (shouldSuppressBridgeEmit(gateInput, nextBoundaryMs, markers, adoptMode)) {
+    const coveringMarker = coveringBridgeSendMarker(gateInput, nextBoundaryMs, markers, adoptMode);
+    if (coveringMarker) {
       log(`Codex bridge fallback suppressed for turn ${turn.turnId.substring(0, 8)} (gate)`);
+      if (coveringMarker.messageId) {
+        send({
+          type: 'final_output',
+          ...(sourceHermesSessionId ? { sourceHermesSessionId } : {}),
+          content,
+          lastUuid: turn.turnId,
+          turnId: turn.turnId,
+          ...(turn.dispatchAttempt !== undefined ? { dispatchAttempt: turn.dispatchAttempt } : {}),
+          alreadyDeliveredMessageId: coveringMarker.messageId,
+        });
+      }
       continue;
     }
     if (turn.isLocal) {
@@ -4913,7 +4948,11 @@ function handleCodexAppMarker(body: string): void {
     );
     if (!event.replyTurnId || !submittedCodexAppReplyTurnIds.has(event.replyTurnId)) return;
     if (event.kind === 'turn_start_attempt') {
-      send({ type: 'codex_app_turn_started', turnId: event.replyTurnId });
+      send({
+        type: 'codex_app_turn_started',
+        turnId: event.replyTurnId,
+        nativeTurnId: event.appTurnId,
+      });
       return;
     }
     if (event.kind === 'steer_attempt') {
@@ -4970,13 +5009,31 @@ function handleCodexAppMarker(body: string): void {
         );
       }
       const dispatchAttempt = currentBotmuxDispatchAttempt;
-      if (startedAtMs !== undefined && shouldSuppressBridgeEmit(
-        { markTimeMs: startedAtMs, isLocal: false, finalText: marker.content },
-        completedAtMs + 5_001,
-        readSendMarkers(),
-        false,
-      )) {
+      const coveringMarker = startedAtMs === undefined
+        ? undefined
+        : coveringBridgeSendMarker(
+            {
+              markTimeMs: startedAtMs,
+              isLocal: false,
+              finalText: marker.content,
+              turnId: identity.turnId,
+            },
+            completedAtMs + 5_001,
+            readSendMarkers(),
+            false,
+          );
+      if (coveringMarker) {
         log(`${cliName()} final_output suppressed (model already called botmux send)`);
+        if (coveringMarker.messageId) {
+          send({
+            type: 'final_output',
+            content: marker.content,
+            lastUuid: identity.lastUuid,
+            turnId: identity.turnId,
+            ...(dispatchAttempt !== undefined ? { dispatchAttempt } : {}),
+            alreadyDeliveredMessageId: coveringMarker.messageId,
+          });
+        }
         emitTurnTerminal(identity.turnId, terminalStatus, undefined, dispatchAttempt);
         return;
       }
@@ -5023,14 +5080,29 @@ function handleCodexAppMarker(body: string): void {
     // equality for compatibility, but can never select another attempt.
     const dispatchAttempt = currentBotmuxDispatchAttempt;
     if (startedAtMs !== undefined) {
-      const sentByModel = shouldSuppressBridgeEmit(
-        { markTimeMs: startedAtMs, isLocal: false, finalText: marker.content },
+      const coveringMarker = coveringBridgeSendMarker(
+        {
+          markTimeMs: startedAtMs,
+          isLocal: false,
+          finalText: marker.content,
+          turnId,
+        },
         completedAtMs + 5_001,
         readSendMarkers(),
         false,
       );
-      if (sentByModel) {
+      if (coveringMarker) {
         log(`${cliName()} final_output suppressed (model already called botmux send)`);
+        if (coveringMarker.messageId) {
+          send({
+            type: 'final_output',
+            content: marker.content,
+            lastUuid: turnId,
+            turnId,
+            ...(dispatchAttempt !== undefined ? { dispatchAttempt } : {}),
+            alreadyDeliveredMessageId: coveringMarker.messageId,
+          });
+        }
         emitTurnTerminal(turnId, terminalStatus, undefined, dispatchAttempt);
         return;
       }

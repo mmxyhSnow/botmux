@@ -6622,7 +6622,10 @@ async function cmdSend(rest: string[]): Promise<void> {
         try {
           const markerDir = join(resolveDataDir(), 'turn-sends');
           if (!existsSync(markerDir)) mkdirSync(markerDir, { recursive: true });
-          appendFileSync(join(markerDir, `${sid}.jsonl`), JSON.stringify({ sentAtMs, messageId }) + '\n');
+          appendFileSync(
+            join(markerDir, `${sid}.jsonl`),
+            JSON.stringify({ sentAtMs, messageId, turnId: currentTurnId }) + '\n',
+          );
         } catch { /* best-effort：漏记只多一条兜底，不致命 */ }
       }
       console.error(`✓ 已发送语音 ${messageId} ｜ ${Math.round(out.durationMs / 1000)}s`);
@@ -6688,7 +6691,15 @@ async function cmdSend(rest: string[]): Promise<void> {
       try {
         const markerDir = join(resolveDataDir(), 'turn-sends');
         if (!existsSync(markerDir)) mkdirSync(markerDir, { recursive: true });
-        appendFileSync(join(markerDir, `${sid}.jsonl`), JSON.stringify({ sentAtMs: Date.now(), messageId: `doc:${docTarget.commentId}`, contentLength: content.length }) + '\n');
+        appendFileSync(
+          join(markerDir, `${sid}.jsonl`),
+          JSON.stringify({
+            sentAtMs: Date.now(),
+            messageId: `doc:${docTarget.commentId}`,
+            turnId: currentTurnId,
+            contentLength: content.length,
+          }) + '\n',
+        );
       } catch { /* best-effort：漏记只多一条兜底 */ }
       // 清理已消费的 per-turn 落点，避免 session 文件无限堆积。
       if (s.docCommentTargets && currentTurnId && s.docCommentTargets[currentTurnId]) {
@@ -6893,7 +6904,11 @@ async function cmdSend(rest: string[]): Promise<void> {
     try {
       const markerDir = join(resolveDataDir(), 'turn-sends');
       if (!existsSync(markerDir)) mkdirSync(markerDir, { recursive: true });
-      const marker: Record<string, unknown> = { sentAtMs, messageId };
+      const marker: Record<string, unknown> = {
+        sentAtMs,
+        messageId,
+        turnId: currentTurnId,
+      };
       Object.assign(marker, buildBridgeSendMarkerContent(sentContent));
       const line = JSON.stringify(marker) + '\n';
       appendFileSync(join(markerDir, `${sid}.jsonl`), line);

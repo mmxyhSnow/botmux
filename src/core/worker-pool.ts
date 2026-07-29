@@ -115,6 +115,11 @@ import {
 } from './session-title.js';
 import { acknowledgeSessionReady } from './session-ready-handshake.js';
 import { recordDispatchInputCommit } from './dispatch.js';
+import {
+  stableTurnDeliveryUuid,
+  type TurnDeliveryId,
+  type TurnDeliveryLedger,
+} from '../services/turn-delivery-ledger.js';
 
 type WindowsForkOptions = ForkOptions & { windowsHide?: boolean };
 
@@ -176,6 +181,8 @@ export interface WorkerPoolCallbacks {
     turnId?: string,
     opts?: WorkerSessionReplyOptions,
   ) => Promise<string>;
+  /** 普通可见轮次的持久化交付账本；测试和旧嵌入方可不提供。 */
+  turnDeliveryLedger?: TurnDeliveryLedger;
   getSessionWorkingDir: (ds?: DaemonSession) => string;
   getActiveCount: () => number;
   /** Close a stale session (message withdrawn, etc.) */
@@ -242,6 +249,39 @@ export function initWorkerPool(cb: WorkerPoolCallbacks): void {
 function requireCallbacks(): WorkerPoolCallbacks {
   if (!callbacks) throw new Error('WorkerPool not initialised — call initWorkerPool() first');
   return callbacks;
+}
+
+/** 在普通飞书工作轮次被接受时先落账；专用接收器和不可见入口不会进入恢复集合。 */
+export function recordAcceptedTurnDelivery(
+  ds: DaemonSession,
+  triggerMessageId: string,
+  prompt?: string,
+  turnId?: string,
+): void {
+  const ledger = callbacks?.turnDeliveryLedger;
+  if (!ledger || ds.session.vcMeetingReceiver) return;
+  const deliveryTurnId = turnId ?? triggerMessageId;
+  const ordinaryVisibleTurn = triggerMessageId.startsWith('om_')
+    && deliveryTurnId.startsWith('om_')
+    && !ds.docCommentTurns?.has(deliveryTurnId)
+    && !ds.silentScheduledTurns?.has(deliveryTurnId)
+    && !ds.suppressedTriggerFinalTurns?.has(deliveryTurnId)
+    && !ds.pendingWaitPromises?.has(deliveryTurnId)
+    && !ds.asyncTriggerResults?.has(deliveryTurnId);
+  if (!ordinaryVisibleTurn) return;
+  const promptSummary = (prompt ?? ds.lastUserPrompt ?? ds.session.title)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+  ledger.recordAccepted({
+    id: turnDeliveryId(ds, deliveryTurnId, 0),
+    anchor: sessionAnchorId(ds),
+    chatId: ds.chatId,
+    scope: ds.scope,
+    cliId: ds.session.cliId ?? getBot(ds.larkAppId).config.cliId,
+    acceptedAtMs: Date.now(),
+    promptSummary,
+  });
 }
 
 function codexAppProgressEnabled(ds: DaemonSession): boolean {
@@ -3821,7 +3861,15 @@ function setupWorkerHandlers(
       }
 
       case 'codex_app_turn_started': {
-        if (ds.worker !== worker || !codexAppProgressEnabled(ds)) break;
+        if (ds.worker !== worker) break;
+        const deliveryId = turnDeliveryId(ds, msg.turnId, 0);
+        if (cb.turnDeliveryLedger?.get(deliveryId)) {
+          cb.turnDeliveryLedger.recordRunning(deliveryId, {
+            atMs: Date.now(),
+            nativeTurnId: msg.nativeTurnId,
+          });
+        }
+        if (!codexAppProgressEnabled(ds)) break;
         try {
           await codexAppProgressCardFor(ds).turnStarted(msg.turnId);
         } catch (error) {
@@ -4146,6 +4194,19 @@ function setupWorkerHandlers(
 
 const FINAL_OUTPUT_RETRY_BACKOFF_MS = [0, 5000, 15000];  // immediate, +5s, +15s
 
+function turnDeliveryId(
+  ds: DaemonSession,
+  turnId: string,
+  dispatchAttempt: number | undefined,
+): TurnDeliveryId {
+  return {
+    larkAppId: ds.larkAppId,
+    sessionId: ds.session.sessionId,
+    turnId,
+    dispatchAttempt: dispatchAttempt ?? 0,
+  };
+}
+
 function finalOutputDedupeKey(ds: DaemonSession, msg: Extract<WorkerToDaemon, { type: 'final_output' }>): string {
   return `${msg.sessionId ?? ds.session.sessionId}:${msg.lastUuid || msg.turnId}`;
 }
@@ -4318,6 +4379,38 @@ function deliverFinalOutput(
         ds.lastBridgeEmittedUuid = finalOutputDedupeKey(ds, msg);
         logger.info(`[${t}] doc-comment final_output → posted ${chunks.length} comment(s) on file=${docTurn.fileToken.slice(0, 12)} (turn ${msg.turnId.substring(0, 8)})`);
         return;
+      }
+
+      // 只有在入站阶段登记过的普通可见轮次才进入交付账本；HTTP、文档评论、
+      // 静默调度和会议接收器都没有 accepted 记录，因此不会被恢复器误补发。
+      const deliveryId = turnDeliveryId(ds, msg.turnId, msg.dispatchAttempt);
+      const deliveryLedger = cb.turnDeliveryLedger;
+      const trackedDelivery = deliveryLedger?.get(deliveryId);
+      const deliveryUuid = trackedDelivery
+        ? stableTurnDeliveryUuid(deliveryId)
+        : undefined;
+      if (trackedDelivery && deliveryLedger) {
+        deliveryLedger.recordFinal(deliveryId, {
+          content: msg.content,
+          outcome: 'completed',
+          observedAtMs: Date.now(),
+        });
+        if (msg.alreadyDeliveredMessageId) {
+          deliveryLedger.recordDelivered(deliveryId, {
+            messageId: msg.alreadyDeliveredMessageId,
+            deliveredAtMs: Date.now(),
+          });
+          ds.lastBridgeEmittedUuid = finalOutputDedupeKey(ds, msg);
+          logger.info(
+            `[${t}] Bridge final_output adopted explicit delivery `
+            + `(turn ${msg.turnId.substring(0, 8)}, message ${msg.alreadyDeliveredMessageId.substring(0, 12)})`,
+          );
+          return;
+        }
+        deliveryLedger.recordDeliveryPending(deliveryId, {
+          uuid: deliveryUuid!,
+          atMs: Date.now(),
+        });
       }
 
       // Wrap the model's reply in the same card chrome `botmux send` uses
@@ -4558,11 +4651,19 @@ function deliverFinalOutput(
                   }
                 : {}),
             }
-          : undefined,
+          : deliveryUuid
+            ? { uuid: deliveryUuid }
+            : undefined,
       );
       recordPrimaryOutput(messageId);
       if (preparedListenerReply?.kind === 'send' || preparedListenerReply?.kind === 'succeeded') {
         finishVcMeetingImReply(config.session.dataDir, preparedListenerReply.ref, messageId);
+      }
+      if (trackedDelivery && deliveryLedger) {
+        deliveryLedger.recordDelivered(deliveryId, {
+          messageId,
+          deliveredAtMs: Date.now(),
+        });
       }
       ds.lastBridgeEmittedUuid = finalOutputDedupeKey(ds, msg);
       logger.info(`[${t}] Bridge final_output forwarded (turn ${msg.turnId.substring(0, 8)}, ${msg.content.length} chars, kind=${msg.kind ?? 'bridge'}, attempt ${attempt + 1})`);

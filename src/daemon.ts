@@ -77,6 +77,7 @@ import { migrateSharedSchedulesAtStartup } from './services/schedule-split-migra
 import * as messageQueue from './services/message-queue.js';
 import { emitHookEvent, emitHookEventLocal, HOOK_EVENTS, type HookEvent } from './services/hook-runner.js';
 import { setSessionLifecycleShutdown } from './services/session-lifecycle-hooks.js';
+import { TurnDeliveryLedger } from './services/turn-delivery-ledger.js';
 import { createImgNumberer, parseEventMessage, resolveNonsupportMessage, stripLeadingMentions, type MessageResource } from './im/lark/message-parser.js';
 import { expandMergeForward } from './im/lark/merge-forward.js';
 import { bindResourcesToMessage, composeForwardFollowupContent, mergeMessageMentions } from './im/lark/forward-followup-content.js';
@@ -125,6 +126,7 @@ import {
   findActiveBySessionId,
   getDaemonBootId,
   beginCodexAppProgressTurn,
+  recordAcceptedTurnDelivery,
   type WorkerSessionReplyOptions,
 } from './core/worker-pool.js';
 import { AbortDeadlineError, hasExactSafeJsonKeys, ipcRoute, isTrustedHostIpcRequest, JsonBodyTooLargeError, jsonRes, readJsonBody, runWithAbortDeadline, setBotName, setLarkAppId, startIpcServer, setBotRenamer, setBotAvatarChanger } from './core/dashboard-ipc-server.js';
@@ -500,6 +502,7 @@ import {
 // ─── State ───────────────────────────────────────────────────────────────────
 
 const activeSessions = new Map<string, DaemonSession>();
+const turnDeliveryLedger = new TurnDeliveryLedger(config.session.dataDir);
 const VC_MEETING_DELIVERY_LEASE_MS = 15 * 60_000;
 const VC_MEETING_DELIVERY_LEASE_SCAN_MS = 60_000;
 const VC_MEETING_RUNTIME_EXPIRY_ACK_TIMEOUT_MS = 3_000;
@@ -2637,6 +2640,7 @@ export async function noteTurnReceived(
   // each get their own ✋. `finishTurnReactions` flips every pending ✋ to ✅ when
   // the worker next goes idle.
   if (ds.session.vcMeetingReceiver) return;
+  recordAcceptedTurnDelivery(ds, triggerMessageId, prompt, turnId);
   try {
     await beginCodexAppProgressTurn(ds, turnId ?? triggerMessageId, prompt);
   } catch (error) {
@@ -17421,6 +17425,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   // Initialise worker pool with daemon callbacks
   initWorkerPool({
     sessionReply,
+    turnDeliveryLedger,
     getSessionWorkingDir,
     getActiveCount,
     closeSession(ds: DaemonSession) {
