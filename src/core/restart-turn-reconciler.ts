@@ -6,7 +6,6 @@
  */
 import {
   closeSync,
-  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -111,11 +110,17 @@ function reliableFinal(
   dataDir: string,
   record: TurnDeliveryRecord,
 ): ReliableFinal | undefined {
-  if (record.final) return record.final;
-  if (record.cliId !== 'codex-app') return undefined;
-  const marker = readCodexAppFinalOutbox(dataDir, record.id.sessionId).find(candidate =>
-    candidate.replyTurnId === record.id.turnId
-    && (!record.nativeTurnId || candidate.appTurnId === record.nativeTurnId));
+  const marker = record.cliId === 'codex-app'
+    ? readCodexAppFinalOutbox(dataDir, record.id.sessionId).find(candidate =>
+        candidate.replyTurnId === record.id.turnId
+        && (!record.nativeTurnId || candidate.appTurnId === record.nativeTurnId))
+    : undefined;
+  if (record.final) {
+    return {
+      ...record.final,
+      ...(marker?.content === record.final.content ? { appTurnId: marker.appTurnId } : {}),
+    };
+  }
   if (!marker) return undefined;
   return {
     content: marker.content,

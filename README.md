@@ -49,6 +49,7 @@ botmux start                 # 启动 daemon（botmux autostart enable 设开机
 ## 核心场景
 
 - **[实时流式卡片](https://deepcoldy.github.io/botmux/cards)** — 每轮对话一张实时刷新的卡片，终端画面原样截图回传；一键显示/隐藏输出、翻屏、重启/关闭/接管会话。
+- **重启后结论补偿** — Daemon 重启后扫描持久化交付账本：仍在运行的任务继续跟踪，已产出但尚未投递的最终结论使用稳定飞书 UUID 补发到原线程；无法确认终态时明确报告“状态未确认”，不会静默结束或自动重放外部操作。
 - **[多机器人协作](https://deepcoldy.github.io/botmux/multi-bot)** — 同群多 bot @mention 路由，不同 CLI 背后不同模型，天然多样性；方案评审 / 代码 review / 技术选型让它们互相挑刺。
 - **[多话题并行编排](https://deepcoldy.github.io/botmux/multi-topic)** — 给编排者一个大任务，它自动在群里种话题、拉各 bot 起独立会话跑流水线，飞书任务面板一眼看完所有子任务进度。
 - **[可交互 Web 终端](https://deepcoldy.github.io/botmux/web-terminal)** — 不只是看输出，浏览器 / 手机直接操作 CLI，移动端带悬浮快捷键栏（Esc、Ctrl+C、方向键）。
