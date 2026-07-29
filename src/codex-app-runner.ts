@@ -20,6 +20,7 @@ import {
   decodeCodexAppRunnerInput,
   type CodexAppRunnerInput,
 } from './services/codex-app-runner-protocol.js';
+import { emitCodexAppFinalWithOutbox } from './services/codex-app-final-outbox.js';
 
 type JsonObject = Record<string, any>;
 
@@ -441,7 +442,25 @@ controller = new CodexAppTurnController({
   onDiagnostic: writeLine,
   onLifecycle: event => emitMarker('lifecycle', event),
   onFinal: marker => {
-    emitMarker('final', marker);
+    const dataDir = process.env.SESSION_DATA_DIR;
+    if (!dataDir) {
+      output.error('[codex-app] final outbox write failed: SESSION_DATA_DIR is missing\n');
+      return;
+    }
+    try {
+      emitCodexAppFinalWithOutbox(
+        dataDir,
+        args.sessionId,
+        marker,
+        persisted => emitMarker('final', persisted),
+      );
+    } catch (error) {
+      output.error(
+        `[codex-app] final outbox write failed: `
+        + `${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      return;
+    }
     writeLine();
   },
   onPrompt: prompt,
