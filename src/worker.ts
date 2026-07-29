@@ -5030,6 +5030,7 @@ function handleCodexAppMarker(body: string): void {
             content: marker.content,
             lastUuid: identity.lastUuid,
             turnId: identity.turnId,
+            nativeTurnId: marker.appTurnId,
             ...(dispatchAttempt !== undefined ? { dispatchAttempt } : {}),
             alreadyDeliveredMessageId: coveringMarker.messageId,
           });
@@ -5042,6 +5043,7 @@ function handleCodexAppMarker(body: string): void {
         content: marker.content,
         lastUuid: identity.lastUuid,
         turnId: identity.turnId,
+        nativeTurnId: marker.appTurnId,
         ...(dispatchAttempt !== undefined ? { dispatchAttempt } : {}),
       });
       emitTurnTerminal(identity.turnId, terminalStatus, undefined, dispatchAttempt);
@@ -5099,6 +5101,7 @@ function handleCodexAppMarker(body: string): void {
             content: marker.content,
             lastUuid: turnId,
             turnId,
+            ...(nativeTurnId ? { nativeTurnId } : {}),
             ...(dispatchAttempt !== undefined ? { dispatchAttempt } : {}),
             alreadyDeliveredMessageId: coveringMarker.messageId,
           });
@@ -5112,6 +5115,7 @@ function handleCodexAppMarker(body: string): void {
       content: marker.content,
       lastUuid: turnId,
       turnId,
+      ...(nativeTurnId ? { nativeTurnId } : {}),
       ...(dispatchAttempt !== undefined ? { dispatchAttempt } : {}),
     });
     emitTurnTerminal(turnId, terminalStatus, undefined, dispatchAttempt);

@@ -120,6 +120,7 @@ import {
   type TurnDeliveryId,
   type TurnDeliveryLedger,
 } from '../services/turn-delivery-ledger.js';
+import { ackCodexAppFinalOutbox } from '../services/codex-app-final-outbox.js';
 
 type WindowsForkOptions = ForkOptions & { windowsHide?: boolean };
 
@@ -4390,6 +4391,12 @@ function deliverFinalOutput(
         ? stableTurnDeliveryUuid(deliveryId)
         : undefined;
       if (trackedDelivery && deliveryLedger) {
+        if (msg.nativeTurnId && !trackedDelivery.nativeTurnId) {
+          deliveryLedger.recordRunning(deliveryId, {
+            atMs: Date.now(),
+            nativeTurnId: msg.nativeTurnId,
+          });
+        }
         deliveryLedger.recordFinal(deliveryId, {
           content: msg.content,
           outcome: 'completed',
@@ -4400,6 +4407,13 @@ function deliverFinalOutput(
             messageId: msg.alreadyDeliveredMessageId,
             deliveredAtMs: Date.now(),
           });
+          if (msg.nativeTurnId) {
+            ackCodexAppFinalOutbox(
+              config.session.dataDir,
+              ds.session.sessionId,
+              msg.nativeTurnId,
+            );
+          }
           ds.lastBridgeEmittedUuid = finalOutputDedupeKey(ds, msg);
           logger.info(
             `[${t}] Bridge final_output adopted explicit delivery `
@@ -4664,6 +4678,14 @@ function deliverFinalOutput(
           messageId,
           deliveredAtMs: Date.now(),
         });
+        const nativeTurnId = msg.nativeTurnId ?? trackedDelivery.nativeTurnId;
+        if (nativeTurnId) {
+          ackCodexAppFinalOutbox(
+            config.session.dataDir,
+            ds.session.sessionId,
+            nativeTurnId,
+          );
+        }
       }
       ds.lastBridgeEmittedUuid = finalOutputDedupeKey(ds, msg);
       logger.info(`[${t}] Bridge final_output forwarded (turn ${msg.turnId.substring(0, 8)}, ${msg.content.length} chars, kind=${msg.kind ?? 'bridge'}, attempt ${attempt + 1})`);

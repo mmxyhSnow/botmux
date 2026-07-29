@@ -1107,6 +1107,8 @@ export const messages: Record<string, string> = {
   'restart.changelog_label': '更新内容：',
   'restart.changelog_link_fallback': '详情：{url}',
   'restart.card_title': 'botmux 维护通知',
+  'restart.turn_received': '任务已被接收',
+  'restart.turn_unconfirmed': 'Botmux 重启后已追溯此任务，但没有找到可靠的最终结论。\n已确认进度：{progress}\n当前结论：任务状态未确认，未自动重放任何操作。\n请继续在本线程补充要求，我会从现有状态继续处理。',
 
   // Host-side CLI runtime update monitor
   'cli_update.card_title': '{cli} 有新版本',

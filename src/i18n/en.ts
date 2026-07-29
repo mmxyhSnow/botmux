@@ -1104,6 +1104,8 @@ export const messages: Record<string, string> = {
   'restart.changelog_label': 'What’s new:',
   'restart.changelog_link_fallback': 'Details: {url}',
   'restart.card_title': 'botmux maintenance notice',
+  'restart.turn_received': 'The task was accepted',
+  'restart.turn_unconfirmed': 'Botmux traced this task after restarting but found no reliable final result.\nConfirmed progress: {progress}\nCurrent conclusion: the task status is unconfirmed, and no operation was replayed automatically.\nContinue in this thread and I will work from the existing state.',
 
   // Host-side CLI runtime update monitor
   'cli_update.card_title': 'New {cli} version available',

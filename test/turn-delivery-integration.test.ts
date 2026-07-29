@@ -72,6 +72,10 @@ import {
   stableTurnDeliveryUuid,
   type TurnDeliveryId,
 } from '../src/services/turn-delivery-ledger.js';
+import {
+  appendCodexAppFinalOutbox,
+  readCodexAppFinalOutbox,
+} from '../src/services/codex-app-final-outbox.js';
 
 const dataDir = '/tmp/test-turn-delivery-integration';
 
@@ -166,6 +170,12 @@ describe('普通轮次最终交付账本接入', () => {
       dispatchAttempt: 0,
     };
     accept(ledger, id);
+    appendCodexAppFinalOutbox(dataDir, 'sid-final-out', {
+      appTurnId: 'app-turn-1',
+      replyTurnId: 'om_turn',
+      content: '最终结论',
+      outcome: 'completed',
+    });
     const sessionReply = vi.fn(async () => 'om_reply');
     initWorkerPool({
       sessionReply,
@@ -180,6 +190,7 @@ describe('普通轮次最终交付账本接入', () => {
       content: '最终结论',
       lastUuid: 'native-final',
       turnId: 'om_turn',
+      nativeTurnId: 'app-turn-1',
     }, 'tag', 0);
     await vi.advanceTimersByTimeAsync(10);
 
@@ -192,6 +203,7 @@ describe('普通轮次最终交付账本接入', () => {
       expect.objectContaining({ uuid: stableTurnDeliveryUuid(id) }),
     );
     expect(ledger.get(id)).toEqual(expect.objectContaining({
+      nativeTurnId: 'app-turn-1',
       final: expect.objectContaining({ content: '最终结论' }),
       delivery: expect.objectContaining({
         state: 'delivered',
@@ -199,6 +211,7 @@ describe('普通轮次最终交付账本接入', () => {
         messageId: 'om_reply',
       }),
     }));
+    expect(readCodexAppFinalOutbox(dataDir, 'sid-final-out')).toEqual([]);
   });
 
   it('显式发送已覆盖最终结论时不再发第二条消息，只登记已有回执', async () => {

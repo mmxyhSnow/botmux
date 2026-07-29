@@ -744,6 +744,8 @@ export type WorkerToDaemon =
       content: string;
       lastUuid: string;
       turnId: string;
+      /** 产生该结论的 CLI 原生 turn id，用于 ACK 持久化 outbox。 */
+      nativeTurnId?: string;
       /** 模型已通过显式 send 投递同一最终结论时的飞书回执。Daemon 只落账，
        * 不再创建第二条消息。 */
       alreadyDeliveredMessageId?: string;

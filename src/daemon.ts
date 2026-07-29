@@ -42,6 +42,7 @@ import {
   stopCliRuntimeUpdateMonitor,
 } from './core/cli-runtime-update.js';
 import { sendRestartReportIfPending } from './core/restart-report.js';
+import { reconcileOutstandingTurns } from './core/restart-turn-reconciler.js';
 import { statSync } from 'node:fs';
 import { addReaction, getChatMode, getChatNameAndMode, getMessageChatId, listChatMemberOpenIds, MessageWithdrawnError, replyMessage, resolveAllowedUsersWithMap, sendMessage, sendUserMessage, updateMessage, type EntryResolveStatus } from './im/lark/client.js';
 import { resolveGroupJoinPrompt, waitForAllowedUserInChat } from './core/auto-start.js';
@@ -17790,6 +17791,47 @@ export async function startDaemon(botIndex?: number): Promise<void> {
 
   // Restore active sessions from previous run
   await restoreActiveSessions(activeSessions);
+
+  const runRestartTurnReconcile = async (reportUnconfirmed: boolean): Promise<void> => {
+    const summary = await reconcileOutstandingTurns({
+      dataDir: config.session.dataDir,
+      larkAppId: cfg.larkAppId,
+      ledger: turnDeliveryLedger,
+      sessions: activeSessions.values(),
+      reportUnconfirmed,
+      lookupSessionStatus: sessionId => sessionStore.getSession(sessionId)?.status,
+      formatUnconfirmed: record => tr('restart.turn_unconfirmed', {
+        progress: record.promptSummary
+          || tr('restart.turn_received', undefined, localeForBot(cfg.larkAppId)),
+      }, localeForBot(cfg.larkAppId)),
+      send: (record, content, uuid) => sessionReply(
+        record.anchor,
+        content,
+        'text',
+        record.id.larkAppId,
+        record.id.turnId,
+        { uuid },
+      ),
+      log: message => logger.warn(`[turn-reconcile:${cfg.larkAppId}] ${message}`),
+    });
+    if (summary.scanned > 0) {
+      logger.info(
+        `[turn-reconcile:${cfg.larkAppId}] scanned=${summary.scanned} `
+        + `delivered=${summary.delivered} following=${summary.following} `
+        + `unconfirmed=${summary.unconfirmed} deferred=${summary.deferred} `
+        + `skipped=${summary.skipped} failed=${summary.failed}`,
+      );
+    }
+  };
+  await runRestartTurnReconcile(false);
+  setTimeout(() => {
+    void runRestartTurnReconcile(true).catch(error => {
+      logger.error(
+        `[turn-reconcile:${cfg.larkAppId}] delayed scan failed: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }, 5_000).unref?.();
 
   // Now that activeSessions is populated, release the forward-followup flush
   // barrier. Persisted seeds were loaded into the buffer at dispatcher startup
