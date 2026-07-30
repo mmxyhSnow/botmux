@@ -23,6 +23,7 @@ import {
 
 const sentCards: Array<{ messageId: string; card: Record<string, any> }> = [];
 const updatedCards: Array<{ messageId: string; card: Record<string, any> }> = [];
+const askNotices: string[] = [];
 let activeDispatcher: any;
 
 function question(prompt: string, yes: string, no: string): AskQuestion {
@@ -50,6 +51,7 @@ async function selectCurrent(
   prompt: string,
   selected: string,
   other: string,
+  approvers?: string[],
 ): Promise<string> {
   const result = registerAsk({
     larkAppId: 'cli_ask',
@@ -59,6 +61,7 @@ async function selectCurrent(
     questions: [question(prompt, selected, other)],
     timeoutMs: 10_000,
     flowId,
+    ...(approvers?.length ? { approvers } : {}),
   } as any);
   await flushDispatch();
   const action = latestCard().elements
@@ -84,10 +87,15 @@ async function selectCurrent(
 beforeEach(() => {
   sentCards.length = 0;
   updatedCards.length = 0;
+  askNotices.length = 0;
   _resetForTest();
   setCanTalkChecker((_app, _chat, openId) => openId === 'ou_owner');
   activeDispatcher = createLarkAskCardDispatcher({
-    async replyMessage(_appId, _rootId, content) {
+    async replyMessage(_appId, _rootId, content, msgType) {
+      if (msgType === 'text') {
+        askNotices.push(content);
+        return `om_notice_${askNotices.length}`;
+      }
       const messageId = `om_card_${sentCards.length + 1}`;
       sentCards.push({ messageId, card: JSON.parse(content) });
       return messageId;
@@ -104,6 +112,35 @@ afterEach(() => {
 });
 
 describe('Codex 连续提问卡片', () => {
+  it('同一 flow 每新增一问都会另发一条 @ 提问对象的通知', async () => {
+    await selectCurrent(
+      'turn-notify-each-question',
+      '第一问：是否开始？',
+      '开始',
+      '暂停',
+      ['ou_owner'],
+    );
+
+    const second = registerAsk({
+      larkAppId: 'cli_ask',
+      chatId: 'oc_chat',
+      rootMessageId: 'om_root',
+      sessionId: 'sess-1',
+      questions: [question('第二问：采用哪种方案？', '方案 A', '方案 B')],
+      timeoutMs: 10_000,
+      flowId: 'turn-notify-each-question',
+      approvers: ['ou_owner'],
+    });
+    await flushDispatch();
+
+    expect(askNotices).toHaveLength(2);
+    for (const notice of askNotices) {
+      expect(notice).toContain('<at user_id="ou_owner"></at>');
+      expect(notice).toContain('ASK');
+    }
+    void second;
+  });
+
   it('锁定本轮提问对象时，在连续提问卡片中直接 @ 对方', async () => {
     registerAsk({
       larkAppId: 'cli_ask',

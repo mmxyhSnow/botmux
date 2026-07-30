@@ -19,6 +19,7 @@ import {
   buildPreviousAskFlowSegmentCard,
 } from './ask-card-flow.js';
 import { buildAskAnswerableContent } from './ask-card-meta.js';
+import { notifyAskApprovers } from './ask-card-notification.js';
 
 /** 旧单选即答动作（保留兼容旧卡片回调；Task 5 新增 ask_submit 路径）。 */
 export const ASK_SELECT_ACTION = 'ask_select';
@@ -72,19 +73,25 @@ export function createLarkAskCardDispatcher(
           }`);
         }
       }
-      if (ask.flow?.cardMessageId) {
-        await update(ask.larkAppId, ask.flow.cardMessageId, cardJson);
-        return { messageId: ask.flow.cardMessageId };
-      }
       // botmux 把 chat-scope session 的 routing anchor 也叫 rootMessageId,
       // 但在 chat-scope 下它实际是 chat_id (oc_...) 而非 message_id (om_...).
       // 飞书 /messages/{id}/reply 只接受 om_ — 用 oc_ 会 400 invalid message_id.
       // 所以这里要按前缀判断是否真的能 reply.
-      const canReplyToRoot =
-        typeof ask.rootMessageId === 'string' && ask.rootMessageId.startsWith('om_');
-      const messageId = canReplyToRoot
-        ? await reply(ask.larkAppId, ask.rootMessageId!, cardJson, 'interactive', true)
-        : await send(ask.larkAppId, ask.chatId, cardJson, 'interactive');
+      const canReplyToRoot = typeof ask.rootMessageId === 'string'
+        && ask.rootMessageId.startsWith('om_');
+      let messageId: string;
+      if (ask.flow?.cardMessageId) {
+        await update(ask.larkAppId, ask.flow.cardMessageId, cardJson);
+        messageId = ask.flow.cardMessageId;
+      } else {
+        messageId = canReplyToRoot
+          ? await reply(ask.larkAppId, ask.rootMessageId!, cardJson, 'interactive', true)
+          : await send(ask.larkAppId, ask.chatId, cardJson, 'interactive');
+      }
+      // 普通 ASK 没有锁定对象，保持原有发卡时序，不引入无意义的异步等待。
+      if (ask.approvers?.length) {
+        await notifyAskApprovers(ask, { canReplyToRoot, reply, send });
+      }
       return { messageId };
     },
     async onSettle(ask, result) {

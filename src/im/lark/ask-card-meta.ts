@@ -23,3 +23,20 @@ export function buildAskAnswerableContent(
   const label = t('card.ask.answerable_turn_callers', undefined, locale);
   return mentions.length > 0 ? `${label}：${mentions.join(' ')}` : label;
 }
+
+/**
+ * 构造每次新问题发出后的独立提醒消息。
+ *
+ * 文本消息必须使用 `user_id` 形式的标签才能触发飞书通知；没有合法锁定对象时
+ * 不发送提醒，普通 ASK 仍保持原有的群成员可答语义。
+ */
+export function buildAskMentionNotice(
+  ask: PendingAsk,
+  locale: Locale,
+): string | undefined {
+  const mentions = ask.approvers
+    ?.filter(openId => LARK_OPEN_ID.test(openId))
+    .map(openId => `<at user_id="${openId}"></at>`) ?? [];
+  if (mentions.length === 0) return undefined;
+  return `${mentions.join(' ')} ${t('card.ask.new_question_notice', undefined, locale)}`;
+}
