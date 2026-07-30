@@ -12,6 +12,7 @@ import {
   appendCodexAppFinalOutbox,
   emitCodexAppFinalWithOutbox,
   readCodexAppFinalOutbox,
+  resolveTrustedCodexAppReplyTurnId,
 } from '../src/services/codex-app-final-outbox.js';
 
 describe('Codex App final outbox', () => {
@@ -98,5 +99,58 @@ describe('Codex App final outbox', () => {
     );
 
     expect(observed).toEqual(['app-turn-ordered']);
+  });
+
+  it('worker 重启丢失内存绑定后，从 durable outbox 恢复可信 reply turn', () => {
+    appendCodexAppFinalOutbox(dataDir, 'session-a', {
+      appTurnId: 'app-turn-restarted',
+      replyTurnId: 'om_restarted',
+      content: '重启后仍应记到原消息',
+      outcome: 'completed',
+    });
+
+    expect(resolveTrustedCodexAppReplyTurnId({
+      dataDir,
+      sessionId: 'session-a',
+      marker: {
+        appTurnId: 'app-turn-restarted',
+        replyTurnId: 'om_restarted',
+        content: '重启后仍应记到原消息',
+      },
+      submittedReplyTurnIds: new Set(),
+    })).toBe('om_restarted');
+
+    expect(resolveTrustedCodexAppReplyTurnId({
+      dataDir,
+      sessionId: 'session-a',
+      marker: {
+        appTurnId: 'app-turn-restarted',
+        replyTurnId: 'om_spoofed',
+        content: '重启后仍应记到原消息',
+      },
+      submittedReplyTurnIds: new Set(),
+    })).toBeUndefined();
+
+    expect(resolveTrustedCodexAppReplyTurnId({
+      dataDir,
+      sessionId: 'session-a',
+      marker: {
+        appTurnId: 'app-turn-other',
+        replyTurnId: 'om_restarted',
+        content: '重启后仍应记到原消息',
+      },
+      submittedReplyTurnIds: new Set(),
+    })).toBeUndefined();
+
+    expect(resolveTrustedCodexAppReplyTurnId({
+      dataDir,
+      sessionId: 'session-a',
+      marker: {
+        appTurnId: 'app-turn-restarted',
+        replyTurnId: 'om_restarted',
+        content: '被篡改的回复',
+      },
+      submittedReplyTurnIds: new Set(),
+    })).toBeUndefined();
   });
 });

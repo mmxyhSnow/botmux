@@ -261,6 +261,7 @@ import {
   normalizeCodexAppLifecycleEvent,
   projectAppRunnerFinalIds,
 } from './services/codex-app-runner-protocol.js';
+import { resolveTrustedCodexAppReplyTurnId } from './services/codex-app-final-outbox.js';
 import {
   hasMatchingManagedOriginCapability,
   managedOriginCapabilityPath,
@@ -4995,10 +4996,25 @@ function handleCodexAppMarker(body: string): void {
         ? 'cancelled'
         : 'completed';
     if (marker.appTurnId) {
-      const trustedReplyTurnId = marker.replyTurnId
-        && submittedCodexAppReplyTurnIds.has(marker.replyTurnId)
-        ? marker.replyTurnId
-        : undefined;
+      const submittedInCurrentWorker = marker.replyTurnId
+        ? submittedCodexAppReplyTurnIds.has(marker.replyTurnId)
+        : false;
+      const trustedReplyTurnId = resolveTrustedCodexAppReplyTurnId({
+        dataDir: process.env.SESSION_DATA_DIR,
+        sessionId,
+        marker: {
+          appTurnId: marker.appTurnId,
+          replyTurnId: marker.replyTurnId,
+          content: marker.content,
+        },
+        submittedReplyTurnIds: submittedCodexAppReplyTurnIds,
+      });
+      if (trustedReplyTurnId && !submittedInCurrentWorker) {
+        log(
+          `${cliName()} restored final reply route from durable outbox `
+          + `(replyTurn=${shortCorrelationId(trustedReplyTurnId)})`,
+        );
+      }
       if (marker.replyTurnId && !trustedReplyTurnId) {
         log(
           `${cliName()} ignored unsubmitted final reply route `

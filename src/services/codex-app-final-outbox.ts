@@ -135,6 +135,32 @@ export function readCodexAppFinalOutbox(
   return [...unique.values()];
 }
 
+/**
+ * 恢复 worker 重启前建立的 reply turn 路由。
+ *
+ * 活跃 worker 可直接信任本进程提交过的 reply turn；进程重启后内存集合为空，
+ * 此时只有与当前 session 的 durable outbox 完全匹配的 final 才能恢复路由，
+ * 避免任意 OSC marker 伪造其它消息的 reply turn。
+ */
+export function resolveTrustedCodexAppReplyTurnId(input: {
+  dataDir?: string;
+  sessionId?: string;
+  marker: Pick<CodexAppFinalOutboxEntry, 'appTurnId' | 'replyTurnId' | 'content'>;
+  submittedReplyTurnIds: ReadonlySet<string>;
+}): string | undefined {
+  const { replyTurnId } = input.marker;
+  if (!replyTurnId) return undefined;
+  if (input.submittedReplyTurnIds.has(replyTurnId)) return replyTurnId;
+  if (!input.dataDir || !input.sessionId) return undefined;
+  return readCodexAppFinalOutbox(input.dataDir, input.sessionId).some(entry => (
+    entry.appTurnId === input.marker.appTurnId
+    && entry.replyTurnId === replyTurnId
+    && entry.content === input.marker.content
+  ))
+    ? replyTurnId
+    : undefined;
+}
+
 export function ackCodexAppFinalOutbox(
   dataDir: string,
   sessionId: string,
