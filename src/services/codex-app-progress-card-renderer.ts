@@ -97,38 +97,58 @@ function completionMarkdown(state: CodexAppProgressCardSessionState): string {
   ].join('\n\n');
 }
 
-function viewActions(
+/** 使用 JSON 2.0 的分栏和 behaviors 渲染回调按钮，避免旧 action 容器被飞书拒绝。 */
+function viewActionColumns(
   state: CodexAppProgressCardSessionState,
   entryCount: number,
 ): Record<string, unknown> | undefined {
   if (!state.sessionId || entryCount === 0) return undefined;
-  const actions: Array<Record<string, unknown>> = [];
+  const columns: Array<Record<string, unknown>> = [];
   if (entryCount > DEFAULT_RECENT_ENTRIES) {
-    actions.push({
-      tag: 'button',
-      text: {
-        tag: 'plain_text',
-        content: state.detailsExpanded ? '收起进展' : '展开更多',
-      },
-      type: 'default',
-      value: {
-        action: 'codex_progress_toggle_details',
-        session_id: state.sessionId,
-        expanded: state.detailsExpanded ? '0' : '1',
-      },
+    columns.push({
+      tag: 'column',
+      width: 'auto',
+      elements: [{
+        tag: 'button',
+        text: {
+          tag: 'plain_text',
+          content: state.detailsExpanded ? '收起进展' : '展开更多',
+        },
+        type: 'default',
+        behaviors: [{
+          type: 'callback',
+          value: {
+            action: 'codex_progress_toggle_details',
+            session_id: state.sessionId,
+            expanded: state.detailsExpanded ? '0' : '1',
+          },
+        }],
+      }],
     });
   }
-  actions.push({
-    tag: 'button',
-    text: { tag: 'plain_text', content: '查看完整历史' },
-    type: 'default',
-    value: {
-      action: 'codex_progress_history_open',
-      session_id: state.sessionId,
-      page: '1',
-    },
+  columns.push({
+    tag: 'column',
+    width: 'auto',
+    elements: [{
+      tag: 'button',
+      text: { tag: 'plain_text', content: '查看完整历史' },
+      type: 'default',
+      behaviors: [{
+        type: 'callback',
+        value: {
+          action: 'codex_progress_history_open',
+          session_id: state.sessionId,
+          page: '1',
+        },
+      }],
+    }],
   });
-  return { tag: 'action', actions };
+  return {
+    tag: 'column_set',
+    flex_mode: 'flow',
+    horizontal_spacing: '8px',
+    columns,
+  };
 }
 
 /** 使用阶段看板渲染当前任务主卡；旧归档调用仍保持兼容。 */
@@ -167,7 +187,7 @@ export function renderCodexAppProgressCard(
         + recent.join('\n\n'),
       ));
     }
-    const actions = viewActions(state, history.length);
+    const actions = viewActionColumns(state, history.length);
     if (actions) elements.push(actions);
   }
   return JSON.stringify({
@@ -204,32 +224,51 @@ export function renderCodexAppProgressHistoryCard(
     markdown(history.slice(start, start + HISTORY_PAGE_SIZE).join('\n\n') || '暂无历史记录'),
   ];
   if (state.sessionId && totalPages > 1) {
-    const actions: Array<Record<string, unknown>> = [];
+    const columns: Array<Record<string, unknown>> = [];
     if (page > 1) {
-      actions.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: '上一页' },
-        type: 'default',
-        value: {
-          action: 'codex_progress_history_page',
-          session_id: state.sessionId,
-          page: String(page - 1),
-        },
+      columns.push({
+        tag: 'column',
+        width: 'auto',
+        elements: [{
+          tag: 'button',
+          text: { tag: 'plain_text', content: '上一页' },
+          type: 'default',
+          behaviors: [{
+            type: 'callback',
+            value: {
+              action: 'codex_progress_history_page',
+              session_id: state.sessionId,
+              page: String(page - 1),
+            },
+          }],
+        }],
       });
     }
     if (page < totalPages) {
-      actions.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: '下一页' },
-        type: 'primary',
-        value: {
-          action: 'codex_progress_history_page',
-          session_id: state.sessionId,
-          page: String(page + 1),
-        },
+      columns.push({
+        tag: 'column',
+        width: 'auto',
+        elements: [{
+          tag: 'button',
+          text: { tag: 'plain_text', content: '下一页' },
+          type: 'primary',
+          behaviors: [{
+            type: 'callback',
+            value: {
+              action: 'codex_progress_history_page',
+              session_id: state.sessionId,
+              page: String(page + 1),
+            },
+          }],
+        }],
       });
     }
-    elements.push({ tag: 'action', actions });
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'flow',
+      horizontal_spacing: '8px',
+      columns,
+    });
   }
   return JSON.stringify({
     schema: '2.0',
