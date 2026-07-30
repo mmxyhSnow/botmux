@@ -46,7 +46,19 @@ describe('buildRestartReportText', () => {
     expect(md).toContain('2.65.0');
     expect(md).toContain('3');
     expect(md).toContain('http://10.0.0.1:7891/?t=abc');
+    expect(md).toContain('维护原因：管理员手动重启服务');
     expect(md.toLowerCase()).not.toContain('changelog');
+  });
+
+  it('shows the concrete maintenance reason when the restart caller provides one', () => {
+    const md = buildRestartReportText({
+      kind: 'manual',
+      version: '3.7.1',
+      sessionCount: 36,
+      reason: '上线维护通知卡片的原因说明',
+    });
+    expect(md).toContain('维护原因：上线维护通知卡片的原因说明');
+    expect(md).not.toContain('维护原因：管理员手动重启服务');
   });
 
   it('adds a local ip:port fallback line when the dashboard link is a platform URL', () => {
@@ -84,6 +96,7 @@ describe('buildRestartReportText', () => {
     });
     expect(md).toContain('2.64.0');
     expect(md).toContain('2.65.0');
+    expect(md).toContain('维护原因：已安装新版本，重启以应用更新');
     expect(md).toContain('修复了 X');
     expect(md).toContain('新增 Y');
   });
@@ -110,6 +123,7 @@ describe('buildRestartReportText', () => {
       changelog: 'must not be shown',
     });
     expect(md).toContain('已回退并重启');
+    expect(md).toContain('维护原因：已回退版本，重启以应用目标版本');
     expect(md).toContain('3.1.0');
     expect(md).toContain('3.0.0');
     expect(md).not.toContain('must not be shown');
@@ -143,7 +157,11 @@ describe('sendRestartReportIfPending', () => {
   }
 
   it('consumes a fresh intent and DMs the owner a card with the session count + dashboard link', async () => {
-    writeRestartIntentTo(dir, { kind: 'manual', at: new Date(T0).toISOString() });
+    writeRestartIntentTo(dir, {
+      kind: 'manual',
+      reason: '部署维护通知卡片增强',
+      at: new Date(T0).toISOString(),
+    });
     writeFileSync(join(dir, 'sessions-cli_primary.json'), JSON.stringify({ s1: { status: 'active' }, s2: { status: 'active' } }));
     const { w, sent } = fakeWiring();
 
@@ -152,6 +170,7 @@ describe('sendRestartReportIfPending', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0].openId).toBe('ou_owner');
     expect(sent[0].card).toContain('http://10.0.0.1:7891/?t=tok');
+    expect(sent[0].card).toContain('部署维护通知卡片增强');
     expect(sent[0].card).toContain('2'); // two active sessions
     expect(existsSync(restartIntentPathIn(dir))).toBe(false); // consumed
   });

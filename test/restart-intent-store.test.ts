@@ -11,6 +11,7 @@ import {
   clearRestartLeaseTo,
   hasActiveRestartLeaseTo,
   writeManualIntentIfAbsentTo,
+  normalizeRestartReason,
   restartIntentPathIn,
 } from '../src/services/restart-intent-store.js';
 
@@ -77,8 +78,17 @@ describe('restart-intent store', () => {
   });
 
   it('writeManualIntentIfAbsent writes a manual intent when none exists', () => {
-    writeManualIntentIfAbsentTo(dir, T0, iso(T0));
-    expect(consumeRestartIntentTo(dir, T0 + 1_000)).toMatchObject({ kind: 'manual' });
+    writeManualIntentIfAbsentTo(dir, T0, iso(T0), '  发布维护通知卡片\n增强  ');
+    expect(consumeRestartIntentTo(dir, T0 + 1_000)).toMatchObject({
+      kind: 'manual',
+      reason: '发布维护通知卡片 增强',
+    });
+  });
+
+  it('normalizes and limits a caller-provided maintenance reason', () => {
+    expect(normalizeRestartReason('  修复\n卡片  ')).toBe('修复 卡片');
+    expect(normalizeRestartReason('   ')).toBeUndefined();
+    expect(normalizeRestartReason('x'.repeat(250))).toHaveLength(200);
   });
 
   it('writeManualIntentIfAbsent does NOT clobber an existing fresh richer intent', () => {

@@ -10,7 +10,7 @@ import { githubAuthHeaders, type GithubAuthResolveOptions } from './github-auth.
 import type { RestartKind } from '../services/restart-intent-store.js';
 import { consumeRestartIntent } from '../services/restart-intent-store.js';
 import { countActiveSessionsOnDisk } from '../services/session-store.js';
-import { botmuxVersion } from '../utils/install-info.js';
+import { resolveCurrentVersion } from '../utils/install-diagnostics.js';
 import { t, localeForBot, type Locale } from '../i18n/index.js';
 
 export const GITHUB_REPO = 'deepcoldy/botmux';
@@ -29,6 +29,8 @@ export interface RestartReportInput {
   /** Version delta for update/rollback; changelog is update-only. */
   oldVersion?: string;
   newVersion?: string;
+  /** 发起维护时记录的具体原因。 */
+  reason?: string;
   changelog?: string;
 }
 
@@ -44,6 +46,9 @@ export function buildRestartReportText(input: RestartReportInput, locale?: Local
     : input.kind === 'rollback'
       ? t('restart.rolled_back_restarted', undefined, locale)
       : t('restart.restarted', undefined, locale));
+
+  const reason = input.reason?.trim() || t(`restart.reason_${input.kind}`, undefined, locale);
+  lines.push(t('restart.reason', { reason }, locale));
 
   if (input.kind !== 'manual' && input.oldVersion && input.newVersion) {
     lines.push(t('restart.version_delta', { old: vtag(input.oldVersion), new: vtag(input.newVersion) }, locale));
@@ -109,7 +114,7 @@ export async function sendRestartReportIfPending(w: RestartReportWiring): Promis
 
   const locale = localeForBot(w.primaryLarkAppId);
   const sessionCount = countActiveSessionsOnDisk();
-  const version = botmuxVersion();
+  const version = resolveCurrentVersion();
   let changelog: string | undefined;
   if (intent.kind === 'update' && intent.newVersion) {
     changelog = (await fetchChangelog(intent.newVersion, { auth: w.githubAuth }))
@@ -123,6 +128,7 @@ export async function sendRestartReportIfPending(w: RestartReportWiring): Promis
     dashboardLocalUrl: w.dashboardLocalUrl,
     oldVersion: intent.oldVersion,
     newVersion: intent.newVersion,
+    reason: intent.reason,
     changelog,
   }, locale);
   try {

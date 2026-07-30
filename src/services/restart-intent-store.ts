@@ -22,6 +22,8 @@ export interface RestartIntent {
   /** Present for an update or rollback: the version delta to report. */
   oldVersion?: string;
   newVersion?: string;
+  /** 发起方提供的具体维护原因；缺省时由卡片按 kind 给出可理解的原因。 */
+  reason?: string;
   /** ISO 8601 timestamp the breadcrumb was written. */
   at: string;
 }
@@ -43,8 +45,16 @@ export function writeRestartIntentTo(dir: string, intent: RestartIntent): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const path = restartIntentPathIn(dir);
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(intent, null, 2) + '\n');
+  const reason = normalizeRestartReason(intent.reason);
+  writeFileSync(tmp, JSON.stringify({ ...intent, reason }, null, 2) + '\n');
   renameSync(tmp, path);
+}
+
+/** 将维护原因压成适合飞书卡片单行展示的短文本，避免换行和超长内容撑满卡片。 */
+export function normalizeRestartReason(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const value = raw.replace(/\s+/g, ' ').trim();
+  return value ? value.slice(0, 200) : undefined;
 }
 
 export function clearRestartIntentTo(dir: string): void {
@@ -164,10 +174,10 @@ export function consumeRestartIntentTo(dir: string, nowMs: number): RestartInten
 /** Write a `manual` breadcrumb only when no *fresh* breadcrumb already exists —
  *  so a maintenance-written `update` breadcrumb is not clobbered
  *  by the `botmux restart` it spawns. */
-export function writeManualIntentIfAbsentTo(dir: string, nowMs: number, atIso: string): void {
+export function writeManualIntentIfAbsentTo(dir: string, nowMs: number, atIso: string, reason?: string): void {
   const existing = readRaw(dir);
   if (existing && isFresh(existing, nowMs)) return;
-  writeRestartIntentTo(dir, { kind: 'manual', at: atIso });
+  writeRestartIntentTo(dir, { kind: 'manual', reason, at: atIso });
 }
 
 // ---- default-dir wrappers (production wiring) ----
@@ -196,6 +206,6 @@ export function clearRestartLease(id: string): void {
   clearRestartLeaseTo(config.session.dataDir, id);
 }
 
-export function writeManualIntentIfAbsent(nowMs: number = Date.now()): void {
-  writeManualIntentIfAbsentTo(config.session.dataDir, nowMs, new Date(nowMs).toISOString());
+export function writeManualIntentIfAbsent(nowMs: number = Date.now(), reason?: string): void {
+  writeManualIntentIfAbsentTo(config.session.dataDir, nowMs, new Date(nowMs).toISOString(), reason);
 }
