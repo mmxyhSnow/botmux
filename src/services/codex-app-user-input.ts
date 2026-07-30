@@ -27,13 +27,52 @@ export interface CodexAppUserInputCallbacks {
   log: (message: string) => void;
 }
 
-/** 读取可选自动决策窗口；普通阻塞选择最多等待一小时。 */
+/** Codex turn 结束后通知 daemon 将累积卡片切换为完成态。 */
+export async function completeCodexAppUserInputFlow(
+  flowId: string,
+  context: CodexAppUserInputContext,
+): Promise<void> {
+  const port = parseDaemonIpcPort(context.env.BOTMUX_DAEMON_IPC_PORT);
+  if (!port || !flowId) return;
+  let hostSecret: string;
+  try {
+    hostSecret = loadDaemonIpcSecret();
+  } catch {
+    return;
+  }
+  const response = await fetchDaemonIpc(port, '/api/ask-flows/complete', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionId: context.sessionId, flowId }),
+  }, hostSecret);
+  if (!response.ok) {
+    throw new Error(`ask flow completion HTTP ${response.status}`);
+  }
+}
+
+/** 最终回复路径使用的非阻塞完成通知，失败只记日志，不影响正文交付。 */
+export function dispatchCodexAppUserInputFlowCompletion(
+  flowId: string,
+  context: CodexAppUserInputContext,
+  log: (message: string) => void,
+): void {
+  void completeCodexAppUserInputFlow(flowId, context).catch(error => {
+    log(`[codex-app] ask flow completion failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`);
+  });
+}
+
+/** 留出 30 秒让 broker 先结算，避免外层 5 分钟工具上限先中止并遗留吞消息的 ask。 */
+const CODEX_NATIVE_ASK_MAX_MS = 270_000;
+
+/** 读取可选自动决策窗口；普通阻塞选择不得超过 Codex 外层工具窗口。 */
 function askTimeoutMs(params: unknown): number {
-  if (!params || typeof params !== 'object' || Array.isArray(params)) return 3_600_000;
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return CODEX_NATIVE_ASK_MAX_MS;
   const value = (params as Record<string, unknown>).autoResolutionMs;
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1_000
-    ? Math.min(value, 3_600_000)
-    : 3_600_000;
+    ? Math.min(value, CODEX_NATIVE_ASK_MAX_MS)
+    : CODEX_NATIVE_ASK_MAX_MS;
 }
 
 /** 将原生选择请求发送给当前 Botmux daemon，并等待飞书卡片答案。 */
@@ -62,6 +101,7 @@ export async function bridgeCodexAppUserInput(
       )
     : null;
   const root = context.env.BOTMUX_ROOT_MESSAGE_ID?.trim();
+  const requestParams = params as Record<string, unknown>;
   const body = {
     sessionId: context.sessionId,
     chatId,
@@ -69,6 +109,9 @@ export async function bridgeCodexAppUserInput(
     rootMessageId: root?.startsWith('om_') ? root : null,
     questions: parsed.questions.map(entry => entry.question),
     timeoutMs: askTimeoutMs(params),
+    ...(typeof requestParams.turnId === 'string' && requestParams.turnId.trim()
+      ? { flowId: requestParams.turnId.trim() }
+      : {}),
     lockToTurnCaller: true,
     ...(claim
       ? {
@@ -103,16 +146,26 @@ export async function bridgeCodexAppUserInput(
     kind?: string;
     answers?: ReadonlyArray<ReadonlyArray<string>>;
     comment?: string | null;
+    action?: string;
   };
   if (result.kind !== 'answered') {
     throw new Error(`ask not answered (${result.kind ?? 'unknown'})`);
   }
 
   const customText = result.comment?.trim() ?? '';
+  const controlText = result.action === 'undo'
+    ? '[系统] 用户撤销了上一问，请重新提出上一题并按新答案重算后续分支。'
+    : '';
   const answers: CodexAppUserInputResponse['answers'] = {};
   parsed.questions.forEach((entry, index) => {
     const selected = result.answers?.[index] ?? [];
-    const values = selected.length > 0 ? [...selected] : customText ? [customText] : [];
+    const values = selected.length > 0
+      ? [...selected]
+      : controlText
+        ? [controlText]
+        : customText
+          ? [customText]
+          : [];
     if (values.length > 0) answers[entry.id] = { answers: values };
   });
   return { answers };

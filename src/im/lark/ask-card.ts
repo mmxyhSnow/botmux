@@ -4,10 +4,20 @@ import type {
   AskResult,
   PendingAsk,
 } from '../../core/ask-types.js';
-import { getAskSnapshot, submitAsk, toggleAsk, tryResolveAsk } from '../../core/ask-broker.js';
+import {
+  getAskSnapshot,
+  submitAsk,
+  submitUndoAsk,
+  toggleAsk,
+  tryResolveAsk,
+} from '../../core/ask-broker.js';
 import { logger } from '../../utils/logger.js';
 import { t, localeForBot, type Locale } from '../../i18n/index.js';
 import { replyMessage, sendMessage, updateMessage } from './client.js';
+import {
+  buildAskFlowCard,
+  buildPreviousAskFlowSegmentCard,
+} from './ask-card-flow.js';
 
 /** 旧单选即答动作（保留兼容旧卡片回调；Task 5 新增 ask_submit 路径）。 */
 export const ASK_SELECT_ACTION = 'ask_select';
@@ -18,8 +28,15 @@ export const ASK_SUBMIT_ACTION = 'ask_submit';
 /** 累积勾选动作。飞书会 silent-drop form + select_static，所以 v0.1.8 用按钮态。 */
 export const ASK_TOGGLE_ACTION = 'ask_toggle';
 
+/** 连续提问撤销最近一步动作。 */
+export const ASK_UNDO_ACTION = 'ask_undo';
+const FLOW_ACTIONS = {
+  select: ASK_SELECT_ACTION,
+  submit: ASK_SUBMIT_ACTION,
+  toggle: ASK_TOGGLE_ACTION,
+  undo: ASK_UNDO_ACTION,
+};
 const MAX_BUTTONS_PER_ACTION_ROW = 4;
-
 export interface AskCardActionData {
   operator?: { open_id?: string };
   action?: {
@@ -44,6 +61,20 @@ export function createLarkAskCardDispatcher(
   return {
     async send(ask) {
       const cardJson = buildAskCard(ask);
+      const previous = buildPreviousAskFlowSegmentCard(ask, FLOW_ACTIONS);
+      if (previous) {
+        try {
+          await update(ask.larkAppId, previous.messageId, previous.cardJson);
+        } catch (err) {
+          logger.warn(`[ask:${ask.askId}] failed to close previous flow segment: ${
+            err instanceof Error ? err.message : String(err)
+          }`);
+        }
+      }
+      if (ask.flow?.cardMessageId) {
+        await update(ask.larkAppId, ask.flow.cardMessageId, cardJson);
+        return { messageId: ask.flow.cardMessageId };
+      }
       // botmux 把 chat-scope session 的 routing anchor 也叫 rootMessageId,
       // 但在 chat-scope 下它实际是 chat_id (oc_...) 而非 message_id (om_...).
       // 飞书 /messages/{id}/reply 只接受 om_ — 用 oc_ 会 400 invalid message_id.
@@ -67,11 +98,21 @@ export function createLarkAskCardDispatcher(
         );
       }
     },
+    async completeFlow(ask) {
+      const messageId = ask.flow?.cardMessageId;
+      if (!messageId) return;
+      const cardJson = buildAskFlowCard(ask, FLOW_ACTIONS, undefined, true);
+      if (!cardJson) return;
+      await update(ask.larkAppId, messageId, cardJson);
+    },
   };
 }
 
 export function isAskCardAction(action?: string): boolean {
-  return action === ASK_SELECT_ACTION || action === ASK_SUBMIT_ACTION || action === ASK_TOGGLE_ACTION;
+  return action === ASK_SELECT_ACTION
+    || action === ASK_SUBMIT_ACTION
+    || action === ASK_TOGGLE_ACTION
+    || action === ASK_UNDO_ACTION;
 }
 
 export async function handleAskCardAction(
@@ -89,6 +130,19 @@ export async function handleAskCardAction(
   const locale = localeForBot(askId ? getAskSnapshot(askId)?.larkAppId : undefined);
   if (!askId || !nonce || !by) {
     return staleToast(locale);
+  }
+
+  if (action === ASK_UNDO_ACTION) {
+    const outcome = submitUndoAsk({ askId, nonce, by });
+    if (outcome !== 'accepted') return toastForOutcome(outcome, locale);
+    return settledCardResponse(askId, {
+      kind: 'answered',
+      answers: getAskSnapshot(askId)?.questions.map(() => []) ?? [],
+      by,
+      comment: null,
+      action: 'undo',
+      timedOut: false,
+    });
   }
 
   // 旧单选即答路径：按钮直接携带 key，调用 tryResolveAsk（单问单选便捷封装）。
@@ -182,6 +236,8 @@ function settledCardResponse(askId: string, result: AskResult): Record<string, u
  * 已 settle 时：渲染状态摘要，展示每问的选中标签（answered），或超时/失效信息。
  */
 export function buildAskCard(ask: PendingAsk, result?: AskResult): string {
+  const flowCard = buildAskFlowCard(ask, FLOW_ACTIONS, result);
+  if (flowCard) return flowCard;
   const locale = localeForBot(ask.larkAppId);
   const deadline = new Date(ask.deadlineAt).toLocaleString('zh-CN');
   const status = result ? settleStatus(result, ask, locale) : undefined;

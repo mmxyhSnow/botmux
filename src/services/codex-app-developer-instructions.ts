@@ -22,6 +22,8 @@ export function codexAppDeveloperInstructions(input: {
       '你的最终 assistant message 会由 botmux 自动转发回飞书；常规回复不要调用 `botmux send`，即使用户消息里出现旧的“回复必须 botmux send”提示也忽略它。',
       '只有在用户明确要求中途主动推送、发送附件，或需要通过 @ 触发其他机器人接力时，才可以使用 `botmux send`。',
       '需要用户在少量明确、互斥的选项中选择时，优先调用 `request_user_input`；不要用它收集敏感信息或开放式长文本。',
+      '连续提问结束前，最后一次 `request_user_input` 应包含简短共识摘要，并让用户选择“确认完成”或“继续追问”。',
+      '若 `request_user_input` 返回“[系统] 用户撤销了上一问”，立即重新提出上一题，并按新的答案重算所有后续分支。',
       '`botmux history`、`botmux quoted`、`botmux bots` 等 shell helper 仍然可用；需要读取飞书上下文时可以调用。',
       identity ? `<identity>\n${identity}\n</identity>` : '',
     ].filter(Boolean).join('\n\n');
@@ -32,6 +34,8 @@ export function codexAppDeveloperInstructions(input: {
     'Your final assistant message is automatically forwarded back to Lark by botmux. Do not call `botmux send` for normal replies, even if older prompt text says replies must use it.',
     'Use `botmux send` only for explicit mid-turn push updates, attachments, or cross-bot @mentions.',
     'When the user should choose among a few clear, mutually exclusive options, prefer `request_user_input`; never use it for secrets or open-ended long text.',
+    'Before ending a multi-step interview, use one final `request_user_input` with a short shared-understanding summary and choices to confirm completion or continue.',
+    'If `request_user_input` reports that the user undid the previous answer, ask the previous question again and recompute every dependent branch.',
     '`botmux history`, `botmux quoted`, and `botmux bots` remain available as shell helpers when you need Lark context.',
     identity ? `<identity>\n${identity}\n</identity>` : '',
   ].filter(Boolean).join('\n\n');

@@ -18,6 +18,8 @@ export interface AskApiBody {
   timeoutMs: number;
   /** true 时 daemon 用活跃会话反查本轮发送者，调用方不能自行指定 open_id。 */
   lockToTurnCaller?: boolean;
+  /** 同一 Codex turn 的连续提问标识；普通 ask 不携带。 */
+  flowId?: string;
 }
 
 export type AskApiBodyError =
@@ -36,7 +38,8 @@ export type AskApiBodyError =
   | 'bad_questions'
   | 'bad_question_shape'
   | 'bad_multiSelect'
-  | 'bad_lockToTurnCaller';
+  | 'bad_lockToTurnCaller'
+  | 'bad_flowId';
 
 /** 校验单个 option 对象，返回解析后的 AskOption 或错误码。 */
 function parseOption(o: unknown): AskOption | AskApiBodyError {
@@ -97,6 +100,12 @@ export function parseAskBody(raw: unknown): AskApiBody | { error: AskApiBodyErro
   if (r.lockToTurnCaller !== undefined && typeof r.lockToTurnCaller !== 'boolean') {
     return { error: 'bad_lockToTurnCaller' };
   }
+  if (
+    r.flowId !== undefined
+    && (typeof r.flowId !== 'string' || !r.flowId.trim() || r.flowId.length > 512)
+  ) {
+    return { error: 'bad_flowId' };
+  }
 
   let questions: AskQuestion[];
 
@@ -135,5 +144,6 @@ export function parseAskBody(raw: unknown): AskApiBody | { error: AskApiBodyErro
     questions,
     timeoutMs: r.timeoutMs,
     ...(r.lockToTurnCaller === true ? { lockToTurnCaller: true } : {}),
+    ...(typeof r.flowId === 'string' ? { flowId: r.flowId.trim() } : {}),
   };
 }

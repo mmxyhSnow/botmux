@@ -339,6 +339,7 @@ import {
   setCardDispatcher as setAskCardDispatcher,
   setCanTalkChecker as setAskCanTalkChecker,
   registerAsk as registerAskBroker,
+  completeAskFlow,
   findPendingAskByAnchor,
   submitCustomReply,
 } from './core/ask-broker.js';
@@ -4711,6 +4712,7 @@ ipcRoute('POST', '/api/asks', async (req, res) => {
     questions: boundAsk.questions,
     timeoutMs: boundAsk.timeoutMs,
     chatType: askChatType,
+    ...(boundAsk.flowId ? { flowId: boundAsk.flowId } : {}),
     ...(boundAsk.lockToTurnCaller ? { approvers: [turnCallerOpenId!] } : {}),
   });
 
@@ -4745,6 +4747,29 @@ ipcRoute('POST', '/api/asks', async (req, res) => {
   }
 
   return jsonRes(res, 200, result);
+});
+
+// Codex App turn 结束后由宿主 runner 调用；只接受 HMAC 宿主请求，并绑定会话。
+ipcRoute('POST', '/api/ask-flows/complete', async (req, res) => {
+  if (!isTrustedHostIpcRequest(req)) {
+    return jsonRes(res, 403, { ok: false, error: 'trusted_host_required' });
+  }
+  let raw: { sessionId?: unknown; flowId?: unknown };
+  try {
+    raw = await readJsonBody(req);
+  } catch {
+    return jsonRes(res, 400, { ok: false, error: 'bad_json' });
+  }
+  const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId.trim() : '';
+  const flowId = typeof raw.flowId === 'string' ? raw.flowId.trim() : '';
+  if (!sessionId || !flowId) {
+    return jsonRes(res, 400, { ok: false, error: 'missing_flow_identity' });
+  }
+  if (!findActiveBySessionId(sessionId)) {
+    return jsonRes(res, 404, { ok: false, error: 'session_not_found' });
+  }
+  const completed = await completeAskFlow(flowId, sessionId);
+  return jsonRes(res, 200, { ok: true, completed });
 });
 
 // ─── attention IPC route (internal: set needs-you state) ─────────────────────

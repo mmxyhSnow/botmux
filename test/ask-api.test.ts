@@ -50,6 +50,13 @@ describe('parseAskBody — happy path', () => {
     if ('error' in out) return;
     expect(out.lockToTurnCaller).toBe(true);
   });
+
+  it('preserves a non-empty Codex turn flow identifier', () => {
+    const out = parseAskBody(validBody({ flowId: 'turn-123' }));
+    expect('error' in out).toBe(false);
+    if ('error' in out) return;
+    expect(out.flowId).toBe('turn-123');
+  });
 });
 
 describe('parseAskBody — validation', () => {
@@ -74,6 +81,8 @@ describe('parseAskBody — validation', () => {
     ['bad_timeoutMs', { timeoutMs: 500 }],          // below minimum (1s)
     ['bad_timeoutMs', { timeoutMs: NaN }],
     ['bad_timeoutMs', { timeoutMs: 'forever' }],
+    ['bad_flowId', { flowId: '' }],
+    ['bad_flowId', { flowId: 42 }],
     ['bad_options', { options: [] }],
     ['bad_options', { options: [{ key: 'only', label: 'only' }] }],
     ['bad_options', { options: 'not-an-array' }],

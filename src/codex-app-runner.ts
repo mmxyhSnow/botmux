@@ -21,7 +21,7 @@ import {
 } from './services/codex-app-runner-protocol.js';
 import { codexAppDeveloperInstructions } from './services/codex-app-developer-instructions.js';
 import { emitCodexAppFinalWithOutbox } from './services/codex-app-final-outbox.js';
-import { dispatchCodexAppUserInput } from './services/codex-app-user-input.js';
+import { dispatchCodexAppUserInput, dispatchCodexAppUserInputFlowCompletion } from './services/codex-app-user-input.js';
 import { detectCodexAppVersion } from './services/codex-app-version.js';
 type JsonObject = Record<string, any>;
 interface Args {
@@ -233,6 +233,7 @@ try {
   output.error(`${err?.message ?? err}\n`);
   process.exit(2);
 }
+const userInputContext = { sessionId: args.sessionId, env: process.env };
 
 let threadId = args.threadId;
 let threadReady = false;
@@ -262,10 +263,7 @@ function handleServerRequest(msg: JsonObject): boolean {
     return true;
   }
   if (method === 'item/tool/requestUserInput') {
-    dispatchCodexAppUserInput(msg.params, {
-      sessionId: args.sessionId,
-      env: process.env,
-    }, {
+    dispatchCodexAppUserInput(msg.params, userInputContext, {
       respond: result => client.respond(msg.id, result),
       interrupt: (threadId, turnId) => client.request('turn/interrupt', { threadId, turnId }),
       log: writeLine,
@@ -413,6 +411,9 @@ controller = new CodexAppTurnController({
   onDiagnostic: writeLine,
   onLifecycle: event => emitMarker('lifecycle', event),
   onFinal: marker => {
+    if (marker.outcome === 'completed' || marker.outcome === undefined) {
+      dispatchCodexAppUserInputFlowCompletion(marker.appTurnId, userInputContext, writeLine);
+    }
     const dataDir = process.env.SESSION_DATA_DIR;
     if (!dataDir) {
       output.error('[codex-app] final outbox write failed: SESSION_DATA_DIR is missing\n');
