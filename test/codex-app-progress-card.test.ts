@@ -183,7 +183,7 @@ describe('Codex App 即时进度卡', () => {
     expect(rendered.body.elements[0]).toMatchObject({ tag: 'markdown' });
   });
 
-  it('第一屏展示阶段看板、时间信息和最近三条证据', () => {
+  it('进行中卡只展示紧凑摘要和一条最新进展', () => {
     const rendered = JSON.parse(renderCodexAppProgressCard({
       phase: 'running',
       activeTurnId: 'om_turn',
@@ -203,27 +203,33 @@ describe('Codex App 即时进度卡', () => {
         stage: '验证',
         current: '运行回归测试',
         completed: ['回答态区分已完成'],
+        total: 4,
         next: '构建并部署',
       },
-    } as any, { nowMs: new Date('2026-07-28T11:05:00.000Z').getTime() }));
+    } as any, {
+      nowMs: new Date('2026-07-28T11:05:00.000Z').getTime(),
+      reportUrl: 'https://youc.example/progress/report.html',
+    } as any));
 
     const text = JSON.stringify(rendered);
     expect(rendered.header.title.content).toBe('处理中 · 优化进度卡');
-    expect(text).toContain('当前阶段');
-    expect(text).toContain('验证');
-    expect(text).toContain('正在处理');
+    expect(text).toContain('阶段');
+    expect(text).toContain('进度 1/4');
+    expect(text).toContain('当前');
     expect(text).toContain('运行回归测试');
-    expect(text).toContain('已完成');
-    expect(text).toContain('回答态区分已完成');
     expect(text).toContain('下一步');
     expect(text).toContain('构建并部署');
-    expect(text).toContain('暂无真实阻塞');
     expect(text).toContain('已运行 5 分钟');
+    expect(text).not.toContain('暂无真实阻塞');
+    expect(text).not.toContain('回答态区分已完成');
     expect(text).not.toContain('第一条');
-    expect(text).toContain('第二条');
+    expect(text).not.toContain('第二条');
+    expect(text).not.toContain('第三条');
     expect(text).toContain('第四条');
-    expect(text).toContain('codex_progress_toggle_details');
-    expect(text).toContain('codex_progress_history_open');
+    expect(text).not.toContain('codex_progress_toggle_details');
+    expect(text).not.toContain('codex_progress_history_open');
+    expect(text).toContain('open_url');
+    expect(text).toContain('https://youc.example/progress/report.html');
   });
 
   it('显式进度标记更新短标题和看板字段，但不把标记写进时间线', async () => {
@@ -234,7 +240,7 @@ describe('Codex App 即时进度卡', () => {
       '回答态已经完成。'
       + '\n<!--botmux-progress:'
       + '{"title":"优化进度卡","stage":"验证","current":"运行回归",'
-      + '"completed":["回答态"],"next":"构建部署","blocker":null}'
+      + '"completed":["回答态"],"total":4,"next":"构建部署","blocker":null}'
       + '-->',
     );
 
@@ -244,6 +250,7 @@ describe('Codex App 即时进度卡', () => {
         stage: '验证',
         current: '运行回归',
         completed: ['回答态'],
+        total: 4,
         next: '构建部署',
       },
     });
@@ -251,7 +258,21 @@ describe('Codex App 即时进度卡', () => {
     expect(h.card.snapshot()?.content).not.toContain('botmux-progress');
   });
 
-  it('完成态留下精简验收摘要而不是只提示查看最新回复', async () => {
+  it('总任务数必须是正整数且不能小于已完成项', async () => {
+    const h = harness();
+    await h.card.accept('om_turn', '非法总数');
+    await h.card.append(
+      'om_turn',
+      '<!--botmux-progress:'
+      + '{"stage":"验证","current":"运行回归","completed":[],"total":0,'
+      + '"next":"构建部署","blocker":null}'
+      + '-->',
+    );
+
+    expect(h.card.snapshot()?.overview).toBeUndefined();
+  });
+
+  it('完成态保留总用时并把过程字段替换为结果摘要', async () => {
     const h = harness();
     await h.card.accept('om_turn', '完成态');
     await h.card.append(
@@ -264,16 +285,51 @@ describe('Codex App 即时进度卡', () => {
       + '"risks":["远端推送缺少凭据"],"blocker":null}'
       + '-->',
     );
+    vi.setSystemTime(new Date('2026-07-28T11:29:58.000Z'));
     await h.card.settle('om_turn', 'completed');
 
     const completed = JSON.parse(h.patches.at(-1)!.cardJson);
     const text = JSON.stringify(completed);
     expect(completed.header.template).toBe('green');
-    expect(text).toContain('验收摘要');
+    expect(text).toContain('用时 18 分钟');
+    expect(text).toContain('19:29 完成');
+    expect(text).toContain('结果');
     expect(text).toContain('功能已上线');
     expect(text).toContain('正式构建通过');
     expect(text).toContain('Youc 已重启');
     expect(text).toContain('远端推送缺少凭据');
-    expect(text).not.toContain('最终结果见最新回复');
+    expect(text).not.toContain('验收摘要');
+    expect(text).not.toContain('最近进展');
+    expect(text).not.toContain('**最新**');
+    expect(text).not.toContain('验证和部署已经完成');
+    expect(text).not.toContain('下一步');
+  });
+
+  it('状态同步时发布过程报告并把外链写入同一张卡', async () => {
+    const cards: string[] = [];
+    const card = new CodexAppProgressCard({
+      sessionId: 'sess-report',
+      post: async cardJson => {
+        cards.push(cardJson);
+        return 'om_report';
+      },
+      patch: async (_messageId, cardJson) => {
+        cards.push(cardJson);
+      },
+      persist: vi.fn(),
+      publishReport: async state =>
+        `https://youc.example/progress-reports/${state.startedAtMs}.html?t=token`,
+    } as any);
+
+    await card.accept('om_turn', '报告外链');
+    await card.append('om_turn', '完整过程已经更新。');
+    await card.settle('om_turn', 'completed');
+
+    for (const cardJson of cards) {
+      const text = JSON.stringify(JSON.parse(cardJson));
+      expect(text).toContain('open_url');
+      expect(text).toContain('https://youc.example/progress-reports/');
+      expect(text).not.toContain('codex_progress_history_open');
+    }
   });
 });

@@ -130,6 +130,8 @@ export interface CodexAppProgressOverview {
   stage: string;
   current: string;
   completed: string[];
+  /** 可选的总任务数，用于在紧凑卡中展示已完成/总数。 */
+  total?: number;
   next: string;
   blocker?: string;
   evidence?: string[];

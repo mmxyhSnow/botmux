@@ -15,6 +15,10 @@ export interface CodexAppProgressCardOperations {
   patch(messageId: string, cardJson: string): Promise<void>;
   canRepostAfterPatchFailure?(error: unknown): boolean;
   persist(state: CodexAppProgressCardSessionState): void;
+  /** 发布当前完整过程并返回受保护的 HTML 链接；失败时主卡仍需正常更新。 */
+  publishReport?(
+    state: CodexAppProgressCardSessionState,
+  ): string | undefined | Promise<string | undefined>;
   /** 返回内容事件的发生时间；测试可注入固定时钟，生产环境缺省使用系统时间。 */
   now?(): Date;
 }
@@ -250,7 +254,13 @@ export class CodexAppProgressCard {
 
   private async syncCard(): Promise<void> {
     if (!this.state) return;
-    const cardJson = renderCodexAppProgressCard(this.state);
+    let reportUrl: string | undefined;
+    try {
+      reportUrl = await this.operations.publishReport?.(cloneState(this.state));
+    } catch {
+      // 报告是主卡的增强入口，写入失败不得阻断用户看到最新任务状态。
+    }
+    const cardJson = renderCodexAppProgressCard(this.state, { reportUrl });
     if (this.state.messageId) {
       try {
         await this.operations.patch(this.state.messageId, cardJson);

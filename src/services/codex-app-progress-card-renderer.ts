@@ -14,11 +14,17 @@ export interface CodexAppProgressCardRenderOptions {
   pageNumber?: number;
   archived?: boolean;
   nowMs?: number;
+  reportUrl?: string;
 }
 
-const DEFAULT_RECENT_ENTRIES = 3;
-const EXPANDED_RECENT_ENTRIES = 8;
+const DEFAULT_RECENT_ENTRIES = 1;
 const HISTORY_PAGE_SIZE = 6;
+const PROGRESS_TIME_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'Asia/Shanghai',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
 
 function titlePrefix(phase: CodexAppProgressCardPhase): string {
   if (phase === 'running') return '处理中';
@@ -58,23 +64,27 @@ function fullHistoryEntries(state: CodexAppProgressCardSessionState): string[] {
 function overviewMarkdown(state: CodexAppProgressCardSessionState): string {
   const overview = state.overview;
   if (!overview) {
-    return '**当前阶段**\n正在处理\n\n**正在处理**\n等待新的明确进展';
+    return '**当前** 等待新的明确进展';
   }
-  const completed = overview.completed.length > 0
-    ? overview.completed.map(item => `- ✅ ${item}`).join('\n')
-    : '- 暂无';
   return [
-    `**当前阶段**\n${overview.stage}`,
-    `**正在处理**\n${overview.current}`,
-    `**已完成**\n${completed}`,
-    `**下一步**\n${overview.next}`,
+    `阶段 ${overview.stage}　·　进度 ${
+      overview.total ? `${overview.completed.length}/${overview.total}` : `${overview.completed.length} 项`
+    }`,
+    `**当前** ${overview.current}`,
+    `**下一步** ${overview.next}`,
     overview.blocker
-      ? `**需要你处理**\n⚠️ ${overview.blocker}`
-      : '**阻塞状态**\n✅ 暂无真实阻塞',
-  ].join('\n\n');
+      ? `**⚠️ 需要处理** ${overview.blocker}`
+      : undefined,
+  ].filter(Boolean).join('\n');
 }
 
-function completionMarkdown(state: CodexAppProgressCardSessionState): string {
+function summaryItems(items: string[], empty: string): string {
+  if (items.length === 0) return empty;
+  const visible = items.slice(0, 2).join('；');
+  return items.length > 2 ? `${visible}；另 ${items.length - 2} 项` : visible;
+}
+
+function completionMarkdown(state: CodexAppProgressCardSessionState, nowMs: number): string {
   const overview = state.overview;
   const conclusion = overview?.current ?? titlePrefix(state.phase);
   const validation = overview?.evidence?.length
@@ -86,63 +96,51 @@ function completionMarkdown(state: CodexAppProgressCardSessionState): string {
     : overview?.blocker
       ? [overview.blocker]
       : [];
-  const lines = (items: string[], empty: string) =>
-    items.length > 0 ? items.map(item => `- ${item}`).join('\n') : `- ${empty}`;
+  const endedAtMs = state.updatedAtMs ?? nowMs;
+  const endedLabel = state.phase === 'completed' ? '完成' : '结束';
   return [
-    '**验收摘要**',
-    `**最终结论**\n${conclusion}`,
-    `**关键验证**\n${lines(validation, '未记录独立验证证据')}`,
-    `**提交与部署**\n${lines(delivery, '无外部交付')}`,
-    `**剩余风险**\n${lines(risks, '无已知剩余风险')}`,
-  ].join('\n\n');
+    `用时 ${elapsedMinutes(state.startedAtMs, endedAtMs)} 分钟`
+      + `　·　${PROGRESS_TIME_FORMATTER.format(new Date(endedAtMs))} ${endedLabel}`,
+    `**结果** ${conclusion}`,
+    `**验证** ${summaryItems(validation, '未记录独立验证证据')}`,
+    `**交付** ${summaryItems(delivery, '无外部交付')}`,
+    risks.length > 0 ? `**风险** ${summaryItems(risks, '')}` : undefined,
+  ].filter(Boolean).join('\n');
 }
 
 /** 使用 JSON 2.0 的分栏和 behaviors 渲染回调按钮，避免旧 action 容器被飞书拒绝。 */
 function viewActionColumns(
   state: CodexAppProgressCardSessionState,
   entryCount: number,
+  reportUrl?: string,
 ): Record<string, unknown> | undefined {
   if (!state.sessionId || entryCount === 0) return undefined;
-  const columns: Array<Record<string, unknown>> = [];
-  if (entryCount > DEFAULT_RECENT_ENTRIES) {
-    columns.push({
-      tag: 'column',
-      width: 'auto',
-      elements: [{
-        tag: 'button',
-        text: {
-          tag: 'plain_text',
-          content: state.detailsExpanded ? '收起进展' : '展开更多',
-        },
-        type: 'default',
-        behaviors: [{
-          type: 'callback',
-          value: {
-            action: 'codex_progress_toggle_details',
-            session_id: state.sessionId,
-            expanded: state.detailsExpanded ? '0' : '1',
-          },
-        }],
-      }],
-    });
-  }
-  columns.push({
-    tag: 'column',
-    width: 'auto',
-    elements: [{
-      tag: 'button',
-      text: { tag: 'plain_text', content: '查看完整历史' },
-      type: 'default',
-      behaviors: [{
+  const behavior = reportUrl
+    ? {
+        type: 'open_url',
+        default_url: reportUrl,
+        pc_url: reportUrl,
+        android_url: reportUrl,
+        ios_url: reportUrl,
+      }
+    : {
         type: 'callback',
         value: {
           action: 'codex_progress_history_open',
           session_id: state.sessionId,
           page: '1',
         },
-      }],
+      };
+  const columns: Array<Record<string, unknown>> = [{
+    tag: 'column',
+    width: 'auto',
+    elements: [{
+      tag: 'button',
+      text: { tag: 'plain_text', content: '查看完整过程' },
+      type: 'default',
+      behaviors: [behavior],
     }],
-  });
+  }];
   return {
     tag: 'column_set',
     flex_mode: 'flow',
@@ -164,30 +162,21 @@ export function renderCodexAppProgressCard(
   const history = options.content
     ? splitProgressCardEntries(options.content)
     : fullHistoryEntries(state);
-  const recentLimit = state.detailsExpanded
-    ? EXPANDED_RECENT_ENTRIES
-    : DEFAULT_RECENT_ENTRIES;
-  const recent = history.slice(-recentLimit);
+  const recent = history.slice(-DEFAULT_RECENT_ENTRIES);
   const elements: Array<Record<string, unknown>> = [];
   if (options.archived) {
     elements.push(...buildCardBodyElements(options.content ?? state.content));
   } else {
-    elements.push(markdown(
-      `⏱️ 已运行 ${elapsedMinutes(state.startedAtMs, nowMs)} 分钟`
-      + `　·　🕘 ${updatedText(state.updatedAtMs, nowMs)}`,
-    ));
-    elements.push({ tag: 'hr' });
-    elements.push(markdown(
-      state.phase === 'running' ? overviewMarkdown(state) : completionMarkdown(state),
-    ));
-    if (recent.length > 0) {
-      elements.push({ tag: 'hr' });
-      elements.push(markdown(
-        `**最近进展${state.detailsExpanded ? '（已展开）' : ''}**\n`
-        + recent.join('\n\n'),
-      ));
-    }
-    const actions = viewActionColumns(state, history.length);
+    const summary = state.phase === 'running'
+      ? [
+          `⏱️ 已运行 ${elapsedMinutes(state.startedAtMs, nowMs)} 分钟`
+            + `　·　🕘 ${updatedText(state.updatedAtMs, nowMs)}`,
+          overviewMarkdown(state),
+          recent.length > 0 ? `**最新** ${recent[0]}` : undefined,
+        ].filter(Boolean).join('\n\n')
+      : completionMarkdown(state, nowMs);
+    elements.push(markdown(summary));
+    const actions = viewActionColumns(state, history.length, options.reportUrl);
     if (actions) elements.push(actions);
   }
   return JSON.stringify({

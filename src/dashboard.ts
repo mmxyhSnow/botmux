@@ -68,6 +68,7 @@ import { resolveBotmuxDataDir } from './core/data-dir.js';
 import { dashboardSecretPath } from './core/dashboard-secret.js';
 import { getGitRepoInfo } from './core/session-row-enrichment.js';
 import { deleteWhiteboard, listWhiteboards, readWhiteboard, whiteboardEnabled } from './services/whiteboard-store.js';
+import { resolveCodexAppProgressReportRequest } from './services/codex-app-progress-report.js';
 import { isLocalDevInstall, botmuxVersion, botmuxVersionAt, botmuxCliEntry, botmuxInstallRoot } from './utils/install-info.js';
 import { checkNode, detectBotmuxInstalls, resolveCurrentVersion } from './utils/install-diagnostics.js';
 import {
@@ -1408,6 +1409,35 @@ function serveFileAbs(res: ServerResponse, fp: string): boolean {
   return true;
 }
 
+/** 提供令牌鉴权后的单文件过程报告，并禁止缓存运行中的旧版本。 */
+function serveProgressReport(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+): boolean {
+  const filePath = resolveCodexAppProgressReportRequest(pathname);
+  if (!filePath) return false;
+  let stat;
+  try {
+    stat = statSync(filePath);
+  } catch {
+    return false;
+  }
+  if (!stat.isFile()) return false;
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': String(stat.size),
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  });
+  if (req.method === 'HEAD') {
+    res.end();
+  } else {
+    createReadStream(filePath).pipe(res);
+  }
+  return true;
+}
+
 function dashboardDevReloadEnabled(): boolean {
   return process.env.BOTMUX_DASHBOARD_DEV_RELOAD === '1' || existsSync(DEV_RELOAD_MARKER);
 }
@@ -2621,6 +2651,17 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname.startsWith('/plugins/')) {
       if (servePluginStatic(res, url.pathname)) return;
       res.writeHead(404); res.end(); return;
+    }
+
+    // ─── Codex App 完整过程报告（沿用 Dashboard 令牌鉴权）──────────────
+    if (
+      (req.method === 'GET' || req.method === 'HEAD')
+      && url.pathname.startsWith('/progress-reports/')
+    ) {
+      if (serveProgressReport(req, res, url.pathname)) return;
+      res.writeHead(404);
+      res.end();
+      return;
     }
 
     // ─── Static frontend (index.html + /assets/* + /game/* + root icons) ───

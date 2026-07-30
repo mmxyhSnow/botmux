@@ -16,6 +16,7 @@ const PROGRESS_MARKER = /<!--botmux-progress:([\s\S]*?)-->/g;
 const MAX_TITLE_CHARS = 40;
 const MAX_FIELD_CHARS = 240;
 const MAX_LIST_ITEMS = 12;
+const MAX_TOTAL_ITEMS = 999;
 
 function boundedString(value: unknown, max = MAX_FIELD_CHARS): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -47,6 +48,16 @@ function parseOverview(value: unknown): {
   const next = boundedString(input.next);
   const completed = boundedList(input.completed);
   if (!stage || !current || !next || !completed) return undefined;
+  const total = input.total === undefined
+    ? undefined
+    : typeof input.total === 'number'
+      && Number.isInteger(input.total)
+      && input.total > 0
+      && input.total >= completed.length
+      && input.total <= MAX_TOTAL_ITEMS
+      ? input.total
+      : undefined;
+  if (input.total !== undefined && total === undefined) return undefined;
   const blocker = input.blocker === null || input.blocker === undefined
     ? undefined
     : boundedString(input.blocker);
@@ -67,6 +78,7 @@ function parseOverview(value: unknown): {
       stage,
       current,
       completed,
+      ...(total !== undefined ? { total } : {}),
       next,
       ...(blocker ? { blocker } : {}),
       ...(evidence ? { evidence } : {}),

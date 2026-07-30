@@ -1,0 +1,93 @@
+/**
+ * Codex App 完整过程 HTML 的输出契约。
+ * 用例确保群卡压缩后，完整证据仍能通过受保护的静态报告稳定回看。
+ */
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  buildCodexAppProgressReportUrl,
+  resolveCodexAppProgressReportRequest,
+  writeCodexAppProgressReport,
+} from '../src/services/codex-app-progress-report.js';
+import type { CodexAppProgressCardSessionState } from '../src/types.js';
+
+const roots: string[] = [];
+
+function completedState(): CodexAppProgressCardSessionState {
+  return {
+    phase: 'completed',
+    activeTurnId: 'om_turn',
+    acceptedTurnIds: ['om_turn'],
+    pendingTurns: [],
+    sessionId: 'session-sensitive-id',
+    title: '修复 <Botmux> & Dashboard',
+    content: [
+      '[17:10:00] 第一条完整证据。',
+      '[17:12:00] 第二条完整证据。',
+      '[17:28:00] 本轮已完成。',
+    ].join('\n\n'),
+    startedAtMs: new Date('2026-07-30T09:10:00.000Z').getTime(),
+    updatedAtMs: new Date('2026-07-30T09:28:00.000Z').getTime(),
+    overview: {
+      stage: '完成',
+      current: '安全更新链路已上线',
+      completed: ['版本解析', '同步脚本'],
+      total: 2,
+      next: '无',
+      evidence: ['12 项测试通过'],
+      delivery: ['commit abc123'],
+      risks: ['等待外部观察'],
+    },
+  };
+}
+
+describe('Codex App 完整过程 HTML', () => {
+  afterEach(() => {
+    while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+  });
+
+  it('写入包含完整时间线和终态验收信息的转义 HTML', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'botmux-progress-report-'));
+    roots.push(dataDir);
+
+    const report = writeCodexAppProgressReport(completedState(), { dataDir });
+    const html = readFileSync(report.filePath, 'utf8');
+
+    expect(report.reportId).toMatch(/^[a-f0-9]{32}$/);
+    expect(html).toContain('修复 &lt;Botmux&gt; &amp; Dashboard');
+    expect(html).toContain('用时 18 分钟');
+    expect(html).toContain('17:28 完成');
+    expect(html).toContain('安全更新链路已上线');
+    expect(html).toContain('12 项测试通过');
+    expect(html).toContain('commit abc123');
+    expect(html).toContain('等待外部观察');
+    expect(html).toContain('第一条完整证据');
+    expect(html).toContain('第二条完整证据');
+  });
+
+  it('只把固定格式的报告路由映射到数据目录', () => {
+    const dataDir = '/tmp/botmux-data';
+    const reportId = '0123456789abcdef0123456789abcdef';
+
+    expect(resolveCodexAppProgressReportRequest(
+      `/progress-reports/${reportId}.html`,
+      dataDir,
+    )).toBe(join(dataDir, 'progress-reports', `${reportId}.html`));
+    expect(resolveCodexAppProgressReportRequest(
+      '/progress-reports/../../sessions.json',
+      dataDir,
+    )).toBeUndefined();
+  });
+
+  it('保留 Dashboard 鉴权参数并替换为报告路径', () => {
+    const reportId = '0123456789abcdef0123456789abcdef';
+    expect(buildCodexAppProgressReportUrl(
+      'https://m-youc.example/?t=dashboard-token',
+      reportId,
+    )).toBe(
+      `https://m-youc.example/progress-reports/${reportId}.html?t=dashboard-token`,
+    );
+  });
+});

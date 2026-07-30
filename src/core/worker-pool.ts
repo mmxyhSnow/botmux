@@ -14,7 +14,7 @@ import { whiteboardEnabled } from '../services/whiteboard-store.js';
 import { cleanupTraexAskHooks, installHook } from '../adapters/hook-installer.js';
 import { hookCommandFor } from '../adapters/hook-command.js';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { config } from '../config.js';
+import { config, getDashboardExternalHost } from '../config.js';
 import { readGlobalConfig } from '../global-config.js';
 import * as sessionStore from '../services/session-store.js';
 import * as asyncTriggerStore from '../services/async-trigger-store.js';
@@ -32,7 +32,12 @@ import { claudeJsonlPathForSession } from '../adapters/cli/claude-code.js';
 import { findUniqueClaudeSessionByCwd } from './session-discovery.js';
 import { buildMarkdownCard, buildContextualReplyCard, type LocalHomeLinkMode } from '../im/lark/md-card.js';
 import { CodexAppProgressCard } from '../services/codex-app-progress-card.js';
+import {
+  buildCodexAppProgressReportUrl,
+  writeCodexAppProgressReport,
+} from '../services/codex-app-progress-report.js';
 import { codexAppProgressCardTitle } from '../services/codex-app-progress.js';
+import { buildDashboardUrls } from './dashboard-url.js';
 import { renderBrandTemplate } from '../im/lark/brand-template.js';
 import { replyToDocComment, chunkCommentText, unsubscribeDocFile, removeCommentReaction } from '../im/lark/doc-comment.js';
 import { listDocSubscriptionsForSession, removeDocSubscription } from '../services/doc-subs-store.js';
@@ -295,6 +300,28 @@ function codexAppProgressEnabled(ds: DaemonSession): boolean {
   }
 }
 
+/** 使用当前 Dashboard 令牌构造受保护的过程报告链接，不创建或轮换凭据。 */
+function codexAppProgressReportUrl(reportId: string): string | undefined {
+  try {
+    const dashboardDir = join(homedir(), '.botmux');
+    const portPath = join(dashboardDir, '.dashboard-port');
+    const tokenPath = join(dashboardDir, '.dashboard-token');
+    const port = existsSync(portPath)
+      ? readFileSync(portPath, 'utf8').trim()
+      : String(config.dashboard.port);
+    const token = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf8').trim() : '';
+    if (!token) return undefined;
+    const dashboardUrl = buildDashboardUrls({
+      host: getDashboardExternalHost(),
+      port,
+      token,
+    }).url;
+    return buildCodexAppProgressReportUrl(dashboardUrl, reportId);
+  } catch {
+    return undefined;
+  }
+}
+
 function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
   let card = codexAppProgressCards.get(ds);
   if (card) return card;
@@ -310,6 +337,10 @@ function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
     ),
     patch: (messageId, cardJson) => updateMessage(ds.larkAppId, messageId, cardJson),
     canRepostAfterPatchFailure: error => error instanceof MessageWithdrawnError,
+    publishReport: state => {
+      const report = writeCodexAppProgressReport(state);
+      return codexAppProgressReportUrl(report.reportId);
+    },
     persist: state => {
       ds.session.codexAppProgressCard = state;
       sessionStore.updateSession(ds.session);
