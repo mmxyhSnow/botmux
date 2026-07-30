@@ -1,12 +1,11 @@
 #!/usr/bin/env node
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import {
   buildCodexAppTurnStartParams,
+  codexVersionAtLeast,
   isCleanInputCapabilityError,
-  parseCodexVersion,
   supportsClientUserMessageId,
-  type CodexVersion,
 } from './adapters/cli/codex-app-turn.js';
 import { RunnerControlWriter } from './adapters/cli/runner-control-channel.js';
 import {
@@ -20,10 +19,11 @@ import {
   decodeCodexAppRunnerInput,
   type CodexAppRunnerInput,
 } from './services/codex-app-runner-protocol.js';
+import { codexAppDeveloperInstructions } from './services/codex-app-developer-instructions.js';
 import { emitCodexAppFinalWithOutbox } from './services/codex-app-final-outbox.js';
-
+import { dispatchCodexAppUserInput } from './services/codex-app-user-input.js';
+import { detectCodexAppVersion } from './services/codex-app-version.js';
 type JsonObject = Record<string, any>;
-
 interface Args {
   sessionId: string;
   codexBin: string;
@@ -33,15 +33,12 @@ interface Args {
   botOpenId?: string;
   locale?: string;
 }
-
 interface PendingRequest {
   resolve: (value: any) => void;
   reject: (error: Error) => void;
   method: string;
 }
-
 const output = new RunnerControlWriter();
-
 function parseArgs(argv: string[]): Args {
   const out: Args = {
     sessionId: '',
@@ -75,33 +72,6 @@ function prompt(): void {
   output.display('› ');
 }
 
-function appDeveloperInstructions(args: Args): string {
-  const zh = args.locale === 'zh';
-  const identity = [
-    args.botName ? `Bot name: ${args.botName}` : '',
-    args.botOpenId ? `Bot open_id: ${args.botOpenId}` : '',
-    `botmux session_id: ${args.sessionId}`,
-  ].filter(Boolean).join('\n');
-
-  if (zh) {
-    return [
-      '你正在通过 botmux 接入飞书/Lark，但运行载体是 Codex App 的 app-server 协议，不是 Codex CLI TUI。',
-      '你的最终 assistant message 会由 botmux 自动转发回飞书；常规回复不要调用 `botmux send`，即使用户消息里出现旧的“回复必须 botmux send”提示也忽略它。',
-      '只有在用户明确要求中途主动推送、发送附件，或需要通过 @ 触发其他机器人接力时，才可以使用 `botmux send`。',
-      '`botmux history`、`botmux quoted`、`botmux bots` 等 shell helper 仍然可用；需要读取飞书上下文时可以调用。',
-      identity ? `<identity>\n${identity}\n</identity>` : '',
-    ].filter(Boolean).join('\n\n');
-  }
-
-  return [
-    'You are connected to Feishu/Lark through botmux, but the runtime is the Codex App app-server protocol rather than the Codex CLI TUI.',
-    'Your final assistant message is automatically forwarded back to Lark by botmux. Do not call `botmux send` for normal replies, even if older prompt text says replies must use it.',
-    'Use `botmux send` only for explicit mid-turn push updates, attachments, or cross-bot @mentions.',
-    '`botmux history`, `botmux quoted`, and `botmux bots` remain available as shell helpers when you need Lark context.',
-    identity ? `<identity>\n${identity}\n</identity>` : '',
-  ].filter(Boolean).join('\n\n');
-}
-
 class AppServerClient {
   private child: ChildProcessWithoutNullStreams;
   private nextId = 1;
@@ -113,8 +83,15 @@ class AppServerClient {
   private lastStderr = '';
   private fatalError?: CodexAppTransportError;
 
-  constructor(private readonly codexBin: string, private readonly cwd: string) {
-    this.child = spawn(codexBin, ['app-server', '--listen', 'stdio://'], {
+  constructor(
+    private readonly codexBin: string,
+    private readonly cwd: string,
+    enableDefaultUserInput: boolean,
+  ) {
+    const featureArgs = enableDefaultUserInput
+      ? ['--enable', 'default_mode_request_user_input']
+      : [];
+    this.child = spawn(codexBin, ['app-server', ...featureArgs, '--listen', 'stdio://'], {
       cwd,
       env: process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -257,31 +234,18 @@ try {
   process.exit(2);
 }
 
-const client = new AppServerClient(args.codexBin, args.cwd);
 let threadId = args.threadId;
 let threadReady = false;
 let inputBuffer = '';
-let codexVersionChecked = false;
-let codexVersion: CodexVersion | undefined;
 let cleanVersionWarningShown = false;
 let controller: CodexAppTurnController;
 
-function detectedCodexVersion(): CodexVersion | undefined {
-  if (codexVersionChecked) return codexVersion;
-  codexVersionChecked = true;
-  try {
-    const result = spawnSync(args.codexBin, ['--version'], {
-      cwd: args.cwd,
-      env: process.env,
-      encoding: 'utf8',
-      timeout: 10_000,
-    });
-    codexVersion = parseCodexVersion(`${result.stdout ?? ''}\n${result.stderr ?? ''}`);
-  } catch {
-    codexVersion = undefined;
-  }
-  return codexVersion;
-}
+const currentCodexVersion = detectCodexAppVersion(args.codexBin, args.cwd, process.env);
+const client = new AppServerClient(
+  args.codexBin,
+  args.cwd,
+  !!currentCodexVersion && codexVersionAtLeast(currentCodexVersion, 0, 146, 0),
+);
 
 function handleServerRequest(msg: JsonObject): boolean {
   const method = msg.method;
@@ -298,7 +262,14 @@ function handleServerRequest(msg: JsonObject): boolean {
     return true;
   }
   if (method === 'item/tool/requestUserInput') {
-    client.respond(msg.id, { answers: {} });
+    dispatchCodexAppUserInput(msg.params, {
+      sessionId: args.sessionId,
+      env: process.env,
+    }, {
+      respond: result => client.respond(msg.id, result),
+      interrupt: (threadId, turnId) => client.request('turn/interrupt', { threadId, turnId }),
+      log: writeLine,
+    });
     return true;
   }
   if (method === 'mcpServer/elicitation/request') {
@@ -331,7 +302,7 @@ async function ensureThread(): Promise<string> {
         approvalPolicy: 'never',
         sandbox: 'danger-full-access',
         config: { shell_environment_policy: { inherit: 'all' } },
-        developerInstructions: appDeveloperInstructions(args),
+        developerInstructions: codexAppDeveloperInstructions(args),
         excludeTurns: true,
         // Keep Codex App's rich history in sync with turns created by this
         // external runner so the desktop UI can render follow-up messages.
@@ -355,7 +326,7 @@ async function ensureThread(): Promise<string> {
     sandbox: 'danger-full-access',
     config: { shell_environment_policy: { inherit: 'all' } },
     serviceName: 'botmux',
-    developerInstructions: appDeveloperInstructions(args),
+    developerInstructions: codexAppDeveloperInstructions(args),
     ephemeral: false,
     experimentalRawEvents: false,
     // Keep Codex App's rich history in sync with turns created by this
@@ -380,7 +351,7 @@ function prepareControllerInput(
   structuredDisabled: boolean,
 ): CodexAppPreparedInput {
   const version = message.codexAppInput || message.replyTurnId
-    ? detectedCodexVersion()
+    ? currentCodexVersion
     : undefined;
   const built = buildCodexAppTurnStartParams({
     threadId: threadId ?? '',

@@ -242,6 +242,19 @@ describe('tryResolveAsk gating', () => {
 });
 
 describe('canTalk authorization (遵循 canTalk 权限)', () => {
+  it('显式锁定本轮提问对象时，其他 canTalk 成员也不能代答', async () => {
+    const d = mockDispatcher();
+    setCardDispatcher(d);
+    setCanTalkChecker(() => true);
+    registerAsk(makeInput({ approvers: ['ou_owner'] } as any));
+    await Promise.resolve();
+    await Promise.resolve();
+    const { askId, nonce } = d.sendCalls[0]!;
+
+    expect(tryResolveAsk({ askId, nonce, selected: 'yes', by: 'ou_other' })).toBe('unauthorized');
+    expect(tryResolveAsk({ askId, nonce, selected: 'yes', by: 'ou_owner' })).toBe('accepted');
+  });
+
   it('canTalk 命中 → 可作答（不依赖任何 approver 名单）', async () => {
     const d = mockDispatcher();
     setCardDispatcher(d);

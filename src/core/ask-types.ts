@@ -98,6 +98,8 @@ export interface CreateAskInput {
   /** Absolute deadline; computed by caller from `--timeout`. Broker won't
    *  re-compute. */
   timeoutMs: number;
+  /** 非空时，点击人还必须属于该名单；不会绕过原有 canTalk 门禁。 */
+  approvers?: ReadonlyArray<string>;
   /** 发起 ask 的会话类型。仅用于点击鉴权时把 chatType 喂给 canTalk（p2pOpen 腿）；
    *  缺省时该腿 fail-closed，鉴权退回原语义。 */
   chatType?: 'group' | 'p2p';
@@ -121,6 +123,8 @@ export interface PendingAsk {
   chatType?: 'group' | 'p2p';
   /** 问题列表，替代旧的 `options` + `prompt`。 */
   questions: ReadonlyArray<AskQuestion>;
+  /** 原生确认默认锁定到本轮提问对象；普通 botmux ask 留空以保持旧语义。 */
+  approvers?: ReadonlyArray<string>;
   /** 当前已勾选答案快照。仅 daemon/card 内部使用；CLI IPC 边界不暴露。 */
   selections?: ReadonlyArray<ReadonlyArray<string>>;
   createdAt: number;

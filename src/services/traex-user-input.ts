@@ -10,11 +10,10 @@ export type TraexUserInputParseResult =
   | { kind: 'unsupported'; reason: string };
 
 /**
- * Convert TRAE's app-server requestUserInput payload into the existing
- * button-card contract. The card cannot faithfully represent a free-text or
- * malformed question, so a mixed batch must not silently drop those questions.
+ * 将 Codex 系 app-server 的 requestUserInput 转换为现有按钮卡片协议。
+ * 自由文本、密文或畸形问题无法安全展示，混合批次也必须整体拒绝。
  */
-export function parseTraexUserInputQuestions(params: unknown): TraexUserInputParseResult {
+export function parseCodexAppUserInputQuestions(params: unknown): TraexUserInputParseResult {
   if (!params || typeof params !== 'object' || Array.isArray(params)) {
     return { kind: 'unsupported', reason: 'missing request parameters' };
   }
@@ -31,6 +30,9 @@ export function parseTraexUserInputQuestions(params: unknown): TraexUserInputPar
       return { kind: 'unsupported', reason: `question ${index + 1} is malformed` };
     }
     const question = raw as Record<string, unknown>;
+    if (question.isSecret === true) {
+      return { kind: 'unsupported', reason: `question ${index + 1} is secret` };
+    }
     if (!Array.isArray(question.options) || question.options.length < 2) {
       return { kind: 'unsupported', reason: `question ${index + 1} has fewer than two options` };
     }
@@ -68,3 +70,6 @@ export function parseTraexUserInputQuestions(params: unknown): TraexUserInputPar
   }
   return { kind: 'answerable', questions };
 }
+
+/** 保留旧 TRAE 调用名，两个运行载体共享同一份 app-server 协议解析。 */
+export const parseTraexUserInputQuestions = parseCodexAppUserInputQuestions;

@@ -4699,6 +4699,10 @@ ipcRoute('POST', '/api/asks', async (req, res) => {
     // p2pOpen 的 bot 在私聊里会出现「对方点不动按钮」，留痕便于排查。
     logger.warn(`[ask:${boundAsk.larkAppId}] no active session for ${boundAsk.sessionId.substring(0, 8)}; chatType unknown (p2pOpen answer gate falls back to allowlist)`);
   }
+  const turnCallerOpenId = askSession?.session.lastCallerOpenId;
+  if (boundAsk.lockToTurnCaller && !turnCallerOpenId) {
+    return jsonRes(res, 409, { ok: false, error: 'turn_caller_unavailable' });
+  }
   const result = await registerAskBroker({
     larkAppId: boundAsk.larkAppId,
     chatId: boundAsk.chatId,
@@ -4707,6 +4711,7 @@ ipcRoute('POST', '/api/asks', async (req, res) => {
     questions: boundAsk.questions,
     timeoutMs: boundAsk.timeoutMs,
     chatType: askChatType,
+    ...(boundAsk.lockToTurnCaller ? { approvers: [turnCallerOpenId!] } : {}),
   });
 
   // CoCo 专属：它的 hook 不能用 directive 代答（hook 客户端永远 passthrough，CoCo 会

@@ -16,6 +16,8 @@ export interface AskApiBody {
   questions: AskQuestion[];
   /** Already in milliseconds. CLI side converts from `--timeout` seconds. */
   timeoutMs: number;
+  /** true 时 daemon 用活跃会话反查本轮发送者，调用方不能自行指定 open_id。 */
+  lockToTurnCaller?: boolean;
 }
 
 export type AskApiBodyError =
@@ -33,7 +35,8 @@ export type AskApiBodyError =
   | 'duplicate_option_key'
   | 'bad_questions'
   | 'bad_question_shape'
-  | 'bad_multiSelect';
+  | 'bad_multiSelect'
+  | 'bad_lockToTurnCaller';
 
 /** 校验单个 option 对象，返回解析后的 AskOption 或错误码。 */
 function parseOption(o: unknown): AskOption | AskApiBodyError {
@@ -91,6 +94,9 @@ export function parseAskBody(raw: unknown): AskApiBody | { error: AskApiBodyErro
   ) {
     return { error: 'bad_timeoutMs' };
   }
+  if (r.lockToTurnCaller !== undefined && typeof r.lockToTurnCaller !== 'boolean') {
+    return { error: 'bad_lockToTurnCaller' };
+  }
 
   let questions: AskQuestion[];
 
@@ -128,5 +134,6 @@ export function parseAskBody(raw: unknown): AskApiBody | { error: AskApiBodyErro
     rootMessageId: r.rootMessageId as string | null,
     questions,
     timeoutMs: r.timeoutMs,
+    ...(r.lockToTurnCaller === true ? { lockToTurnCaller: true } : {}),
   };
 }

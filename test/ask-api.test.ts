@@ -43,6 +43,13 @@ describe('parseAskBody — happy path', () => {
     if ('error' in out) return;
     expect(out.rootMessageId).toBeNull();
   });
+
+  it('preserves the request to lock answers to the current turn caller', () => {
+    const out = parseAskBody(validBody({ lockToTurnCaller: true }));
+    expect('error' in out).toBe(false);
+    if ('error' in out) return;
+    expect(out.lockToTurnCaller).toBe(true);
+  });
 });
 
 describe('parseAskBody — validation', () => {

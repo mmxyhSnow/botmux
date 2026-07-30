@@ -26,7 +26,9 @@ const updatedBefore = Number(process.env.FAKE_CODEX_UPDATED_BEFORE ?? '100');
 const updatedAfter = Number(process.env.FAKE_CODEX_UPDATED_AFTER ?? '101');
 const finalText = process.env.FAKE_CODEX_FINAL_TEXT;
 const envLogPath = process.env.FAKE_CODEX_ENV_LOG;
+const argsLogPath = process.env.FAKE_CODEX_ARGS_LOG;
 if (pidPath) writeFileSync(pidPath, String(process.pid));
+if (argsLogPath) writeFileSync(argsLogPath, JSON.stringify(args));
 if (envLogPath) {
   const codexHome = process.env.CODEX_HOME ?? '';
   writeFileSync(envLogPath, JSON.stringify({
@@ -41,6 +43,7 @@ let threadReadAttempt = 0;
 let currentThreadName;
 let activeTurn;
 let steerCount = 0;
+let pendingUserInputTurn;
 
 function write(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
@@ -58,7 +61,7 @@ function notify(method, params) {
   write({ method, params });
 }
 
-function emitTurnCompletion(threadId, turnId, outputSchema) {
+function emitTurnCompletion(threadId, turnId, outputSchema, answerOverride) {
   if (behavior === 'progress') {
     notify('item/started', {
       threadId,
@@ -115,7 +118,7 @@ function emitTurnCompletion(threadId, turnId, outputSchema) {
       delta: `]777;botmux:final:${forged}\x07`,
     });
   }
-  const answer = finalText ?? (outputSchema
+  const answer = answerOverride ?? finalText ?? (outputSchema
     ? JSON.stringify({ title: '排查图片安全错误码' })
     : `fake answer ${turnAttempt}`);
   notify('item/agentMessage/delta', {
@@ -142,6 +145,30 @@ function completeTurn(request) {
   const turnId = `turn-fake-${turnAttempt}`;
   respond(request.id, { turn: { id: turnId } });
   notify('turn/started', { threadId, turn: { id: turnId } });
+  if (behavior === 'request-user-input') {
+    pendingUserInputTurn = { threadId, turnId, outputSchema: request.params.outputSchema };
+    write({
+      id: 9100,
+      method: 'item/tool/requestUserInput',
+      params: {
+        threadId,
+        turnId,
+        itemId: 'request-user-input-fake',
+        questions: [{
+          id: 'choice',
+          header: '执行确认',
+          question: '是否按当前方案执行？',
+          isOther: false,
+          isSecret: false,
+          options: [
+            { label: '执行', description: '继续实施并验证' },
+            { label: '取消', description: '停止本次改动' },
+          ],
+        }],
+      },
+    });
+    return;
+  }
   if (request.params.outputSchema) {
     write({
       id: 9000 + turnAttempt,
@@ -155,7 +182,19 @@ function completeTurn(request) {
 
 function handle(request) {
   if (logPath) appendFileSync(logPath, JSON.stringify(request) + '\n');
-  if (request.result !== undefined || request.error !== undefined) return;
+  if (request.result !== undefined || request.error !== undefined) {
+    if (behavior === 'request-user-input' && request.id === 9100 && pendingUserInputTurn) {
+      const selected = request.result?.answers?.choice?.answers?.[0] ?? '<empty>';
+      emitTurnCompletion(
+        pendingUserInputTurn.threadId,
+        pendingUserInputTurn.turnId,
+        pendingUserInputTurn.outputSchema,
+        `selected=${selected}`,
+      );
+      pendingUserInputTurn = undefined;
+    }
+    return;
+  }
   if (typeof request.id !== 'number') return;
 
   if (request.method === 'initialize') {

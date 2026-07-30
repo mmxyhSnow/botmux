@@ -111,6 +111,14 @@ describe('buildAskCard', () => {
     expect(text).toContain('继续发布');
   });
 
+  it('锁定本轮提问对象时，不再显示为本群所有可对话成员可答', () => {
+    const card = JSON.parse(buildAskCard(makePending({ approvers: ['ou_owner'] } as any)));
+    const answerable = card.elements[0].fields[1].text.content;
+
+    expect(answerable).toContain('本轮提问对象');
+    expect(answerable).not.toContain('本群可对话成员');
+  });
+
   it('未 settle 卡片：含自定义回复提示（直接在话题里回复）', () => {
     const text = buildAskCard(makePending());
     expect(text).toContain('直接在话题');

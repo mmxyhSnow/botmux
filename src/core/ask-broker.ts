@@ -18,7 +18,6 @@ import type {
   CreateAskInput,
   PendingAsk,
 } from './ask-types.js';
-
 interface InternalPending extends Omit<PendingAsk, 'selections'> {
   resolve: (result: AskResult) => void;
   timeoutHandle: NodeJS.Timeout;
@@ -31,27 +30,24 @@ interface InternalPending extends Omit<PendingAsk, 'selections'> {
    */
   selections: Map<number, Set<string>>;
 }
-
 const pending = new Map<string, InternalPending>();
 let dispatcher: AskCardDispatcher | null = null;
-
 /** IM-side canTalk predicate, wired by the daemon at bootstrap. Lets the broker
  *  honour the bot's canTalk gate without importing Lark types: whoever may
  *  address the bot in this chat may answer its `botmux ask`. Returns false until
  *  wired, so an unwired broker authorizes no one (daemon always wires it). */
 let canTalkChecker: ((larkAppId: string, chatId: string, openId: string, chatType?: 'group' | 'p2p') => boolean) | null = null;
-
 /** Wire the canTalk predicate. Called once during daemon bootstrap. */
 export function setCanTalkChecker(
   fn: (larkAppId: string, chatId: string, openId: string, chatType?: 'group' | 'p2p') => boolean,
 ): void {
   canTalkChecker = fn;
 }
-
 /** A click is authorized iff the clicker may `canTalk` to the bot in this chat.
  *  `botmux ask` is a talk-level interaction (answering the agent's question),
  *  so it follows the canTalk gate — not the stricter canOperate / allowedUsers. */
 function isAuthorizedToAnswer(ask: InternalPending, by: string): boolean {
+  if (ask.approvers?.length && !ask.approvers.includes(by)) return false;
   return canTalkChecker?.(ask.larkAppId, ask.chatId, by, ask.chatType) ?? false;
 }
 
@@ -119,6 +115,7 @@ export function registerAsk(input: CreateAskInput): Promise<AskResult> {
       sessionId: input.sessionId,
       chatType: input.chatType,
       questions: input.questions,
+      ...(input.approvers?.length ? { approvers: [...input.approvers] } : {}),
       createdAt,
       deadlineAt,
       settled: false,
@@ -366,18 +363,14 @@ export function invalidateAll(reason: string): number {
   return ids.length;
 }
 
-/** Internal — settle an ask exactly once and notify the dispatcher's onSettle
- *  hook (best-effort, never blocks broker state transitions). The settled
- *  entry stays in the map for `SETTLED_RETENTION_MS` so late race-losers get
- *  a precise `already_settled` outcome; `gcSettled` reaps it afterward. */
+/** 只结算一次；保留短期终态供重复点击返回精确结果。 */
 function settle(askId: string, result: AskResult): void {
   const ask = pending.get(askId);
   if (!ask || ask.settled) return;
   ask.settled = true;
   ask.settledAt = Date.now();
   clearTimeout(ask.timeoutHandle);
-  // Reap older settled entries opportunistically — keeps the map bounded
-  // without paying for a dedicated GC timer.
+  // 顺便清理旧终态，避免为极小集合单独维护 GC 定时器。
   gcSettled();
 
   try {
@@ -403,8 +396,7 @@ function settle(askId: string, result: AskResult): void {
   }
 }
 
-/** Strip broker-internal fields before handing a snapshot to the IM-side
- *  dispatcher. Keeps the dispatcher contract narrow. */
+/** 移除 broker 内部字段后再交给 IM 层。 */
 function snapshot(ask: InternalPending): PendingAsk {
   const { resolve: _r, timeoutHandle: _t, settledAt: _sat, selections: _sel, ...rest } = ask;
   return {
@@ -413,8 +405,7 @@ function snapshot(ask: InternalPending): PendingAsk {
   };
 }
 
-/** Drop settled entries that have aged past the retention window. Cheap O(n)
- *  walk — n is tiny in practice (≤ a few dozen pending+recent asks). */
+/** 清理超过保留窗口的终态；集合通常只有几十项。 */
 function gcSettled(): void {
   const cutoff = Date.now() - SETTLED_RETENTION_MS;
   for (const [id, ask] of pending) {

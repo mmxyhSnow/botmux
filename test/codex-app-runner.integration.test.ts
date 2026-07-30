@@ -215,6 +215,8 @@ describe('codex-app-runner app-server protocol integration', () => {
     const result = await exerciseRunner({ version: '0.136.0', includeMissingImage: true });
     const initialize = result.requests.find(request => request.method === 'initialize');
     expect(initialize?.params.capabilities).toEqual({ experimentalApi: true });
+    const threadStart = result.requests.find(request => request.method === 'thread/start');
+    expect(threadStart?.params.developerInstructions).toContain('request_user_input');
 
     const turns = result.requests.filter(request => request.method === 'turn/start');
     expect(turns).toHaveLength(1);
