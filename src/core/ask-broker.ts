@@ -24,6 +24,8 @@ interface InternalPending extends Omit<PendingAsk, 'selections'> {
   timeoutHandle: NodeJS.Timeout;
   /** epoch ms when settle ran; undefined while still pending. */
   settledAt?: number;
+  /** 结算态卡片更新；最终完成态必须等待它结束，避免旧状态后写覆盖。 */
+  settlePatch?: Promise<void>;
   /**
    * 按问题序号（questionIndex）累积的勾选 key 集合。
    * 单选问题（multiSelect:false）Set 内最多保留 1 个 key。
@@ -282,17 +284,9 @@ function settle(askId: string, result: AskResult): void {
   // 顺便清理旧终态，避免为极小集合单独维护 GC 定时器。
   gcSettled();
 
-  try {
-    ask.resolve(result);
-  } catch (err) {
-    logger.warn?.(
-      `ask-broker: ${askId} resolve threw: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-
   if (dispatcher?.onSettle) {
     try {
-      void Promise.resolve(dispatcher.onSettle(snapshot(ask), result)).catch((err) => {
+      ask.settlePatch = Promise.resolve(dispatcher.onSettle(snapshot(ask), result)).catch((err) => {
         logger.warn?.(
           `ask-broker: ${askId} onSettle failed: ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -303,6 +297,14 @@ function settle(askId: string, result: AskResult): void {
       );
     }
   }
+
+  try {
+    ask.resolve(result);
+  } catch (err) {
+    logger.warn?.(
+      `ask-broker: ${askId} resolve threw: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /** 移除 broker 内部字段后再交给 IM 层。 */
@@ -311,6 +313,7 @@ function snapshot(ask: InternalPending): PendingAsk {
     resolve: _r,
     timeoutHandle: _t,
     settledAt: _sat,
+    settlePatch: _sp,
     selections: _sel,
     flowId: _flowId,
     ...rest
@@ -396,6 +399,7 @@ export async function completeAskFlow(flowId: string, sessionId: string): Promis
   const flow = flows.get(key);
   const ask = flow?.lastAskId ? pending.get(flow.lastAskId) : undefined;
   if (!flow || !ask || !ask.settled || !dispatcher?.completeFlow) return false;
+  await ask.settlePatch;
   await dispatcher.completeFlow(snapshot(ask));
   flows.delete(key);
   return true;

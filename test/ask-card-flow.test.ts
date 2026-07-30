@@ -262,4 +262,50 @@ describe('Codex 连续提问卡片', () => {
 
     expect(updatedCards.at(-1)?.card?.header?.title?.content).toContain('已结束');
   });
+
+  it('最终完成更新必须等待结算卡片更新结束，避免被旧状态反向覆盖', async () => {
+    let releaseSettledPatch: (() => void) | undefined;
+    let completedCount = 0;
+    setCardDispatcher({
+      async send() {
+        return { messageId: 'om_race_card' };
+      },
+      onSettle() {
+        return new Promise<void>((resolve) => {
+          releaseSettledPatch = resolve;
+        });
+      },
+      async completeFlow() {
+        completedCount++;
+      },
+    });
+
+    const result = registerAsk({
+      larkAppId: 'cli_ask',
+      chatId: 'oc_chat',
+      rootMessageId: 'om_root',
+      sessionId: 'sess-1',
+      questions: [question('最终状态时序', '完成', '继续')],
+      timeoutMs: 10_000,
+      flowId: 'turn-complete-race',
+    } as any);
+    await flushDispatch();
+    const askId = (askBroker as any)._allAskIds().at(-1);
+    const pending = _getPending(askId)!;
+    expect((askBroker as any).tryResolveAsk({
+      askId,
+      nonce: pending.nonce,
+      selected: '完成',
+      by: 'ou_owner',
+    })).toBe('accepted');
+    await result;
+
+    const completion = (askBroker as any).completeAskFlow('turn-complete-race', 'sess-1');
+    await flushDispatch();
+    expect(completedCount).toBe(0);
+
+    releaseSettledPatch?.();
+    await expect(completion).resolves.toBe(true);
+    expect(completedCount).toBe(1);
+  });
 });
