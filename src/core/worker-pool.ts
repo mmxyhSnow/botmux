@@ -300,6 +300,7 @@ function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
   if (card) return card;
   const cb = requireCallbacks();
   card = new CodexAppProgressCard({
+    sessionId: ds.session.sessionId,
     post: (cardJson, turnId) => cb.sessionReply(
       sessionAnchorId(ds),
       cardJson,
@@ -316,6 +317,19 @@ function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
   }, ds.session.codexAppProgressCard);
   codexAppProgressCards.set(ds, card);
   return card;
+}
+
+/**
+ * 响应进度卡的纯查看动作，只调整主卡展示密度。
+ * 返回 false 表示会话已经失效或当前会话未启用即时进度卡。
+ */
+export async function setCodexAppProgressDetailsExpanded(
+  ds: DaemonSession,
+  expanded: boolean,
+): Promise<boolean> {
+  if (!codexAppProgressEnabled(ds) || !ds.session.codexAppProgressCard) return false;
+  await codexAppProgressCardFor(ds).setDetailsExpanded(expanded);
+  return true;
 }
 
 /** 入站消息被接受后的最早状态投影；调用方必须先等待它，再派发给 worker。 */

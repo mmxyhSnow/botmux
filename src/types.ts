@@ -125,15 +125,36 @@ export interface CodexAppProgressCardArchivedPage {
   archivedSynced?: boolean;
 }
 
+/** AI 显式上报的任务看板字段；缺失时渲染层回退到普通进展。 */
+export interface CodexAppProgressOverview {
+  stage: string;
+  current: string;
+  completed: string[];
+  next: string;
+  blocker?: string;
+  evidence?: string[];
+  delivery?: string[];
+  risks?: string[];
+}
+
 /** Codex App 即时进度卡的会话级投影，进程重启后可继续更新原卡片。 */
 export interface CodexAppProgressCardSessionState {
   phase: CodexAppProgressCardPhase;
   activeTurnId: string;
   acceptedTurnIds: string[];
   pendingTurns: Array<{ turnId: string; title: string }>;
+  /** 卡片查看动作绑定的 daemon 会话身份。 */
+  sessionId?: string;
   messageId?: string;
   title: string;
   content: string;
+  /** 逻辑任务开始与最近证据时间，用于顶部耗时信息。 */
+  startedAtMs?: number;
+  updatedAtMs?: number;
+  /** AI 显式上报的当前任务看板。 */
+  overview?: CodexAppProgressOverview;
+  /** 主卡是否展开更多近期证据；完整历史仍使用独立分页卡。 */
+  detailsExpanded?: boolean;
   pageNumber?: number;
   currentEntryCount?: number;
   archivedPages?: CodexAppProgressCardArchivedPage[];

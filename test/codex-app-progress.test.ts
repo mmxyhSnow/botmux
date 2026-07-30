@@ -61,6 +61,22 @@ describe('Codex App 真实进展提取', () => {
     }).map(item => item.content)).toEqual(['当前版本是 3.6.0，已经核验。']);
   });
 
+  it('完整结构化进度标记无需额外句号也会作为独立增量发送', () => {
+    const progress = new CodexAppProgressThrottler({ minIntervalMs: 0 });
+    const marker = '<!--botmux-progress:'
+      + '{"stage":"验证","current":"运行回归","completed":[],"next":"构建"}'
+      + '-->';
+    expect(progress.drainSnapshots({
+      turnId: 'om_1',
+      text: `代码已经修改。${marker}`,
+      startedAtMs: 1,
+      nowMs: 2,
+    }).map(item => item.content)).toEqual([
+      '代码已经修改。',
+      marker,
+    ]);
+  });
+
   it('标题移除附件占位并按中文视觉宽度截断', () => {
     expect(codexAppProgressCardTitle('[图片 1] 帮我检查 botmux 部署')).toBe('帮我检查 botmux 部署');
     expect(codexAppProgressCardTitle('这是一段需要被截断的很长很长很长很长的用户问题', 10))

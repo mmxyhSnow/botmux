@@ -36,6 +36,19 @@ function isSentenceEnd(text: string, index: number): boolean {
 }
 
 function nextCompleteSentence(text: string): { content: string; consumed: number } | undefined {
+  const leadingWhitespace = text.match(/^\s*/)?.[0].length ?? 0;
+  const markerStart = '<!--botmux-progress:';
+  if (text.slice(leadingWhitespace).startsWith(markerStart)) {
+    const markerEnd = text.indexOf('-->', leadingWhitespace + markerStart.length);
+    if (markerEnd >= 0) {
+      const consumed = markerEnd + 3;
+      return {
+        content: text.slice(leadingWhitespace, consumed),
+        consumed,
+      };
+    }
+    return undefined;
+  }
   for (let index = 0; index < text.length; index++) {
     if (!isSentenceEnd(text, index)) continue;
     let end = index + 1;

@@ -147,14 +147,15 @@ describe('Codex 连续提问卡片', () => {
       expect.objectContaining({
         disabled: true,
         type: 'primary',
-        text: expect.objectContaining({ content: '交互智能' }),
+        text: expect.objectContaining({ content: '✅ 交互智能' }),
       }),
       expect.objectContaining({
         disabled: true,
         type: 'default',
-        text: expect.objectContaining({ content: '操作顺手' }),
+        text: expect.objectContaining({ content: '○ 操作顺手' }),
       }),
     ]));
+    expect(JSON.stringify(settled)).toContain('你的选择：交互智能');
 
     registerAsk({
       larkAppId: 'cli_ask',

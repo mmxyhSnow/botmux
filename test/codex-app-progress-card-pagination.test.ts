@@ -1,12 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CodexAppProgressCard } from '../src/services/codex-app-progress-card.js';
+import * as progressRenderer from '../src/services/codex-app-progress-card-renderer.js';
 import type { CodexAppProgressCardSessionState } from '../src/types.js';
 
 interface HarnessOptions {
   initial?: CodexAppProgressCardSessionState;
-  post?: (cardJson: string, turnId: string, index: number) => Promise<string>;
-  patch?: (messageId: string, cardJson: string) => Promise<void>;
-  canRepostAfterPatchFailure?: (error: unknown) => boolean;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -17,13 +15,11 @@ function harness(options: HarnessOptions = {}) {
     post: async (cardJson, turnId) => {
       posts.push({ cardJson, turnId });
       const index = posts.length;
-      return options.post?.(cardJson, turnId, index) ?? `om_card_${index}`;
+      return `om_card_${index}`;
     },
     patch: async (messageId, cardJson) => {
       patches.push({ messageId, cardJson });
-      await options.patch?.(messageId, cardJson);
     },
-    canRepostAfterPatchFailure: options.canRepostAfterPatchFailure,
     persist: state => states.push(state),
   }, options.initial);
   return { card, posts, patches, states };
@@ -60,133 +56,33 @@ describe('Codex App 进度卡多页状态机', () => {
     vi.useRealTimers();
   });
 
-  it('第九个内容块创建新卡并把第一页归档', async () => {
-    const h = harness();
-    await fillFirstPage(h.card);
-    await h.card.append('om_turn', '第 8 条进展。');
-
-    expect(h.posts).toHaveLength(2);
-    expect(header(h.posts[1].cardJson)).toMatchObject({
-      template: 'turquoise',
-      title: { content: '处理中 · 长任务（进度 2）' },
-    });
-    expect(h.card.snapshot()).toMatchObject({
-      pageNumber: 2,
-      currentEntryCount: 1,
-      messageId: 'om_card_2',
-      archivedPages: [{
-        pageNumber: 1,
-        messageId: 'om_card_1',
-        archivedSynced: true,
-      }],
-    });
-    const archived = h.patches.find(item => header(item.cardJson).template === 'grey');
-    expect(archived?.messageId).toBe('om_card_1');
-    expect(header(archived!.cardJson).title.content).toBe('进度 1 · 已归档 · 长任务');
-  });
-
-  it('超过字符阈值的完整进展独占新页且不截断', async () => {
+  it('超过旧字符阈值的完整进展仍保留在同一张主卡且不截断', async () => {
     const h = harness();
     const longProgress = '长'.repeat(1780);
     await h.card.accept('om_turn', '长文本');
     await h.card.append('om_turn', longProgress);
 
-    expect(h.posts).toHaveLength(2);
+    expect(h.posts).toHaveLength(1);
     expect(h.card.snapshot()).toMatchObject({
-      pageNumber: 2,
-      currentEntryCount: 1,
-    });
-    expect(bodyText(h.posts[1].cardJson)).toContain(longProgress);
-  });
-
-  it('新页 POST 失败后保留分页状态并在下次更新重试', async () => {
-    let failSecondPost = true;
-    const h = harness({
-      post: async (_cardJson, _turnId, index) => {
-        if (index === 2 && failSecondPost) throw new Error('post failed');
-        return `om_card_${index}`;
-      },
-    });
-    await fillFirstPage(h.card);
-
-    await expect(h.card.append('om_turn', '第 8 条进展。')).rejects.toThrow('post failed');
-    expect(h.card.snapshot()).toMatchObject({
-      pageNumber: 2,
-      currentEntryCount: 1,
-      archivedPages: [{ pageNumber: 1, messageId: 'om_card_1' }],
-    });
-    expect(h.card.snapshot()?.messageId).toBeUndefined();
-
-    failSecondPost = false;
-    await h.card.append('om_turn', '第 9 条进展。');
-    expect(h.card.snapshot()).toMatchObject({
-      pageNumber: 2,
+      pageNumber: 1,
       currentEntryCount: 2,
-      archivedPages: [{ archivedSynced: true }],
+      messageId: 'om_card_1',
     });
-    expect(h.card.snapshot()?.content).toContain('第 8 条进展。');
-    expect(h.card.snapshot()?.content).toContain('第 9 条进展。');
+    expect(bodyText(h.patches.at(-1)!.cardJson)).toContain(longProgress);
   });
 
-  it('归档 PATCH 失败不隐藏新页并可在后续更新中恢复', async () => {
-    let failArchive = true;
-    const h = harness({
-      patch: async (_messageId, cardJson) => {
-        if (header(cardJson).template === 'grey' && failArchive) {
-          throw new Error('archive failed');
-        }
-      },
-    });
-    await fillFirstPage(h.card);
-
-    await expect(h.card.append('om_turn', '第 8 条进展。')).rejects.toThrow('archive failed');
-    expect(h.posts).toHaveLength(2);
-    expect(h.card.snapshot()).toMatchObject({
-      pageNumber: 2,
-      messageId: 'om_card_2',
-      archivedPages: [{ pageNumber: 1, messageId: 'om_card_1' }],
-    });
-    expect(h.card.snapshot()?.archivedPages?.[0].archivedSynced).toBeUndefined();
-
-    failArchive = false;
-    await h.card.append('om_turn', '第 9 条进展。');
-    expect(h.card.snapshot()).toMatchObject({
-      archivedPages: [{ archivedSynced: true }],
-    });
-  });
-
-  it('旧归档卡被撤回时不补发并继续当前页', async () => {
-    const withdrawn = new Error('withdrawn');
-    const h = harness({
-      patch: async (_messageId, cardJson) => {
-        if (header(cardJson).template === 'grey') throw withdrawn;
-      },
-      canRepostAfterPatchFailure: error => error === withdrawn,
-    });
-    await fillFirstPage(h.card);
-    await h.card.append('om_turn', '第 8 条进展。');
-
-    expect(h.posts).toHaveLength(2);
-    expect(h.card.snapshot()).toMatchObject({
-      pageNumber: 2,
-      messageId: 'om_card_2',
-      archivedPages: [{ archivedSynced: true }],
-    });
-  });
-
-  it('终态只把最新页更新为绿色', async () => {
+  it('终态把唯一主卡更新为绿色', async () => {
     const h = harness();
     await fillFirstPage(h.card);
     await h.card.append('om_turn', '第 8 条进展。');
     await h.card.settle('om_turn', 'completed');
 
-    const latest = h.patches.filter(item => item.messageId === 'om_card_2').at(-1);
+    const latest = h.patches.filter(item => item.messageId === 'om_card_1').at(-1);
     expect(header(latest!.cardJson)).toMatchObject({
       template: 'green',
-      title: { content: '已完成 · 长任务（进度 2）' },
+      title: { content: '已完成 · 长任务' },
     });
-    const archived = h.patches.filter(item => item.messageId === 'om_card_1').at(-1);
-    expect(header(archived!.cardJson).template).toBe('grey');
+    expect(h.posts).toHaveLength(1);
   });
 
   it('旧单页状态恢复后从第一页继续', async () => {
@@ -209,6 +105,49 @@ describe('Codex App 进度卡多页状态机', () => {
       messageId: 'om_existing',
     });
     expect(header(h.patches.at(-1)!.cardJson).title.content)
-      .toBe('处理中 · 旧任务（进度 1）');
+      .toBe('处理中 · 旧任务');
+  });
+
+  it('长任务始终复用一张主卡，不再自动发送归档卡', async () => {
+    const h = harness();
+    await fillFirstPage(h.card);
+    await h.card.append('om_turn', '第 8 条进展。');
+    await h.card.append('om_turn', '第 9 条进展。');
+
+    expect(h.posts).toHaveLength(1);
+    expect(h.card.snapshot()).toMatchObject({
+      pageNumber: 1,
+      currentEntryCount: 10,
+      archivedPages: [],
+    });
+    expect(h.card.snapshot()?.content).toContain('第 9 条进展。');
+  });
+
+  it('按需历史卡在飞书内分页并保留页面导航', () => {
+    const renderHistory = (progressRenderer as any).renderCodexAppProgressHistoryCard;
+    expect(renderHistory).toBeTypeOf('function');
+    if (typeof renderHistory !== 'function') return;
+
+    const state = {
+      phase: 'running',
+      activeTurnId: 'om_turn',
+      acceptedTurnIds: ['om_turn'],
+      pendingTurns: [],
+      sessionId: 'sess-history',
+      title: '长任务',
+      content: Array.from(
+        { length: 13 },
+        (_, index) => `[19:${String(index).padStart(2, '0')}:00] 第 ${index + 1} 条进展。`,
+      ).join('\n\n'),
+    } as any;
+    const card = JSON.parse(renderHistory(state, 2));
+    const text = JSON.stringify(card);
+
+    expect(card.header.title.content).toContain('历史 2/3');
+    expect(text).toContain('第 7 条进展');
+    expect(text).toContain('第 12 条进展');
+    expect(text).not.toContain('第 6 条进展');
+    expect(text).not.toContain('第 13 条进展');
+    expect(text).toContain('codex_progress_history_page');
   });
 });

@@ -229,6 +229,9 @@ describe('Codex App request_user_input bridge', () => {
       ]);
       const startRequest = readRequests(logPath).find(request => request.method === 'thread/start');
       expect(startRequest?.params?.developerInstructions).toContain('shared-understanding summary');
+      expect(startRequest?.params?.developerInstructions).toContain('<!--botmux-progress:');
+      expect(startRequest?.params?.developerInstructions).toContain('new evidence, a stage change, or a real blocker');
+      expect(startRequest?.params?.developerInstructions).toContain('validation evidence, delivery, and remaining risks');
       expect(askBodies[0]).toMatchObject({
         sessionId: 'session-integration',
         flowId: 'turn-fake-1',

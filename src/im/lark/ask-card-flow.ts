@@ -105,10 +105,25 @@ function appendCompletedStep(
       : new Set<string>();
     appendActionRows(elements, question.options.map(option => ({
       tag: 'button',
-      text: { tag: 'plain_text', content: option.label },
+      text: {
+        tag: 'plain_text',
+        content: `${selected.has(option.key) ? '✅' : '○'} ${option.label}`,
+      },
       type: selected.has(option.key) ? 'primary' : 'default',
       disabled: true,
     })));
+    const selectedLabels = question.options
+      .filter(option => selected.has(option.key))
+      .map(option => option.label);
+    if (selectedLabels.length > 0) {
+      elements.push({
+        tag: 'note',
+        elements: [{
+          tag: 'plain_text',
+          content: `你的选择：${selectedLabels.join('、')}`,
+        }],
+      });
+    }
     number++;
   }
   if (step.result.kind === 'answered' && step.result.comment?.trim()) {

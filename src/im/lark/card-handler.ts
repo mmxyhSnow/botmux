@@ -69,7 +69,7 @@ import { ttadkConfigModelChoices } from '../../setup/cli-selection.js';
 import { logger } from '../../utils/logger.js';
 import * as sessionStore from '../../services/session-store.js';
 import { loadFrozenCards, saveFrozenCards } from '../../services/frozen-card-store.js';
-import { forkWorker, sendWorkerInput, killWorker, scheduleCardPatch, parkStreamCard, clearUsageLimitState, cardUsageLimit, writableTerminalLinkFor, resolvePrivateCardAudience, deliverWriteLinkCard, deliverEphemeralOrReply, CARD_POSTING_SENTINEL, requestSessionRestart } from '../../core/worker-pool.js';
+import { forkWorker, sendWorkerInput, killWorker, scheduleCardPatch, parkStreamCard, clearUsageLimitState, cardUsageLimit, writableTerminalLinkFor, resolvePrivateCardAudience, deliverWriteLinkCard, deliverEphemeralOrReply, CARD_POSTING_SENTINEL, requestSessionRestart, setCodexAppProgressDetailsExpanded } from '../../core/worker-pool.js';
 import { getSessionWorkingDir, buildNewTopicCliInput, getAvailableBots, persistStreamCardState, resumeSession, rememberLastCliInput, ensureSessionWhiteboard } from '../../core/session-manager.js';
 import { publishAttentionPatch, announcePendingRepoSession } from '../../core/session-activity.js';
 import { fallbackTurnId } from '../../core/reply-target.js';
@@ -83,6 +83,7 @@ import { createRepoWorktree, removeRepoWorktree, dirSuffixForBranch, pushWorktre
 import { withCodexAppContext } from '../../utils/codex-app-context.js';
 import { resolvePairedSpawnBackendType } from '../../core/persistent-backend.js';
 import { worktreeSlugFromContextAI } from '../../services/worktree-slug-ai.js';
+import { renderCodexAppProgressHistoryCard } from '../../services/codex-app-progress-card-renderer.js';
 import { t, localeForBot, isLocale, type Locale } from '../../i18n/index.js';
 import {
   isLocalCliOpenCapable,
@@ -838,6 +839,50 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
   // Use the receiving bot's allowedUsers — the operator open_id in card actions
   // is scoped to the app that received the callback.
   const operatorOpenId = data?.operator?.open_id;
+  const progressViewActions = new Set([
+    'codex_progress_toggle_details',
+    'codex_progress_history_open',
+    'codex_progress_history_page',
+  ]);
+  if (value?.action && progressViewActions.has(value.action)) {
+    const target = [...activeSessions.values()].find(candidate =>
+      candidate.session.sessionId === value.session_id
+      && (!larkAppId || candidate.larkAppId === larkAppId));
+    const state = target?.session.codexAppProgressCard;
+    if (!target || !state) {
+      return { toast: { type: 'warning', content: '任务会话已结束，无法更新这张卡片' } };
+    }
+    const allowed = canTalk(
+      target.larkAppId,
+      target.chatId,
+      operatorOpenId,
+      undefined,
+      undefined,
+      target.chatType,
+    ) || canOperate(target.larkAppId, target.chatId, operatorOpenId);
+    if (!allowed) {
+      return { toast: { type: 'warning', content: '你没有查看该任务进展的权限' } };
+    }
+    if (value.action === 'codex_progress_toggle_details') {
+      const expanded = value.expanded === '1';
+      const updated = await setCodexAppProgressDetailsExpanded(target, expanded);
+      return updated
+        ? {
+            toast: {
+              type: 'info',
+              content: expanded ? '进展已展开' : '进展已收起',
+            },
+          }
+        : { toast: { type: 'warning', content: '任务会话已结束，无法更新这张卡片' } };
+    }
+    const page = Number.parseInt(value.page ?? '1', 10);
+    const cardJson = renderCodexAppProgressHistoryCard(state, page);
+    if (value.action === 'codex_progress_history_page') {
+      return { card: { type: 'raw', data: JSON.parse(cardJson) } };
+    }
+    await sessionReply(sessionAnchorId(target), cardJson, 'interactive');
+    return { toast: { type: 'info', content: '已打开完整历史' } };
+  }
   // ─── 机器过载告警卡动作（overload_clean_stopped / overload_suspend_idle / noop）──
   // 不绑 session。owner 强闸门 + nonce 一次性核销（每按钮各一次，防重复点/超时重投/旧卡）。
   // 点完不替换成死卡：重建同一张卡，把点过的按钮标 done+数量并 disabled，另一个仍可点。

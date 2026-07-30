@@ -12,10 +12,15 @@ export interface ProgressCardPageBoundaryInput {
 
 const TIMESTAMPED_ENTRY_BOUNDARY = /\n\n(?=\[\d{2}:\d{2}:\d{2}\]\s)/;
 
+/** 把完整历史拆成不可再分的证据条目。 */
+export function splitProgressCardEntries(content: string): string[] {
+  const normalized = content.trim();
+  return normalized ? normalized.split(TIMESTAMPED_ENTRY_BOUNDARY) : [];
+}
+
 /** 从持久化文本恢复内容块数量，兼容没有时间戳的旧单页状态。 */
 export function countProgressCardEntries(content: string): number {
-  const normalized = content.trim();
-  return normalized ? normalized.split(TIMESTAMPED_ENTRY_BOUNDARY).length : 0;
+  return splitProgressCardEntries(content).length;
 }
 
 /**

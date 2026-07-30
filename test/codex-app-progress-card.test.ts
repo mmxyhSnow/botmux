@@ -76,7 +76,7 @@ describe('Codex App 即时进度卡', () => {
     expect(h.card.snapshot()?.content).toBe(
       '[19:11:58] 已收到，开始处理。'
       + '\n\n[19:12:07] 源码差异已经定位。'
-      + '\n\n[19:13:09] 本轮已完成，最终结果见最新回复。',
+      + '\n\n[19:13:09] 本轮已完成。',
     );
   });
 
@@ -163,10 +163,10 @@ describe('Codex App 即时进度卡', () => {
 
     expect(h.posts).toHaveLength(1);
     expect(h.card.snapshot()).toMatchObject({ phase: 'completed' });
-    expect(h.card.snapshot()?.content).toContain('最终结果见最新回复');
+    expect(h.card.snapshot()?.content).toContain('本轮已完成');
     expect(JSON.parse(h.patches.at(-1)!.cardJson).header).toMatchObject({
       template: 'green',
-      title: { content: '已完成 · 完成测试（进度 1）' },
+      title: { content: '已完成 · 完成测试' },
     });
   });
 
@@ -181,5 +181,99 @@ describe('Codex App 即时进度卡', () => {
     }));
     expect(rendered.header.template).toBe('red');
     expect(rendered.body.elements[0]).toMatchObject({ tag: 'markdown' });
+  });
+
+  it('第一屏展示阶段看板、时间信息和最近三条证据', () => {
+    const rendered = JSON.parse(renderCodexAppProgressCard({
+      phase: 'running',
+      activeTurnId: 'om_turn',
+      acceptedTurnIds: ['om_turn'],
+      pendingTurns: [],
+      sessionId: 'sess-progress',
+      title: '优化进度卡',
+      content: [
+        '[19:00:00] 第一条。',
+        '[19:01:00] 第二条。',
+        '[19:02:00] 第三条。',
+        '[19:03:00] 第四条。',
+      ].join('\n\n'),
+      startedAtMs: new Date('2026-07-28T11:00:00.000Z').getTime(),
+      updatedAtMs: new Date('2026-07-28T11:03:00.000Z').getTime(),
+      overview: {
+        stage: '验证',
+        current: '运行回归测试',
+        completed: ['回答态区分已完成'],
+        next: '构建并部署',
+      },
+    } as any, { nowMs: new Date('2026-07-28T11:05:00.000Z').getTime() }));
+
+    const text = JSON.stringify(rendered);
+    expect(rendered.header.title.content).toBe('处理中 · 优化进度卡');
+    expect(text).toContain('当前阶段');
+    expect(text).toContain('验证');
+    expect(text).toContain('正在处理');
+    expect(text).toContain('运行回归测试');
+    expect(text).toContain('已完成');
+    expect(text).toContain('回答态区分已完成');
+    expect(text).toContain('下一步');
+    expect(text).toContain('构建并部署');
+    expect(text).toContain('暂无真实阻塞');
+    expect(text).toContain('已运行 5 分钟');
+    expect(text).not.toContain('第一条');
+    expect(text).toContain('第二条');
+    expect(text).toContain('第四条');
+    expect(text).toContain('codex_progress_toggle_details');
+    expect(text).toContain('codex_progress_history_open');
+  });
+
+  it('显式进度标记更新短标题和看板字段，但不把标记写进时间线', async () => {
+    const h = harness();
+    await h.card.accept('om_turn', '原始需求很长很长');
+    await h.card.append(
+      'om_turn',
+      '回答态已经完成。'
+      + '\n<!--botmux-progress:'
+      + '{"title":"优化进度卡","stage":"验证","current":"运行回归",'
+      + '"completed":["回答态"],"next":"构建部署","blocker":null}'
+      + '-->',
+    );
+
+    expect(h.card.snapshot()).toMatchObject({
+      title: '优化进度卡',
+      overview: {
+        stage: '验证',
+        current: '运行回归',
+        completed: ['回答态'],
+        next: '构建部署',
+      },
+    });
+    expect(h.card.snapshot()?.content).toContain('回答态已经完成。');
+    expect(h.card.snapshot()?.content).not.toContain('botmux-progress');
+  });
+
+  it('完成态留下精简验收摘要而不是只提示查看最新回复', async () => {
+    const h = harness();
+    await h.card.accept('om_turn', '完成态');
+    await h.card.append(
+      'om_turn',
+      '验证和部署已经完成。'
+      + '\n<!--botmux-progress:'
+      + '{"title":"优化进度卡","stage":"完成","current":"功能已上线",'
+      + '"completed":["123 项测试通过"],"next":"无",'
+      + '"evidence":["正式构建通过"],"delivery":["Youc 已重启"],'
+      + '"risks":["远端推送缺少凭据"],"blocker":null}'
+      + '-->',
+    );
+    await h.card.settle('om_turn', 'completed');
+
+    const completed = JSON.parse(h.patches.at(-1)!.cardJson);
+    const text = JSON.stringify(completed);
+    expect(completed.header.template).toBe('green');
+    expect(text).toContain('验收摘要');
+    expect(text).toContain('功能已上线');
+    expect(text).toContain('正式构建通过');
+    expect(text).toContain('Youc 已重启');
+    expect(text).toContain('远端推送缺少凭据');
+    expect(text).not.toContain('最终结果见最新回复');
   });
 });
