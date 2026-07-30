@@ -1127,6 +1127,7 @@ ipcRoute('GET', '/api/sessions/:sessionId/insight', (req, res, params) => {
       sessionId: session.sessionId,
       cliSessionId: session.cliSessionId,
       cwd: session.workingDir,
+      larkAppId: session.larkAppId,
     }, {
       offset,
       limit,
@@ -1145,6 +1146,7 @@ ipcRoute('GET', '/api/sessions/:sessionId/insight', (req, res, params) => {
       sessionId: session.sessionId,
       cliSessionId: session.cliSessionId,
       cwd: session.workingDir,
+      larkAppId: session.larkAppId,
     }, { detail });
     jsonRes(res, 200, { ok: true, report });
   } catch (err: any) {
@@ -1164,6 +1166,7 @@ ipcRoute('GET', '/api/sessions/:sessionId/insight/turn/:turnIndex', (req, res, p
       sessionId: session.sessionId,
       cliSessionId: session.cliSessionId,
       cwd: session.workingDir,
+      larkAppId: session.larkAppId,
     }, parseInt(params.turnIndex, 10) || 0, { offset, limit });
     jsonRes(res, 200, { ok: true, turn });
   } catch (err: any) {
@@ -2304,8 +2307,8 @@ ipcRoute('GET', '/api/bot-default-oncall', async (_req, res) => {
   const { defaultOncall, autoboundChats } = oncallStore.getBotDefaultOncall(cachedLarkAppId);
   const cardPrefs = cardPrefsStore.getBotCardPrefs(cachedLarkAppId);
   const grantPrefs = grantPrefsStore.getBotGrantPrefs(cachedLarkAppId);
-  let p2pMode: 'thread' | 'chat' = 'thread';
-  try { if (getBot(cachedLarkAppId).config.p2pMode === 'chat') p2pMode = 'chat'; } catch { /* default thread */ }
+  let p2pMode: 'thread' | 'chat' = 'chat';
+  try { if (getBot(cachedLarkAppId).config.p2pMode === 'thread') p2pMode = 'thread'; } catch { /* default chat */ }
   let skillInjection: 'global' | 'prompt' | 'off' | null = null;
   // How this bot's CLI delivers botmux skills, so the dashboard can render the
   // control correctly: 'dynamic' = per-session --plugin-dir (claude-family, not
@@ -2795,8 +2798,8 @@ ipcRoute('PUT', '/api/bot-agent', async (req, res) => {
 });
 
 // Per-bot 私聊单聊模式 p2pMode。Body `{ p2pMode: 'chat' | 'thread' }`:
-//   • 'chat'           → 私聊走扁平连续 chat-scope 会话
-//   • 'thread'（默认）  → 清回每条 DM 独立 thread-scope 会话
+//   • 'chat'（默认）    → 私聊走扁平连续 chat-scope 会话
+//   • 'thread'          → 显式回到每条 DM 独立 thread-scope 会话
 // 走 applyConfigField（与 /botconfig 同一写盘 + 热更新路径），保证一致。
 ipcRoute('PUT', '/api/bot-p2p-mode', async (req, res) => {
   if (!cachedLarkAppId) return jsonRes(res, 503, { error: 'larkAppId_not_set' });
@@ -2806,11 +2809,11 @@ ipcRoute('PUT', '/api/bot-p2p-mode', async (req, res) => {
 
   const spec = findConfigField('p2pMode');
   if (!spec) return jsonRes(res, 500, { ok: false, error: 'spec_missing' });
-  // 只有 'chat' 有意义；其它（含 'thread'）一律清回默认，bots.json 保持干净。
-  const value = body.p2pMode === 'chat' ? 'chat' : null;
+  // 只有 'thread' 有意义；其它（含 'chat'，新默认)一律清回默认，bots.json 保持干净。
+  const value = body.p2pMode === 'thread' ? 'thread' : null;
   const r = await applyConfigField(cachedLarkAppId, spec, value);
   if (!r.ok) return jsonRes(res, 400, { ok: false, error: r.reason });
-  jsonRes(res, 200, { ok: true, p2pMode: value ?? 'thread' });
+  jsonRes(res, 200, { ok: true, p2pMode: value ?? 'chat' });
 });
 
 // Per-bot 内置技能注入模式 skillInjection。Body `{ skillInjection: 'global'|'prompt'|'off'|'' }`:

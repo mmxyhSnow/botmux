@@ -77,7 +77,7 @@ import { interactiveSelect, pickChoice, pickCliSelection } from './setup/interac
 import { buildPreset, serializePreset, presetFilename } from './setup/agent-preset.js';
 import type { CliId } from './adapters/cli/types.js';
 import { logger } from './utils/logger.js';
-import { scrubSessionCliHomeEnv } from './utils/child-env.js';
+import { scrubClaudeSessionMarkerEnv, scrubSessionCliHomeEnv } from './utils/child-env.js';
 import { scheduleTimeZone } from './utils/timezone.js';
 import { expandHomePath, invalidWorkingDirs } from './utils/working-dir.js';
 import { firstPositional } from './cli/arg-utils.js';
@@ -243,6 +243,10 @@ function pm2Env(home: string = PM2_HOME): NodeJS.ProcessEnv {
   // stale dumps (see SESSION_CLI_HOME_ENV_KEYS for the full story, including
   // why GROK_HOME is exempt and why deleting beats pinning a default).
   scrubSessionCliHomeEnv(env);
+  // Claude session markers ride the same pm2 env-persistence vector; baked in
+  // they eventually flip transcript saving off fleet-wide once the tmux server
+  // respawns from a poisoned daemon (see CLAUDE_SESSION_MARKER_ENV_KEYS).
+  scrubClaudeSessionMarkerEnv(env);
   return env;
 }
 
@@ -326,6 +330,13 @@ function pm2Capture(args: string[], home: string = PM2_HOME, timeoutMs = 10_000)
     env: pm2Env(home),
     shell: pm2.shell ?? false,
     timeout: timeoutMs,
+    // `pm2 jlist` serializes EVERY process's full env + metadata, so its stdout
+    // grows ~linearly with the bot count. Node's default spawnSync maxBuffer is
+    // 1 MiB — a box with ~30+ bots blows past it and spawnSync fails with
+    // ENOBUFS, which surfaced as `start-bot` (dashboard "bring one bot online")
+    // dying before it could launch anything. Lift the cap well above any real
+    // fleet size. (ps/git captures elsewhere already do the same.)
+    maxBuffer: 64 * 1024 * 1024,
   });
   if (r.status !== 0) {
     const detail = r.error?.message
@@ -1035,8 +1046,8 @@ async function resolveScannerAllowedUser(
 async function promptRequiredOwner(rl: ReturnType<typeof createInterface>): Promise<string[]> {
   printInputHelp('管理员 (owner)', [
     '必填。至少一个能操作机器人的管理员，多个值用逗号分隔。',
-    '推荐格式（优先级高到低）：完整邮箱（alice@example.com）> union_id（on_xxx，跨应用稳定）> open_id（ou_xxx，仅限同一应用）。',
-    '注意：必须是完整邮箱，邮箱前缀（如 alice）无法解析、不接受。',
+    '推荐格式（优先级高到低）：完整邮箱（alice@example.com）> union_id（on_xxx，跨应用稳定）> 手机号（大陆号直填 11 位，海外号带 + 区号）> open_id（ou_xxx，仅限同一应用）。',
+    '注意：邮箱必须完整，邮箱前缀（如 alice）无法解析、不接受。没有企业邮箱可用手机号。',
   ]);
   for (;;) {
     const raw = (await ask(rl, '管理员 (owner): ')).trim();
@@ -1047,11 +1058,11 @@ async function promptRequiredOwner(rl: ReturnType<typeof createInterface>): Prom
     }
     const invalid = findInvalidAllowedUserEntries(entries);
     if (invalid.length > 0) {
-      console.log(`   ❌ 以下不是完整邮箱、union_id 或 open_id（邮箱前缀不接受）: ${invalid.join(', ')}`);
+      console.log(`   ❌ 以下不是完整邮箱、手机号（大陆 11 位 / 海外带 + 国家码）、union_id 或 open_id（邮箱前缀不接受）: ${invalid.join(', ')}`);
       continue;
     }
     if (!hasOwnerEntry(entries)) {
-      console.log('   ❌ 至少需要一个完整邮箱、union_id 或 open_id 作为 owner。');
+      console.log('   ❌ 至少需要一个完整邮箱、手机号、union_id 或 open_id 作为 owner。');
       continue;
     }
     return entries;
@@ -1169,6 +1180,11 @@ async function promptBotConfig(rl: ReturnType<typeof createInterface>): Promise<
     const owner = await resolveScannerAllowedUser(creds.appId, creds.appSecret, creds.userOpenId, creds.brand);
     if (owner) {
       bot.allowedUsers = [owner];
+      // Persist the native ou_ too. allowedUsers may hold the cross-app-stable
+      // on_ (union_id) form that needs a contact-API resolve every boot; this
+      // raw open_id never does, so it stays a valid fail-safe DM recipient even
+      // when that resolve is the very thing failing (cold-start race).
+      bot.ownerOpenId = creds.userOpenId;
     } else {
       console.log('⚠️  无法确认扫码人的 open_id 属于当前新应用，请手动填写 owner。');
       bot.allowedUsers = await promptRequiredOwner(rl);
@@ -1355,8 +1371,8 @@ async function promptEditBotConfig(
   }
 
   printInputHelp('允许的用户', [
-    '可选。限制哪些飞书用户可以操作机器人，支持完整邮箱（如 alice@example.com）、union_id（on_xxx）或 open_id（ou_xxx），多个值用逗号分隔。',
-    '注意：必须是完整邮箱，邮箱前缀（如 alice）无法解析、会被丢弃。',
+    '可选。限制哪些飞书用户可以操作机器人，支持完整邮箱（如 alice@example.com）、union_id（on_xxx）、手机号（大陆号直填，海外带 + 区号）或 open_id（ou_xxx），多个值用逗号分隔。',
+    '注意：邮箱必须完整，邮箱前缀（如 alice）无法解析、会被丢弃。',
     '留空保留当前值；输入 - 清空限制。',
   ]);
   input.allowedUsers = await ask(rl, `允许的用户 [${formatOptionalValue(bot.allowedUsers)}]: `);

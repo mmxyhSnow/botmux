@@ -488,7 +488,7 @@ import { existsSync, statSync, readFileSync, mkdirSync, mkdtempSync, rmSync, wri
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { codexHome } from '../src/services/codex-paths.js';
-import { scanMultipleProjects } from '../src/services/project-scanner.js';
+import { scanMultipleProjects, describeProjectDir } from '../src/services/project-scanner.js';
 import { readGlobalConfig, repoPickerScanOptions } from '../src/global-config.js';
 import { createRepoWorktree, pushWorktreeBranch } from '../src/services/git-worktree.js';
 import { discoverAdoptableSessions } from '../src/core/session-discovery.js';
@@ -2006,6 +2006,24 @@ describe('handleCommand', () => {
       expect(newSessionUpdate![0].workingDir).toBe('/home/testuser/project-a');
     });
 
+    it('mid-session switch empty-starts the replacement CLI and marks its first turn pending', async () => {
+      // A repo switch closes the old session and boots a BRAND-NEW CLI with an
+      // empty prompt. That fresh CLI has never seen the botmux opening context,
+      // so the next real business message must be built as a new topic — same
+      // invariant as the pending-repo empty start.
+      const ds = makeDaemonSession({ pendingRepo: false });
+      const deps = makeDeps(ds);
+      deps.lastRepoScan.set(CHAT_ID, [
+        { name: 'project-a', path: '/home/testuser/project-a', branch: 'main' },
+      ]);
+
+      await handleCommand('/repo', ROOT_ID, makeLarkMessage('/repo 1'), deps, LARK_APP_ID);
+
+      expect(forkWorker).toHaveBeenCalledWith(ds, '', false);
+      expect(ds.hasHistory).toBe(false);
+      expect(ds.session.initialUserTurnPending).toBe(true);
+    });
+
     it('should show project list card when called without argument', async () => {
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(scanMultipleProjects).mockReturnValue([
@@ -2047,14 +2065,13 @@ describe('handleCommand', () => {
 
     it('should resolve a first-level project name and switch repo (mid-session)', async () => {
       vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(scanMultipleProjects).mockReturnValue([
-        { name: 'payments', path: '/home/testuser/payments', branch: 'main' },
-      ]);
+      vi.mocked(describeProjectDir).mockReturnValueOnce({ name: 'payments', branch: 'main' });
       const ds = makeDaemonSession({ pendingRepo: false, repoCardMessageId: 'om_card' });
       const deps = makeDeps(ds);
 
       await handleCommand('/repo', ROOT_ID, makeLarkMessage('/repo payments'), deps, LARK_APP_ID);
 
+      expect(scanMultipleProjects).not.toHaveBeenCalled();
       expect(ds.workingDir).toBe('/home/testuser/payments');
       expect(sessionStore.createSession).toHaveBeenCalledWith(
         CHAT_ID, ROOT_ID, 'payments (main)', 'group', undefined,
@@ -2063,6 +2080,28 @@ describe('handleCommand', () => {
       // the pending repo-selection card must be withdrawn after resolving
       expect(deleteMessage).toHaveBeenCalledWith(LARK_APP_ID, 'om_card');
       expect(ds.repoCardMessageId).toBeUndefined();
+    });
+
+    it('`/repo <name>` as the first message empty-starts and marks the first turn pending', async () => {
+      // The literal repro: a brand-new topic whose FIRST message is `/repo
+      // homelab`. daemon.ts seeds pendingRepo + pendingPrompt:'' (the message IS
+      // the command), so the CLI boots idle — and the user's next message must
+      // still arrive as a new-topic opening.
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(scanMultipleProjects).mockReturnValue([
+        { name: 'homelab', path: '/home/testuser/homelab', branch: 'main' },
+      ]);
+      const ds = makeDaemonSession({ pendingRepo: true, pendingPrompt: '', worker: null });
+      const deps = makeDeps(ds);
+
+      await handleCommand('/repo', ROOT_ID, makeLarkMessage('/repo homelab'), deps, LARK_APP_ID);
+
+      expect(ds.workingDir).toBe('/home/testuser/homelab');
+      expect(forkWorker).toHaveBeenCalledWith(ds, '', false);
+      expect(buildNewTopicCliInput).not.toHaveBeenCalled();
+      expect(sessionStore.createSession).not.toHaveBeenCalled(); // pending path, not a switch
+      expect(ds.pendingRepo).toBe(false);
+      expect(ds.session.initialUserTurnPending).toBe(true);
     });
 
     it('should reply path_not_found when the arg resolves to nothing', async () => {
@@ -2325,6 +2364,10 @@ describe('handleCommand', () => {
       // message becomes the first prompt (not an empty/boilerplate user_message).
       expect(forkWorker).toHaveBeenCalledWith(ds, '', false);
       expect(buildNewTopicPrompt).not.toHaveBeenCalled();
+      // …and that NEXT message must still get the full new-topic opening, so the
+      // empty start has to leave a durable, persisted marker behind.
+      expect(ds.session.initialUserTurnPending).toBe(true);
+      expect(sessionStore.updateSession).toHaveBeenCalledWith(ds.session);
       expect(killWorker).not.toHaveBeenCalled();
       expect(sessionStore.createSession).not.toHaveBeenCalled();
       // Cleared pending state + withdrew the (already-sent) card.
@@ -2428,6 +2471,8 @@ describe('handleCommand', () => {
       );
       expect(ds.pendingRepo).toBe(false);
       expect(ds.pendingTurnId).toBeUndefined();
+      // The buffered message IS the first real user turn — nothing is pending.
+      expect(ds.session.initialUserTurnPending).toBeUndefined();
     });
 
     it('forwards the pending substitute trigger and complete Codex App sidecar', async () => {
@@ -2487,6 +2532,9 @@ describe('handleCommand', () => {
       expect(ds.pendingRawTurnId).toBe('om_goal_first');
       expect(ds.pendingFollowUpInput).toBeUndefined();
       expect(ds.pendingTurnId).toBeUndefined();
+      // Raw passthrough owns the first turn (delivered literally on prompt_ready),
+      // so this is NOT an "empty start awaiting its first user turn".
+      expect(ds.session.initialUserTurnPending).toBeUndefined();
     });
 
     it('raw-input cold start wraps follow-ups buffered during repo wait into pendingFollowUpInput', async () => {
@@ -3760,8 +3808,14 @@ describe('handleCommand', () => {
 
     it('renders the picker in a thread-mode DM with a thread-scope target seeded on the /relay message', async () => {
       // p2p detection is via ds.chatType (authoritative, no Lark API hit).
-      // Default DM mode is thread: the /relay message seeds a fresh DM 话题,
-      // so the baked target is thread-scope anchored at the message id.
+      // Thread mode is now the explicit DM opt-out (default is 'chat'): the
+      // /relay message seeds a fresh DM 话题, so the baked target is thread-scope
+      // anchored at the message id.
+      vi.mocked(getBot).mockImplementation(((id: string = 'app-1') => {
+        const bot = defaultGetBot(id);
+        (bot.config as any).p2pMode = 'thread';
+        return bot;
+      }) as any);
       const { getChatNameAndMode } = await import('../src/im/lark/client.js');
       const ds = makeDaemonSession({
         session: makeSession({ ownerOpenId: 'ou_sender', chatType: 'p2p' }),

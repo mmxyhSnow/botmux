@@ -222,9 +222,13 @@ export function getProjectScanDirs(ds?: DaemonSession): string[] {
   if (ds?.larkAppId) {
     const bot = getBot(ds.larkAppId);
     const dirs = new Set<string>();
-    const workingDirs = bot.config.workingDirs?.length
-      ? bot.config.workingDirs
-      : parseWorkingDirList(bot.config.workingDir ?? '~');
+    const configuredMultiDirs = parseWorkingDirList(bot.config.workingDirs);
+    const configuredLegacyDirs = parseWorkingDirList(bot.config.workingDir);
+    const workingDirs = configuredMultiDirs.length > 0
+      ? configuredMultiDirs
+      : configuredLegacyDirs.length > 0
+        ? configuredLegacyDirs
+        : [effectiveDefaultWorkingDir(bot.config) ?? '~'];
     for (const wd of workingDirs) {
       dirs.add(expandHome(wd));
     }
@@ -235,7 +239,14 @@ export function getProjectScanDirs(ds?: DaemonSession): string[] {
   }
   // Fallback to global config
   const dirs = new Set<string>();
-  for (const wd of config.daemon.workingDirs) {
+  const configuredMultiDirs = parseWorkingDirList(config.daemon.workingDirs);
+  const configuredLegacyDirs = parseWorkingDirList(config.daemon.workingDir);
+  const workingDirs = configuredMultiDirs.length > 0
+    ? configuredMultiDirs
+    : configuredLegacyDirs.length > 0
+      ? configuredLegacyDirs
+      : ['~'];
+  for (const wd of workingDirs) {
     dirs.add(expandHome(wd));
   }
   if (ds?.workingDir) {
@@ -1411,6 +1422,15 @@ export async function restoreActiveSessions(activeSessions: Map<string, DaemonSe
     // Same-key collision guard — see adopt-branch comment above.
     await setActiveSessionSafe(activeSessions, activeSessionKey(ds), ds);
     announceSessionRow(ds);
+
+    if (session.initialUserTurnPending) {
+      // `hasHistory: true` above means "there may be a CLI process/transcript to
+      // reattach or resume", NOT "a user has ever spoken to it". This session's
+      // CLI was booted idle by the repo flow and never received a real turn, so
+      // the next business message still routes through the new-topic opening
+      // builder and cold-spawns instead of `--resume`. See core/initial-user-turn.ts.
+      logger.info(`[${session.sessionId.substring(0, 8)}] Restored empty-started session — its first real user turn still opens as a new topic`);
+    }
 
     logger.debug(`Registered session ${session.sessionId} (scope: ${scope}, anchor: ${anchor})`);
   }

@@ -119,6 +119,7 @@ function sessionTokenUsage(s: Session, workingDir?: string): SessionTokenUsage |
     sessionId: s.sessionId,
     cliSessionId: s.cliSessionId,
     cwd: workingDir ?? s.workingDir,
+    larkAppId: s.larkAppId,
   });
 }
 

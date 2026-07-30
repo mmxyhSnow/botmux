@@ -140,7 +140,7 @@ export function isValidRiffSandboxCluster(v: unknown): v is RiffSandboxCluster {
 }
 
 export interface RiffRepoRef {
-  /** Internal repo name, e.g. 'webinfra/agent-monorepo' (code.byted.org). */
+  /** Internal repo name, e.g. 'webinfra/agent-monorepo' (internal git host). */
   repoName: string;
   /** Branch to pin. Omitted → the repo's default branch. (The riff API
    *  ignores unknown fields like `branch`; `repoBranch` is the real one —
@@ -150,17 +150,18 @@ export interface RiffRepoRef {
 
 /**
  * Normalize a git origin URL / repo spec to riff's internal repoName.
- * Accepts `git@code.byted.org:group/repo.git`, `https://code.byted.org/group/repo(.git)`
- * and bare `group/repo`. Returns null for non-internal hosts (github.com etc.) —
- * the riff API validates repoName against the internal registry and cannot
- * clone external repos.
+ * Accepts SSH (`git@<host>:group/repo.git`) and HTTPS
+ * (`https://<host>/group/repo(.git)`) forms from any host, plus bare
+ * `group/repo`. The host is not inspected here — the riff API validates
+ * repoName against its internal registry and cannot clone external repos, so
+ * an out-of-registry spec is rejected downstream rather than by hostname here.
  */
 export function parseRiffRepoName(spec: string): string | null {
   const s = spec.trim();
   if (!s) return null;
-  let m = /^git@code\.byted\.org:([^/\s]+\/[^/\s]+?)(?:\.git)?$/.exec(s);
+  let m = /^git@[^:/\s]+:([^/\s]+\/[^/\s]+?)(?:\.git)?$/.exec(s);
   if (m) return m[1]!;
-  m = /^https?:\/\/code\.byted\.org\/([^/\s]+\/[^/\s]+?)(?:\.git)?(?:\/)?$/.exec(s);
+  m = /^https?:\/\/[^/\s]+\/([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(s);
   if (m) return m[1]!;
   // Bare group/repo (no scheme, no host) — pass through as-is.
   if (/^[\w.-]+\/[\w.-]+$/.test(s)) return s;
@@ -171,7 +172,7 @@ export function parseRiffRepoName(spec: string): string | null {
  * Derive the riff repo ref from a local checkout so a riff task executes
  * against the same repo + branch the botmux session works in (复用本地仓库).
  * All git calls are local (no network). Returns null when the workingDir is
- * not a git repo or its origin is not an internal repo riff can clone.
+ * not a git repo or its origin cannot be parsed into a `group/repo` name.
  * `warnings` surface states the sandbox cannot see (dirty tree, unpushed
  * commits, never-pushed branch) — callers inject them as status lines.
  */
