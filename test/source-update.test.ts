@@ -40,5 +40,6 @@ describe('source checkout update plan', () => {
       upstreamUrl: 'https://github.com/deepcoldy/botmux.git',
     })).toBeNull();
     expect(parseSourceUpdateConfig({ ...config, productionBranch: 'custom/prod; touch /tmp/x' })).toBeNull();
+    expect(parseSourceUpdateConfig({ ...config, command: 'rm -rf /' })).toBeNull();
   });
 });

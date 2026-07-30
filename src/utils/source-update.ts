@@ -48,6 +48,8 @@ export function parseSourceUpdateConfig(value: unknown): SourceUpdateConfig | nu
   const cfg = value as Record<string, unknown>;
   if (cfg.schemaVersion !== 1) return null;
   const keys = ['productionBranch', 'originRemote', 'originRepo', 'upstreamRemote', 'upstreamRepo'] as const;
+  const allowed = new Set<string>(['schemaVersion', ...keys]);
+  if (Object.keys(cfg).some(key => !allowed.has(key))) return null;
   if (keys.some(key => typeof cfg[key] !== 'string' || !SAFE_NAME.test(cfg[key] as string))) return null;
   return {
     schemaVersion: 1,

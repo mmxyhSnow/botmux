@@ -12,7 +12,6 @@ import {
   renameSync,
   rmSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
 const RESULT_PREFIX = 'BOTMUX_SOURCE_UPDATE_RESULT=';
@@ -33,7 +32,12 @@ function rootArg(argv) {
 function configAt(root) {
   const value = JSON.parse(readFileSync(join(root, '.botmux-source-update.json'), 'utf8'));
   const names = ['productionBranch', 'originRemote', 'originRepo', 'upstreamRemote', 'upstreamRepo'];
-  if (value?.schemaVersion !== 1 || names.some(key => typeof value[key] !== 'string' || !SAFE_NAME.test(value[key]))) {
+  const allowed = new Set(['schemaVersion', ...names]);
+  if (
+    value?.schemaVersion !== 1
+    || Object.keys(value).some(key => !allowed.has(key))
+    || names.some(key => typeof value[key] !== 'string' || !SAFE_NAME.test(value[key]))
+  ) {
     fail('源码同步配置无效');
   }
   return value;
@@ -153,7 +157,8 @@ function ensureUpgradeWorktree(root, branch, path, base) {
 }
 
 function replaceDist(root, builtDist, tag) {
-  const backupRoot = join(homedir(), '.botmux', 'backups', `source-update-${tag}-${Date.now()}`);
+  // 备份与生产 dist 必须位于同一文件系统，才能用 rename 原子切换。
+  const backupRoot = join(dirname(root), '.botmux-dist-backups', `source-update-${tag}-${Date.now()}`);
   const staging = join(root, `dist.next-${process.pid}`);
   mkdirSync(backupRoot, { recursive: true });
   rmSync(staging, { recursive: true, force: true });
