@@ -234,10 +234,11 @@ export function findPendingAskByAnchor(args: {
   return undefined;
 }
 
-/** Invalidate every pending ask. Intended for daemon shutdown / restart paths
- *  so CLI subprocesses unblock with `kind:'invalidated'` instead of waiting
- *  forever on a dead daemon. Returns the number of asks actually settled
- *  (settled-but-retained entries from the race window are skipped). */
+/**
+ * 使所有待答 ASK 失效，供 daemon 关闭或重启时解除 CLI 子进程等待。
+ *
+ * 返回本次实际结算的数量；竞态窗口里已结算但仍保留的记录会被跳过。
+ */
 export function invalidateAll(reason: string): number {
   const ids = [...pending.entries()]
     .filter(([, ask]) => !ask.settled)
@@ -256,6 +257,42 @@ export function invalidateAll(reason: string): number {
     logger.info?.(`ask-broker: invalidated ${ids.length} pending ask(s): ${reason}`);
   }
   return ids.length;
+}
+
+/**
+ * 使所有待答 ASK 失效，并等待对应卡片完成失效态回写。
+ *
+ * daemon 关闭时必须先完成这一步，再断开飞书回调服务，避免群里留下仍可点击、
+ * 点击后却只提示“目标回调服务当前未在线”的旧卡片。等待有上限，防止飞书接口
+ * 异常时阻塞进程退出。
+ */
+export async function invalidateAllAndWait(
+  reason: string,
+  timeoutMs = 2_000,
+): Promise<number> {
+  const activeAsks = [...pending.values()].filter(ask => !ask.settled);
+  const invalidatedCount = invalidateAll(reason);
+  const settlePatches = activeAsks
+    .map(ask => ask.settlePatch)
+    .filter((patch): patch is Promise<void> => patch !== undefined);
+  if (settlePatches.length === 0) return invalidatedCount;
+
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  const completed = await Promise.race([
+    Promise.allSettled(settlePatches).then(() => true),
+    new Promise<boolean>(resolve => {
+      timeoutHandle = setTimeout(() => resolve(false), Math.max(1, timeoutMs));
+      timeoutHandle.unref?.();
+    }),
+  ]);
+  if (timeoutHandle) clearTimeout(timeoutHandle);
+  if (!completed) {
+    logger.warn?.(
+      `ask-broker: timed out after ${timeoutMs}ms waiting for `
+      + `${settlePatches.length} invalidated card patch(es)`,
+    );
+  }
+  return invalidatedCount;
 }
 
 /** 只结算一次；保留短期终态供重复点击返回精确结果。 */

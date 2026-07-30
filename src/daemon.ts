@@ -345,6 +345,7 @@ import {
   registerAsk as registerAskBroker,
   completeAskFlow,
   findPendingAskByAnchor,
+  invalidateAllAndWait as invalidateAllAsksAndWait,
   submitCustomReply,
 } from './core/ask-broker.js';
 import { parseAskBody } from './core/ask-api.js';
@@ -18344,6 +18345,12 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     shuttingDown = true;
     setSessionLifecycleShutdown(true);
     logger.info(`Daemon shutting down... (active: ${getActiveCount()})`);
+    const invalidatedAskCount = await invalidateAllAsksAndWait(
+      '服务正在重启，请重新发起提问',
+    );
+    if (invalidatedAskCount > 0) {
+      logger.info(`Daemon invalidated ${invalidatedAskCount} pending ASK card(s) before shutdown`);
+    }
     scheduler.stopScheduler();
     stopMaintenance();
     vcMeetingTerminalReconciler?.stop();
