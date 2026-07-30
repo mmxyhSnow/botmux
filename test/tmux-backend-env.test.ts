@@ -594,7 +594,8 @@ describe('debug keep-shell wrapper end-to-end', () => {
       const script = buildDebugKeepShellScript('/bin/sh');
       // Syntax-check the script in /bin/sh — guards against typos in the
       // template that no test of buildDebugKeepShellScript alone would catch.
-      const syntaxCheck = spawnSync('/bin/sh', ['-n', '-c', script], {
+      const syntaxCheck = spawnSync('/bin/sh', ['-n'], {
+        input: script,
         encoding: 'utf-8',
       });
       expect(syntaxCheck.status).toBe(0);
