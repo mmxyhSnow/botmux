@@ -17,7 +17,6 @@ import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isLocalDevInstallAt, botmuxVersion, botmuxInstallRoot } from './install-info.js';
 import { detectGlobalInstallManager } from './global-install.js';
-import { parseVersion } from '../core/update-check.js';
 
 /** Minimum Node major (mirrors package.json `engines.node`). */
 export const MIN_NODE_MAJOR = 22;
@@ -37,27 +36,27 @@ export function checkNode(version: string = process.version, required = MIN_NODE
   return { version, major, required, ok: major >= required };
 }
 
+/** 从已按版本倒序排列的标签中提取官方正式版本。 */
+export function officialVersionFromTags(tags: string[]): string | null {
+  const tag = tags.find(value => /^v\d+\.\d+\.\d+$/.test(value));
+  return tag ? tag.slice(1) : null;
+}
+
 /**
- * The version to show in the update card. For an npm install this is the real
- * published version from package.json. A source checkout ships the unbuilt
- * `0.0.0` (CI injects the real version only at publish), so we derive a real
- * baseline from the latest git tag (`git describe --tags --abbrev=0` → the clean
- * tag, e.g. "v2.86.0", stripped of the leading v). That makes the version
- * display, "behind" comparison, and changelog range correct in dev mode too.
- * Falls back to the raw package.json version if git is unavailable.
+ * 更新卡展示版本：发布包读取 package.json；源码部署从 HEAD 可达标签中选最新正式版。
+ * `deploy/v3.7.1-custom.1` 等自定义部署标签与 canary 标签都不能冒充官方对齐版本。
  */
 export function resolveCurrentVersion(): string {
   const raw = botmuxVersion();
   if (raw !== '0.0.0') return raw;
   try {
-    const tag = execFileSync('git', ['describe', '--tags', '--abbrev=0'], {
+    const tags = execFileSync('git', ['tag', '--merged', 'HEAD', '--list', 'v*', '--sort=-v:refname'], {
       cwd: botmuxInstallRoot(),
       encoding: 'utf-8',
       timeout: 3_000,
       stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    const ver = tag.replace(/^v/i, '');
-    return parseVersion(ver) ? ver : raw;
+    }).split(/\r?\n/);
+    return officialVersionFromTags(tags) ?? raw;
   } catch {
     return raw; // no git / no tags / not a checkout
   }

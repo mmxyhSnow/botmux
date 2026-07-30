@@ -89,6 +89,7 @@ import { buildPm2SpawnCommand } from './cli/pm2-command.js';
 import { callDashboard, type DashboardEndpoint, type DashboardResult } from './cli/dashboard-endpoint.js';
 import { globalInstallUpdateLockTargetIn, installLatestBotmuxSync } from './core/maintenance.js';
 import { withFileLockSync } from './utils/file-lock.js';
+import { resolveCurrentVersion } from './utils/install-diagnostics.js';
 import {
   formatGlobalInstallCommand,
   resolveGlobalInstallPlan,
@@ -9128,10 +9129,8 @@ async function cmdPresetExport(rest: string[]): Promise<void> {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 function getVersion(): string {
-  const pkgPath = join(PKG_ROOT, 'package.json');
   try {
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return pkg.version || 'unknown';
+    return resolveCurrentVersion();
   } catch {
     return 'unknown';
   }

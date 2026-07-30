@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { checkNode, analyzeInstalls, type InstallProbeDeps } from '../src/utils/install-diagnostics.js';
+import {
+  checkNode,
+  analyzeInstalls,
+  officialVersionFromTags,
+  type InstallProbeDeps,
+} from '../src/utils/install-diagnostics.js';
+
+describe('officialVersionFromTags', () => {
+  it('忽略自定义部署标签和 canary，只展示对齐的官方正式版', () => {
+    expect(officialVersionFromTags([
+      'deploy/v3.7.1-custom.1',
+      'v3.9.0-canary.1',
+      'v3.7.1',
+      'v3.7.0',
+    ])).toBe('3.7.1');
+  });
+});
 
 describe('checkNode', () => {
   it('ok at/above the required major', () => {

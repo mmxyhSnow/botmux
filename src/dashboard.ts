@@ -101,6 +101,7 @@ import {
   writeRestartIntent,
 } from './services/restart-intent-store.js';
 import { withFileLock } from './utils/file-lock.js';
+import { runSourceUpdate, tryResolveSourceUpdatePlan } from './utils/source-update.js';
 import { spawn } from 'node:child_process';
 import {
   applySettingsWrite,
@@ -2871,6 +2872,7 @@ const server = createServer(async (req, res) => {
       const packageRoot = lastSuccessfulUpdatePlan?.activePackageRoot ?? botmuxInstallRoot();
       const installManager = detectGlobalInstallManager(packageRoot);
       const installPlan = tryResolveGlobalInstallPlan(packageRoot);
+      const sourcePlan = isLocalDevInstall() ? tryResolveSourceUpdatePlan(packageRoot) : null;
       // Compare against the npm `latest` dist-tag (always stable; the update
       // button installs `@latest`). isNewerVersion uses semver precedence, so a
       // canary running AHEAD of the latest stable (e.g. 2.87.0-canary.0 vs
@@ -2895,9 +2897,9 @@ const server = createServer(async (req, res) => {
         cliBehind: cliUpdates.some((entry) => entry.updateAvailable),
         cliUpdates,
         localDevInstall: isLocalDevInstall(),
-        updateSupported: installPlan !== null,
-        updateManager: installPlan?.manager ?? installManager,
-        updateCommand: installPlan ? formatGlobalInstallCommand(installPlan) : null,
+        updateSupported: installPlan !== null || sourcePlan !== null,
+        updateManager: sourcePlan ? 'git' : installPlan?.manager ?? installManager,
+        updateCommand: sourcePlan?.command ?? (installPlan ? formatGlobalInstallCommand(installPlan) : null),
         node: checkNode(),
         installs: detectBotmuxInstalls(),
       });
@@ -2923,7 +2925,35 @@ const server = createServer(async (req, res) => {
 
     if (req.method === 'POST' && url.pathname === '/api/update/run') {
       if (!authed) return jsonRes(res, 401, { ok: false, error: 'unauthorized' });
-      if (isLocalDevInstall()) return jsonRes(res, 400, { ok: false, error: 'local_dev_no_update' });
+      const sourcePlan = isLocalDevInstall() ? tryResolveSourceUpdatePlan(botmuxInstallRoot()) : null;
+      if (isLocalDevInstall() && !sourcePlan) return jsonRes(res, 400, { ok: false, error: 'local_dev_no_update' });
+      if (sourcePlan) {
+        const node = checkNode();
+        if (!node.ok) return jsonRes(res, 400, { ok: false, error: 'node_too_old', node });
+        if (updateInFlight) return jsonRes(res, 409, { ok: false, error: 'update_in_flight' });
+        updateInFlight = true;
+        let acquired = false;
+        try {
+          const completed: { value?: Awaited<ReturnType<typeof runSourceUpdate>> } = {};
+          await withFileLock(globalInstallUpdateLockTarget(), async () => {
+            acquired = true;
+            if (hasActiveRestartLease()) return;
+            completed.value = await runSourceUpdate(sourcePlan);
+          }, { maxWaitMs: 2_000 });
+          if (!acquired) return jsonRes(res, 409, { ok: false, error: 'update_in_flight' });
+          if (!completed.value) return jsonRes(res, 409, { ok: false, error: 'restart_in_flight' });
+          return jsonRes(res, 200, { ok: true, ...completed.value, manager: 'git' });
+        } catch (error) {
+          if (!acquired) return jsonRes(res, 409, { ok: false, error: 'update_in_flight' });
+          return jsonRes(res, 500, {
+            ok: false,
+            error: 'source_sync_failed',
+            detail: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          updateInFlight = false;
+        }
+      }
       let installPlan: GlobalInstallPlan;
       try {
         const packageRoot = lastSuccessfulUpdatePlan?.activePackageRoot ?? botmuxInstallRoot();

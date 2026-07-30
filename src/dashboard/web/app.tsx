@@ -602,13 +602,13 @@ function TopbarVersionControl(props: {
 
   const behind = status.behind && !!status.latest;
   const unknown = !status.latest;
-  const automatic = behind && status.updateSupported && !status.localDevInstall && status.node.ok;
+  const automatic = behind && status.updateSupported && status.node.ok;
   const rollbackSupported = status.updateSupported && !status.localDevInstall && status.node.ok;
   const busy = phase === 'updating' || phase === 'restarting';
   const command = status.updateCommand ?? 'botmux update';
   const currentVersion = `v${status.current}`;
   const latestVersion = status.latest ? `v${status.latest}` : '';
-  const unavailableReason = status.localDevInstall
+  const unavailableReason = status.localDevInstall && !status.updateSupported
     ? t('update.localDev')
     : !status.updateSupported
       ? t('update.unsupportedInstall')

@@ -95,7 +95,7 @@ interface UpdateStatus {
   cliUpdates: CliRuntimeUpdateStatus[];
   localDevInstall: boolean;
   updateSupported: boolean;
-  updateManager: 'npm' | 'pnpm' | 'yarn' | 'bun' | 'unknown';
+  updateManager: 'npm' | 'pnpm' | 'yarn' | 'bun' | 'git' | 'unknown';
   updateCommand: string | null;
   node: NodeCheck;
   installs: { entries: InstallEntry[]; multiple: boolean };
@@ -1322,7 +1322,7 @@ function UpdateCard(props: {
     inner = <LoadingState label={tr('update.loading')} compact />;
   } else {
     const s = props.status;
-    const updateDisabled = s.localDevInstall || !s.updateSupported || props.busy;
+    const updateDisabled = !s.updateSupported || props.busy;
     inner = (
       <>
         <p className="update-version">
@@ -1330,7 +1330,7 @@ function UpdateCard(props: {
           <UpdateBadge status={s} />
         </p>
         {!s.node.ok ? <p className="hint-warn">{tr('update.nodeWarn', { version: s.node.version, required: s.node.required })}</p> : null}
-        {!s.localDevInstall && !s.updateSupported ? <p className="hint-warn">{tr('update.unsupportedInstall')}</p> : null}
+        {!s.updateSupported ? <p className="hint-warn">{tr(s.localDevInstall ? 'update.localDev' : 'update.unsupportedInstall')}</p> : null}
         {s.installs.multiple ? <MultiInstallWarning entries={s.installs.entries} /> : null}
         <div className="update-actions">
           <button type="button" data-up="check" disabled={props.busy} onClick={props.onCheck}>{tr('update.btnCheck')}</button>
@@ -1357,8 +1357,10 @@ function UpdateCard(props: {
     <SettingsBlock
       className="settings-update-block"
       title={tr('update.section')}
-      titleExtra={props.status?.localDevInstall
-        ? <span className="settings-title-note">{tr('update.localDev')}</span>
+      titleExtra={props.status?.localDevInstall && props.status.updateSupported
+        ? <span className="settings-title-note">{tr('update.sourceSync')}</span>
+        : props.status?.localDevInstall
+          ? <span className="settings-title-note">{tr('update.localDev')}</span>
         : props.status && !props.status.updateSupported
           ? <span className="settings-title-note">{tr('update.unsupportedInstall')}</span>
           : null}
