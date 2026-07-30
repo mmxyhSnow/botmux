@@ -1,12 +1,29 @@
 ---
 name: maintain-botmux-fork
-description: Maintain the mmxyhSnow/botmux custom/prod source deployment while preserving custom features and safely consuming deepcoldy/botmux releases. Use when installing this Botmux fork, onboarding another agent, operating or diagnosing the source checkout, adding and deploying a custom feature, synchronizing an official stable release, resolving upgrade conflicts, rolling back a deployment, or installing and updating this maintenance skill.
+description: Maintain the mmxyhSnow/botmux custom/prod source deployment while preserving custom features and safely consuming deepcoldy/botmux releases. Use when a user message begins with /feat, /opt, or /fix to request a Botmux feature, optimization, or bug fix; or when installing this Botmux fork, onboarding another agent, operating or diagnosing the source checkout, adding and deploying a custom feature, synchronizing an official stable release, resolving upgrade conflicts, rolling back a deployment, or installing and updating this maintenance skill.
 ---
 
 # 维护 Botmux 自定义分支
 
 维护 `mmxyhSnow/botmux` 的 `custom/prod` 源码部署，并把
 `deepcoldy/botmux` 的正式版标签安全合入。以可恢复的 Git 历史、测试证据和运行态回读为完成标准。
+
+## 约定式开发命令
+
+当用户消息的首个非空内容是以下前缀时，直接把它路由为 Botmux 自定义开发任务：
+
+- `/feat <目标>`：新增 Botmux 功能，默认使用 `feat` 提交类型。
+- `/opt <目标>`：优化现有体验、性能、稳定性或代码结构；默认保持现有外部行为，提交类型按实际改动
+  选择 `perf` 或 `refactor`。
+- `/fix <问题>`：诊断并修复 Botmux 缺陷或回归，默认使用 `fix` 提交类型。
+
+前缀只负责声明任务类型，前缀后的全部内容都是需求正文。正文清晰且风险可控时直接按
+[custom-development.md](references/custom-development.md) 实施、验证、提交并推送；涉及多模块取舍、
+验收口径不清或高风险行为时，先使用当前环境提供的需求澄清能力与用户收敛范围。只有前缀没有正文时，
+只追问目标，不自行猜测需求。
+
+这三个前缀授权需求范围内的源码修改、测试和正常 Git 提交/推送，但不自动授权生产部署、daemon 重启、
+正式发版、同步上游、强推或历史重写。只有正文明确要求相应动作时才执行。
 
 ## 固定边界
 
