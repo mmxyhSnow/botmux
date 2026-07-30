@@ -104,6 +104,24 @@ afterEach(() => {
 });
 
 describe('Codex 连续提问卡片', () => {
+  it('锁定本轮提问对象时，在连续提问卡片中直接 @ 对方', async () => {
+    registerAsk({
+      larkAppId: 'cli_ask',
+      chatId: 'oc_chat',
+      rootMessageId: 'om_root',
+      sessionId: 'sess-1',
+      questions: [question('请选择处理方式', '修复', '忽略')],
+      timeoutMs: 10_000,
+      flowId: 'turn-mention',
+      approvers: ['ou_owner'],
+    });
+    await flushDispatch();
+
+    const answerable = sentCards[0]!.card.elements[0].fields[1].text.content;
+    expect(answerable).toContain('本轮提问对象');
+    expect(answerable).toContain('<at id=ou_owner></at>');
+  });
+
   it('同一 flow 的第二问复用原卡，并保留高亮且锁定的第一问', async () => {
     const firstPromise = registerAsk({
       larkAppId: 'cli_ask',

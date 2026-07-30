@@ -11,6 +11,7 @@ import type {
   PendingAsk,
 } from '../../core/ask-types.js';
 import { localeForBot, t, type Locale } from '../../i18n/index.js';
+import { buildAskAnswerableContent } from './ask-card-meta.js';
 
 export interface AskFlowActions {
   select: string;
@@ -204,9 +205,6 @@ function appendActiveQuestions(
 
 function buildMeta(ask: PendingAsk, locale: Locale): Record<string, unknown> {
   const deadline = new Date(ask.deadlineAt).toLocaleString('zh-CN');
-  const answerable = ask.approvers?.length
-    ? t('card.ask.answerable_turn_callers', undefined, locale)
-    : t('card.ask.answerable_talk_members', undefined, locale);
   return {
     tag: 'div',
     fields: [
@@ -221,7 +219,7 @@ function buildMeta(ask: PendingAsk, locale: Locale): Record<string, unknown> {
         is_short: true,
         text: {
           tag: 'lark_md',
-          content: `**${t('card.ask.field.answerable', undefined, locale)}**\n${escapeMd(answerable)}`,
+          content: `**${t('card.ask.field.answerable', undefined, locale)}**\n${buildAskAnswerableContent(ask, locale)}`,
         },
       },
     ],

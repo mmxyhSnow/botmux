@@ -18,6 +18,7 @@ import {
   buildAskFlowCard,
   buildPreviousAskFlowSegmentCard,
 } from './ask-card-flow.js';
+import { buildAskAnswerableContent } from './ask-card-meta.js';
 
 /** 旧单选即答动作（保留兼容旧卡片回调；Task 5 新增 ask_submit 路径）。 */
 export const ASK_SELECT_ACTION = 'ask_select';
@@ -247,7 +248,7 @@ export function buildAskCard(ask: PendingAsk, result?: AskResult): string {
     tag: 'div',
     fields: [
       { is_short: true, text: { tag: 'lark_md', content: `**${t('card.ask.field.deadline', undefined, locale)}**\n${escapeMd(deadline)}` } },
-      { is_short: true, text: { tag: 'lark_md', content: `**${t('card.ask.field.answerable', undefined, locale)}**\n${escapeMd(approverSummary(ask, locale))}` } },
+      { is_short: true, text: { tag: 'lark_md', content: `**${t('card.ask.field.answerable', undefined, locale)}**\n${buildAskAnswerableContent(ask, locale)}` } },
     ],
   };
 
@@ -452,14 +453,6 @@ function templateForResult(result: AskResult): string {
     case 'timedOut': return 'orange';
     case 'invalidated': return 'grey';
   }
-}
-
-function approverSummary(ask: PendingAsk, locale?: Locale): string {
-  if (ask.approvers?.length) {
-    return t('card.ask.answerable_turn_callers', undefined, locale);
-  }
-  // 普通 ask 继续沿用 canTalk；原生确认由 approvers 额外收紧到本轮提问对象。
-  return t('card.ask.answerable_talk_members', undefined, locale);
 }
 
 function asString(value: unknown): string | undefined {
