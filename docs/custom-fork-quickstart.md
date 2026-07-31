@@ -23,6 +23,84 @@ daemon，使用自己的飞书应用、CLI 登录态、工作目录和会话数�
 任何 App Secret、Token、SSH 私钥、`bots.json` 或 Dashboard 凭证都只留在自己的机器上，不要通过
 群聊、GitHub Issue、PR 或文档传递。
 
+## 已有官方版：原地无感迁移
+
+已有官方 npm 版时，不需要重建飞书应用，也不要重新运行 `botmux setup`。自定义版与官方版都从
+同一位系统用户的 `~/.botmux` 读取配置和数据；原来的机器人 App ID、App Secret、owner、工作目录、
+会话记录、附件、Dashboard 配置以及 CLI 登录态都会继续使用。
+
+当前 `custom/prod` 包含官方最新稳定版 `v3.7.1`。从官方稳定版迁移可以直接切换；如果当前版本带
+`canary`、`beta` 或 `rc` 后缀，或版本高于 `v3.7.1`，先停止并比较配置兼容性，不要直接降级。
+
+### 1. 迁移前留证和备份
+
+必须使用原来运行官方 Botmux 的同一位系统用户：
+
+```bash
+botmux --version
+botmux status
+botmux setup list
+type -a botmux
+
+migration_backup="$HOME/botmux-migration-$(date +%Y%m%d-%H%M%S).tar.gz"
+tar -C "$HOME" -czf "$migration_backup" .botmux
+chmod 600 "$migration_backup"
+```
+
+备份包含飞书凭证和会话数据，只能保留在本机，不要上传或分享。
+
+### 2. 在新目录构建自定义版
+
+不要覆盖或卸载现有官方包，先并行准备源码 checkout：
+
+```bash
+git clone --branch custom/prod --single-branch \
+  https://github.com/mmxyhSnow/botmux.git botmux-custom
+cd botmux-custom
+git remote add upstream https://github.com/deepcoldy/botmux.git
+
+corepack enable
+corepack prepare pnpm@9.5.0 --activate
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+### 3. 切换程序并重建 daemon
+
+下面两条命令只切换程序入口和 PM2 进程，不会改写 `~/.botmux/bots.json`：
+
+```bash
+pnpm use:here
+pnpm daemon:restart
+```
+
+迁移包含一次短暂 daemon 重启，因此“无感”指机器人身份、配置和会话连续，不代表完全零中断。
+不要在切换前执行 `npm uninstall -g botmux`；旧包先保留，方便回滚。
+
+### 4. 迁移后验收
+
+```bash
+botmux status
+botmux setup list
+type -a botmux
+sed -n '1,5p' "$HOME/.botmux/bin/botmux"
+pm2 jlist | jq -r '.[] | select(.name | startswith("botmux")) | [.name,.pm2_env.status,.pm2_env.pm_exec_path] | @tsv'
+```
+
+验收标准：
+
+- 机器人数量、App ID、CLI、owner 和工作目录与迁移前一致。
+- `botmux-*` 与 `botmux-dashboard` 全部 online。
+- PM2 的 `pm_exec_path` 指向新源码 checkout 的 `dist/`。
+- 原来的机器人私聊、群聊 @、Dashboard 和一条已有会话都能继续使用。
+
+验证通过前不要删除旧官方包或本地备份。如果失败，配置没有被改写；使用 `type -a botmux` 留存的
+旧官方可执行文件重新启动原版本即可回滚。
+
+## 全新部署
+
+下面步骤只适用于尚未配置过 Botmux 的机器。已有官方版请使用上一节的原地迁移流程。
+
 ## 1. 获取自定义版源码
 
 只部署、不向仓库推送代码时可以使用 HTTPS：
