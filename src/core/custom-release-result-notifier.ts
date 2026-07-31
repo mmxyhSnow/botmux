@@ -1,4 +1,4 @@
-/** 自定义发版结果提醒：重绘终态卡，并用独立私聊提供真正的新消息提醒。 */
+/** 自定义发版结果提醒：重绘终态卡，并仅为异常或后续发布结果补充独立私聊。 */
 import { createHash } from 'node:crypto';
 import type {
   CustomReleaseEventRecord,
@@ -7,8 +7,13 @@ import type {
 import { CustomReleaseEventStore } from '../services/custom-release-event.js';
 import { buildCustomReleaseSummaryCard } from '../im/lark/custom-release-card.js';
 
-const NOTICE_STATUSES = new Set<CustomReleaseEventStatus>([
+const SETTLED_STATUSES = new Set<CustomReleaseEventStatus>([
   'frozen', 'freeze_failed', 'stale', 'promoted', 'promote_failed', 'deployed', 'deploy_failed',
+]);
+
+// 冻结成功后的状态和下一步已经完整呈现在原卡片中，不再发送重复文字。
+const TEXT_NOTICE_STATUSES = new Set<CustomReleaseEventStatus>([
+  'freeze_failed', 'stale', 'promoted', 'promote_failed', 'deployed', 'deploy_failed',
 ]);
 
 interface CustomReleaseResultNotifierDeps {
@@ -30,9 +35,6 @@ function resultMessageUuid(eventId: string, status: CustomReleaseEventStatus): s
 
 function resultNotice(record: CustomReleaseEventRecord): string {
   const { event, state } = record;
-  if (state.status === 'frozen') {
-    return `候选版本 ${event.release.pendingVersion} 已冻结。请打开“待发版 ${event.release.pendingVersion} 已更新”私聊卡，点击“推进并部署 ${event.release.pendingVersion}”；按钮点击本身即为完整发布授权。`;
-  }
   if (state.status === 'freeze_failed') {
     return `候选版本 ${event.release.pendingVersion} 冻结失败，未创建候选标签。${state.lastError ? `原因：${state.lastError}` : ''}`;
   }
@@ -57,7 +59,7 @@ export class CustomReleaseResultNotifier {
   /** 稳定 UUID 与账本字段共同保证结果提醒重试幂等。 */
   async notifySettled(record: CustomReleaseEventRecord): Promise<void> {
     const { status } = record.state;
-    if (!NOTICE_STATUSES.has(status) || record.state.notifiedStatus === status) return;
+    if (!TEXT_NOTICE_STATUSES.has(status) || record.state.notifiedStatus === status) return;
     const owner = this.deps.ownerOpenId();
     if (!owner) return;
     try {
@@ -70,7 +72,7 @@ export class CustomReleaseResultNotifier {
 
   /** 升级后选取最近的已结算事件；即使已有更新的待发卡，也能重绘尚未推进的候选卡。 */
   async refreshLatestSettledCard(): Promise<void> {
-    const latest = this.deps.store.list().filter(record => NOTICE_STATUSES.has(record.state.status)).at(-1);
+    const latest = this.deps.store.list().filter(record => SETTLED_STATUSES.has(record.state.status)).at(-1);
     if (!latest) return;
     if (latest.state.messageId) {
       try {
