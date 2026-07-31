@@ -46,6 +46,8 @@ function completedState(): CodexAppProgressCardSessionState {
       '[完整评估](https://docs.example/report)',
       '',
       '<script>alert("unsafe")</script>',
+      '',
+      '<!--botmux-actions:{"actions":[{"label":"部署","prompt":"部署并重启","authorization":"explicit"}]}-->',
     ].join('\n'),
   };
 }
@@ -63,6 +65,12 @@ describe('Codex App 完整过程 HTML', () => {
     const html = readFileSync(report.filePath, 'utf8');
 
     expect(report.reportId).toMatch(/^[a-f0-9]{32}$/);
+    expect(html).toContain('<article class="report">');
+    expect(html).toContain('class="summary-panel"');
+    expect(html).toContain('class="conclusion-panel"');
+    expect(html).toContain('class="evidence-panel"');
+    expect(html).toContain('class="timeline-panel"');
+    expect(html).toContain('font-size:clamp(36px,4vw,60px)');
     expect(html).toContain('修复 &lt;Botmux&gt; &amp; Dashboard');
     expect(html).toContain('用时 18 分钟');
     expect(html).toContain('17:28 完成');
@@ -76,10 +84,15 @@ describe('Codex App 完整过程 HTML', () => {
     expect(html).toContain('中文场景选择 <strong>humanizer-zh</strong>');
     expect(html).toContain('href="https://docs.example/report"');
     expect(html).toContain('>完整评估</a>');
+    expect(html).not.toContain('botmux-actions');
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;');
     expect(html).toContain('第一条完整证据');
     expect(html).toContain('第二条完整证据');
+    expect(html).toContain('<strong>17:10</strong>');
+    expect(html.indexOf('<h2>最终结论</h2>')).toBeLessThan(
+      html.indexOf('>产物与链接<'),
+    );
   });
 
   it('只把固定格式的报告路由映射到数据目录', () => {
