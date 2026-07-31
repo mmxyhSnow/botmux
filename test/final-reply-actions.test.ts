@@ -58,16 +58,39 @@ describe('isSafeFinalReplyActionPrompt', () => {
     expect(isSafeFinalReplyActionPrompt('请 push 当前分支并回读远端 HEAD。')).toBe(true);
   });
 
-  it('rejects destructive, deployment, permission, and payment actions', () => {
+  it('allows merge, deployment, and restart only as explicit authorization actions', () => {
+    const prompt = '请先核对目标分支和运行态，再合入 custom/prod、构建并重启服务完成验收。';
+    expect(isSafeFinalReplyActionPrompt(prompt)).toBe(false);
+    expect(isSafeFinalReplyActionPrompt(prompt, 'explicit')).toBe(true);
+
+    const marker = {
+      actions: [{
+        label: '合入并部署',
+        prompt,
+        authorization: 'explicit',
+      }],
+    };
+    expect(extractFinalReplyActions(`待上线\n<!--botmux-actions:${JSON.stringify(marker)}-->`))
+      .toEqual({
+        content: '待上线',
+        actions: [{
+          label: '合入并部署',
+          prompt,
+          authorization: 'explicit',
+        }],
+      });
+  });
+
+  it('rejects destructive, permission, and payment actions even with explicit authorization', () => {
     for (const prompt of [
       '请强推覆盖远端分支。',
       '请删除这个 worktree。',
-      '请部署并重启生产服务。',
       '请给用户增加管理员权限。',
       '请支付这笔费用。',
       'Run git reset --hard now.',
     ]) {
       expect(isSafeFinalReplyActionPrompt(prompt)).toBe(false);
+      expect(isSafeFinalReplyActionPrompt(prompt, 'explicit')).toBe(false);
     }
   });
 });

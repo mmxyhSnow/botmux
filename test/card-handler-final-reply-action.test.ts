@@ -38,7 +38,10 @@ function fakeSession(status = 'idle'): any {
   };
 }
 
-function action(prompt = '请 push 当前分支并回读远端 HEAD。'): any {
+function action(
+  prompt = '请 push 当前分支并回读远端 HEAD。',
+  authorization?: 'explicit',
+): any {
   return {
     operator: { open_id: 'ou_owner' },
     context: { open_message_id: 'om_final_card' },
@@ -50,6 +53,7 @@ function action(prompt = '请 push 当前分支并回读远端 HEAD。'): any {
         session_id: 'sid-1',
         root_id: 'om_root',
         cli_id: 'codex-app',
+        ...(authorization ? { authorization } : {}),
       },
     },
   };
@@ -118,6 +122,37 @@ describe('final_reply_quick_action', () => {
     deps.activeSessions.set(types.sessionKey('om_root', 'app_test'), fakeSession());
 
     const result = await handler.handleCardAction(action('请强推覆盖远端分支。'), deps, 'app_test');
+
+    expect(result?.toast?.type).toBe('warning');
+    expect(submitUserTurn).not.toHaveBeenCalled();
+  });
+
+  it('submits an explicitly authorized lifecycle action as a new user turn', async () => {
+    const { types, handler } = await fresh();
+    const ds = fakeSession();
+    deps.activeSessions.set(types.sessionKey('om_root', 'app_test'), ds);
+    const prompt = '请先核对目标分支和运行态，再合入 custom/prod、构建并重启服务完成验收。';
+
+    const result = await handler.handleCardAction(action(prompt, 'explicit'), deps, 'app_test');
+
+    expect(result?.toast?.type).toBe('success');
+    expect(submitUserTurn).toHaveBeenCalledWith({
+      session: ds,
+      prompt,
+      operatorOpenId: 'ou_owner',
+      sourceMessageId: 'om_final_card',
+    });
+  });
+
+  it('rejects a forged lifecycle action without the explicit authorization marker', async () => {
+    const { types, handler } = await fresh();
+    deps.activeSessions.set(types.sessionKey('om_root', 'app_test'), fakeSession());
+
+    const result = await handler.handleCardAction(
+      action('请合入 custom/prod 并重启服务。'),
+      deps,
+      'app_test',
+    );
 
     expect(result?.toast?.type).toBe('warning');
     expect(submitUserTurn).not.toHaveBeenCalled();

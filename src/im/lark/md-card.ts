@@ -660,6 +660,7 @@ export function buildMarkdownCard(
     sessionId: string;
     rootId: string;
     cliId: string;
+    authorization?: 'explicit';
   }> = [],
 ): string {
   const elements = md ? buildCardBodyElements(md, workingDir, localHomeLinkMode) : [];
@@ -686,6 +687,7 @@ export function buildMarkdownCard(
               session_id: action.sessionId,
               root_id: action.rootId,
               cli_id: action.cliId,
+              ...(action.authorization ? { authorization: action.authorization } : {}),
             },
           }],
         }],

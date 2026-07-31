@@ -933,7 +933,12 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
       return { toast: { type: 'warning', content: t('card.final_action.need_auth', undefined, loc) } };
     }
     const prompt = typeof value.prompt === 'string' ? value.prompt.trim() : '';
-    if (!isSafeFinalReplyActionPrompt(prompt)) {
+    const rawAuthorization = value.authorization;
+    const authorization = rawAuthorization === 'explicit' ? 'explicit' : undefined;
+    if (
+      (rawAuthorization !== undefined && rawAuthorization !== 'explicit')
+      || !isSafeFinalReplyActionPrompt(prompt, authorization)
+    ) {
       logger.warn(`[${tag(target)}] Rejected unsafe final reply quick action`);
       return { toast: { type: 'warning', content: t('card.final_action.unsafe', undefined, loc) } };
     }
