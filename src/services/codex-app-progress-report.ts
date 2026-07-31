@@ -144,16 +144,16 @@ function finalResponseSection(
   return `<section class="conclusion-panel">${sectionHeading('02', 'THE OUTCOME', '最终结论')}<div class="final-response">${body}</div>${listBlock('产物与链接', delivery, '无外部交付', true)}</section>`;
 }
 
-/** 把历史记录的时间戳拆成独立刻度，正文保持原样且继续转义。 */
-function timelineItem(entry: string, index: number, total: number): string {
+/** 把历史记录的时间戳拆成独立刻度，并保留其原始记录编号。 */
+function timelineItem(entry: string, recordIndex: number, hasNext: boolean): string {
   const matched = /^\[(\d{2}:\d{2}):\d{2}\]\s*([\s\S]*)$/.exec(entry);
   const time = matched?.[1] ?? '--:--';
   const content = (matched?.[2] ?? entry).trim();
   const titled = /^([^：:\n/]{2,12})[：:]\s*([\s\S]+)$/.exec(content);
-  const title = titled?.[1] ?? `过程记录 ${String(index + 1).padStart(2, '0')}`;
+  const title = titled?.[1] ?? `过程记录 ${String(recordIndex + 1).padStart(2, '0')}`;
   const copy = titled?.[2] ?? content;
-  const connector = index < total - 1 ? '<b></b>' : '';
-  return `<li><div class="timeline-time"><strong>${escapeHtml(time)}</strong><span>记录 ${String(index + 1).padStart(2, '0')}</span></div><div class="timeline-marker"><i></i>${connector}</div><div class="timeline-copy"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(copy).replace(/\n/g, '<br>')}</p></div></li>`;
+  const connector = hasNext ? '<b></b>' : '';
+  return `<li><div class="timeline-time"><strong>${escapeHtml(time)}</strong><span>记录 ${String(recordIndex + 1).padStart(2, '0')}</span></div><div class="timeline-marker"><i></i>${connector}</div><div class="timeline-copy"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(copy).replace(/\n/g, '<br>')}</p></div></li>`;
 }
 
 /** 将当前持久化投影渲染成不依赖脚本和外部资源的单文件 HTML。 */
@@ -170,9 +170,13 @@ export function renderCodexAppProgressReport(
     ? Math.min(100, Math.round((overview.completed.length / overview.total) * 100))
     : 0;
   const history = splitProgressCardEntries(state.content);
-  const historyHtml = history.length
-    ? `<ol class="timeline">${history.map((item, index) =>
-        timelineItem(item, index, history.length)).join('')}</ol>`
+  // 展示层按最新优先排列，但编号继续表达真实发生顺序，避免倒序后把最新记录误标为 01。
+  const newestFirstHistory = history
+    .map((entry, recordIndex) => ({ entry, recordIndex }))
+    .reverse();
+  const historyHtml = newestFirstHistory.length
+    ? `<ol class="timeline">${newestFirstHistory.map(({ entry, recordIndex }, index) =>
+        timelineItem(entry, recordIndex, index < newestFirstHistory.length - 1)).join('')}</ol>`
     : '<p class="muted">暂无过程记录</p>';
   const blocker = overview?.blocker
     ? `<aside class="alert"><strong>当前阻塞</strong><p>${escapeHtml(overview.blocker)}</p></aside>`
