@@ -24,6 +24,7 @@ git remote -v
 git fetch origin --prune
 git fetch upstream --prune --tags
 git rev-parse HEAD
+git rev-parse origin/custom/dev
 git rev-parse origin/custom/prod
 cat .botmux-source-update.json
 ```
@@ -32,6 +33,7 @@ cat .botmux-source-update.json
 
 - 当前分支是 `custom/prod`，tracked 文件 clean。
 - 本地 HEAD 与 `origin/custom/prod` 完全一致。
+- `origin/custom/dev` 与 `origin/custom/prod` 完全一致，没有尚未发布的集成改动。
 - `origin=mmxyhSnow/botmux`，`upstream=deepcoldy/botmux`。
 - 配置只含 schemaVersion、生产分支和双远端身份字段。
 - 没有另一轮升级或重启正在持锁。
@@ -86,15 +88,16 @@ botmux status
 
 `scripts/sync-official-source.mjs` 按顺序执行：
 
-1. 校验生产分支、clean 状态、双远端身份、本地/远端 HEAD。
+1. 校验生产分支、clean 状态、双远端身份、本地/远端 HEAD，并拒绝覆盖 `custom/dev` 待发改动。
 2. 找出 HEAD 已对齐的最新官方正式标签和 upstream 最新正式标签。
 3. 在仓库公共根的 `.worktrees/upgrade-X.Y.Z` 创建或复用 `upgrade/vX.Y.Z`。
 4. 用 `--no-ff` 把官方 `vX.Y.Z` 合入自定义生产基线。
 5. `pnpm install --frozen-lockfile`，运行兼容宿主的 unit 全量，再执行 `pnpm build`。
-6. push upgrade 分支，再把生产分支快进到同一 merge commit。
+6. 创建 `release/vX.Y.Z-custom.1` 候选标签，push upgrade 分支，再依次把 `custom/dev` 和
+   `custom/prod` 快进到同一 merge commit。
 7. canonical checkout `--ff-only` 跟进远端，安装依赖，并用同文件系统 rename 原子替换 `dist`；
    旧 `dist` 备份到生产目录同级的 `.botmux-dist-backups/source-update-*`。
-8. 创建并 push `deploy/vX.Y.Z-custom.1`，输出结构化结果。
+8. 创建并 push 同号 `deploy/vX.Y.Z-custom.1`，输出结构化结果。
 
 脚本不会自行处理 merge conflict，也不会替冲突升级选择新的部署标签编号。
 
@@ -129,6 +132,9 @@ pnpm build
 
 ```bash
 git push origin HEAD:refs/heads/upgrade/vX.Y.Z
+git tag -a release/vX.Y.Z-custom.N -m 'release: vX.Y.Z custom.N'
+git push origin refs/tags/release/vX.Y.Z-custom.N
+git push origin HEAD:refs/heads/custom/dev
 git push origin HEAD:refs/heads/custom/prod
 ```
 
@@ -149,7 +155,9 @@ live 验证通过后，列出已有 `deploy/vX.Y.Z-custom.*`，创建下一个�
 
 按失败发生点判断，不要把整条链路从头重放：
 
-- merge/test/build 前失败：`custom/prod` 尚未推进。保留 upgrade worktree，修复根因后重新验证。
+- merge/test/build 前失败：`custom/dev`、`custom/prod` 均未推进。保留 upgrade worktree，修复根因后
+  重新验证。
+- 候选标签或 `custom/dev` 已 push、生产分支未 push：核对 merge commit 与远端分支后只补缺失步骤。
 - upgrade 分支已 push、生产分支未 push：核对 merge commit 后只补生产 push。
 - `origin/custom/prod` 已推进、canonical 未快进：fetch 后 `merge --ff-only`。
 - 源码已快进、`dist` 切换失败：在 canonical checkout 重新安装、`pnpm switch:here`，再重启。
