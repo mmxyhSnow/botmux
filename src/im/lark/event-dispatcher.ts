@@ -10,7 +10,7 @@ import { atomicWriteFileSync } from '../../utils/atomic-write.js';
 import { join } from 'node:path';
 import { getBot, getAllBots, findOncallChat, getOwnerOpenId, type BotState } from '../../bot-registry.js';
 import { config, isVcMeetingAgentGloballyEnabled, vcMeetingAgentGlobalListenerBotAppId } from '../../config.js';
-import { getChatInfo, getChatMode, getCachedChatMode, listChatBotMembers, resolveSiblingBotBySenderOpenId, replyMessage, sendMessage, sendUserMessage, isHumanOpenId, updateMessage } from './client.js';
+import { getChatInfo, getChatMode, getCachedChatMode, getMessageDetail, listChatBotMembers, resolveSiblingBotBySenderOpenId, replyMessage, sendMessage, sendUserMessage, isHumanOpenId, updateMessage } from './client.js';
 import { logger } from '../../utils/logger.js';
 import { BoundedMap } from '../../utils/bounded-map.js';
 import { serializeByAnchor } from '../../utils/anchor-serializer.js';
@@ -47,6 +47,9 @@ import { chatQuotaKey, globalQuotaKey } from '../../services/grant-store.js';
 import { ForwardFollowupBuffer } from './forward-followup-buffer.js';
 import { listForwardFollowups, putForwardFollowup, removeForwardFollowup } from './forward-followup-store.js';
 import { claimMessageOnce, _resetCacheForTest as _resetSeenMessagesForTest } from '../../services/seen-message-store.js';
+import {
+  OneShotCardActionGuard,
+} from './one-shot-card-action.js';
 import { ensureDefaultOncallBound } from '../../services/oncall-store.js';
 import { resolveRegularGroupMode, resolveGroupMentionMode, type GroupMentionMode } from '../../services/chat-reply-mode-store.js';
 import { buildSummaryCommandPrompt, type SummaryChatKind, type SummaryCommandMatch, type SummaryCommandRuntimeContext } from './summary-command.js';
@@ -608,6 +611,7 @@ function eventIdForKey(data: any): string | undefined {
 const CARD_ACTION_ACK_TIMEOUT_MS = 2500;
 const CARD_ACTION_TIMEOUT = Symbol('card-action-timeout');
 const cardActionInFlight = new Set<string>();
+let oneShotCardActionGuard = new OneShotCardActionGuard();
 
 function cardActionMessageId(data: any): string | undefined {
   return data?.context?.open_message_id ?? data?.open_message_id;
@@ -664,6 +668,27 @@ function shapeCardActionResult(result: any): any {
   return {};
 }
 
+/** 成功 toast/空 ACK 没有终态 UI 时，读取原卡片并同步返回置灰后的 card-only 响应。 */
+async function finalizeOneShotCardAction(
+  larkAppId: string,
+  data: any,
+  shapedResult: any,
+): Promise<any> {
+  const messageId = cardActionMessageId(data);
+  return oneShotCardActionGuard.finalize({
+    larkAppId,
+    messageId,
+    actionTag: data?.action?.tag,
+    actionValue: data?.action?.value,
+    shapedResult,
+    loadCard: () => getMessageDetail(larkAppId, messageId!),
+    onLoadError: err => logger.warn(
+      `[card-action] failed to freeze completed one-shot card ${messageId}: `
+      + `${err instanceof Error ? err.message : String(err)}`,
+    ),
+  });
+}
+
 function serializeRawCardForPatch(cardData: any): string | undefined {
   if (cardData === undefined || cardData === null) return undefined;
   return typeof cardData === 'string' ? cardData : JSON.stringify(cardData);
@@ -695,6 +720,20 @@ async function handleCardActionAckSafe(data: any, larkAppId: string, handlers: E
     return { toast: { type: 'info', content: t('toast.action_received_no_repeat', undefined, localeForBot(larkAppId)) } };
   }
 
+  if (oneShotCardActionGuard.isCompleted(
+    larkAppId,
+    cardActionMessageId(data),
+    data?.action?.tag,
+    data?.action?.value,
+  )) {
+    return {
+      toast: {
+        type: 'info',
+        content: t('toast.action_completed_no_repeat', undefined, localeForBot(larkAppId)),
+      },
+    };
+  }
+
   if (cardActionInFlight.has(key)) {
     logger.info(`[event-dedupe] duplicate card action ignored while in-flight: ${key}`);
     return { toast: { type: 'info', content: t('toast.action_in_progress', undefined, localeForBot(larkAppId)) } };
@@ -704,6 +743,7 @@ async function handleCardActionAckSafe(data: any, larkAppId: string, handlers: E
   let timedOut = false;
   const work = handlers.handleCardAction(data, larkAppId)
     .then(shapeCardActionResult)
+    .then(result => finalizeOneShotCardAction(larkAppId, data, result))
     .catch(err => {
       logger.error(`Error handling card action: ${err}`);
       return {};
@@ -738,6 +778,7 @@ async function handleCardActionAckSafe(data: any, larkAppId: string, handlers: E
 export function __resetEventClaimsForTest(): void {
   eventClaims.clear();
   cardActionInFlight.clear();
+  oneShotCardActionGuard = new OneShotCardActionGuard();
   // The message path now dedupes via the persistent seen-message store; clear its
   // in-memory cache too so cases reusing the same message_id don't suppress each other.
   _resetSeenMessagesForTest();

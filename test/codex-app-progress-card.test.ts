@@ -170,6 +170,34 @@ describe('Codex App 即时进度卡', () => {
     });
   });
 
+  it('单独保存当前回合最终结论并刷新报告，不把正文塞回进度卡', async () => {
+    const reports: CodexAppProgressCardSessionState[] = [];
+    const patches: string[] = [];
+    const card = new CodexAppProgressCard({
+      post: vi.fn(async () => 'om_card'),
+      patch: vi.fn(async (_messageId, cardJson) => {
+        patches.push(cardJson);
+      }),
+      persist: vi.fn(),
+      publishReport: async state => {
+        reports.push(state);
+        return 'https://youc.example/progress-report.html';
+      },
+    });
+
+    await card.accept('om_turn', '结论归档');
+    await card.recordFinal('om_other_turn', '不属于当前任务的结论');
+    await card.recordFinal('om_turn', '最终选择 [方案 A](https://example.com/artifact)。');
+
+    expect(card.snapshot()?.finalResponse).toBe(
+      '最终选择 [方案 A](https://example.com/artifact)。',
+    );
+    expect(reports.at(-1)?.finalResponse).toBe(
+      '最终选择 [方案 A](https://example.com/artifact)。',
+    );
+    expect(patches).toHaveLength(0);
+  });
+
   it('渲染器使用官方 markdown body 并映射失败色', () => {
     const rendered = JSON.parse(renderCodexAppProgressCard({
       phase: 'failed',

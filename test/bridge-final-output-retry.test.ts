@@ -288,6 +288,39 @@ describe('Bridge final_output delivery (P2 retry)', () => {
     });
   });
 
+  it('renders an explicitly authorized lifecycle action without executing it', async () => {
+    const sessionReply = vi.fn(async () => 'om_reply');
+    initWorkerPool({
+      sessionReply,
+      getSessionWorkingDir: () => '/tmp',
+      getActiveCount: () => 1,
+      closeSession: vi.fn(),
+    });
+    const ds = makeDs();
+    const prompt = '请先核对目标分支和运行态，再合入 custom/prod、构建并重启服务完成验收。';
+    const marker = `<!--botmux-actions:${JSON.stringify({
+      actions: [{ label: '合入并部署', prompt, authorization: 'explicit' }],
+    })}-->`;
+    const { __testOnly_deliverFinalOutput } = await import('../src/core/worker-pool.js') as any;
+
+    __testOnly_deliverFinalOutput(ds, {
+      ...finalOutputMsg(),
+      content: `代码已 push，尚未上线。\n${marker}`,
+    }, 'tag', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const cardJson = sessionReply.mock.calls[0][1] as string;
+    const button = JSON.parse(cardJson).body.elements
+      .find((element: any) => element.tag === 'column_set')
+      ?.columns[0].elements[0];
+    expect(button.behaviors[0].value).toMatchObject({
+      action: 'final_reply_quick_action',
+      label: '合入并部署',
+      prompt,
+      authorization: 'explicit',
+    });
+  });
+
   it('drops final_output whose worker sessionId does not match the daemon session', async () => {
     const sessionReply = vi.fn(async () => 'om_reply');
     initWorkerPool({

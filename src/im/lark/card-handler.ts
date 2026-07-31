@@ -119,6 +119,8 @@ export interface CardHandlerDeps {
   vcMeetingCardAction?: (data: CardActionData, larkAppId: string) => Promise<any>;
   /** Codex 完成通知卡动作。事件存储、App 打开和会话接管由 daemon 单点持有。 */
   codexNotifierCardAction?: (data: CardActionData, larkAppId: string) => Promise<any>;
+  /** 自定义待发版私聊卡动作；独立于任务会话，由 primary daemon 单点处理。 */
+  customReleaseCardAction?: (data: CardActionData, larkAppId: string) => Promise<any>;
   /** 授权成功后重放之前被拦截的消息，让用户无需再 @ 一遍。 */
   replayGrantedMessage?: (data: any, larkAppId: string) => void;
   /** 将最终回复卡上的快捷按钮作为一个新的普通用户回合交回 daemon 统一路由。 */
@@ -933,7 +935,12 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
       return { toast: { type: 'warning', content: t('card.final_action.need_auth', undefined, loc) } };
     }
     const prompt = typeof value.prompt === 'string' ? value.prompt.trim() : '';
-    if (!isSafeFinalReplyActionPrompt(prompt)) {
+    const rawAuthorization = value.authorization;
+    const authorization = rawAuthorization === 'explicit' ? 'explicit' : undefined;
+    if (
+      (rawAuthorization !== undefined && rawAuthorization !== 'explicit')
+      || !isSafeFinalReplyActionPrompt(prompt, authorization)
+    ) {
       logger.warn(`[${tag(target)}] Rejected unsafe final reply quick action`);
       return { toast: { type: 'warning', content: t('card.final_action.unsafe', undefined, loc) } };
     }
@@ -1156,6 +1163,16 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
 
   if (isAskCardAction(value?.action)) {
     return handleAskCardAction(data);
+  }
+
+  if (value?.action === 'custom_release_freeze' && larkAppId) {
+    if (!operatorOpenId) {
+      return { toast: { type: 'error', content: '无法确认冻结操作者身份' } };
+    }
+    if (!deps.customReleaseCardAction) {
+      return { toast: { type: 'error', content: '自定义发版处理器未启用' } };
+    }
+    return deps.customReleaseCardAction(data, larkAppId);
   }
 
   if (
