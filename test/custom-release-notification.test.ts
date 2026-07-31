@@ -10,8 +10,8 @@ import {
 import { buildCustomReleaseSummaryCard } from '../src/im/lark/custom-release-card.js';
 import {
   CustomReleaseNotifier,
-  StaleCustomReleaseHeadError,
 } from '../src/core/custom-release-notifier.js';
+import { StaleCustomReleaseHeadError } from '../src/core/custom-release-notifier-types.js';
 
 const tempDirs: string[] = [];
 
@@ -119,6 +119,24 @@ describe('custom release summary card', () => {
     expect(card).toContain('已有更新的合入卡片');
     expect(card).not.toContain('custom_release_freeze');
   });
+
+  it('冻结后在原卡给出推进生产选项并保留部署边界', () => {
+    const { record } = storeWithEvent();
+    const card = JSON.parse(buildCustomReleaseSummaryCard({
+      ...record,
+      state: {
+        ...record.state,
+        status: 'frozen',
+        messageId: 'om_release',
+        candidateTag: 'release/v3.7.1-custom.3',
+      },
+    }));
+    const encoded = JSON.stringify(card);
+    expect(encoded).toContain('推进 custom/prod');
+    expect(encoded).toContain('不会部署或重启');
+    expect(encoded).toContain('custom_release_promote');
+    expect(card.body.elements.at(-1).tag).toBe('column_set');
+  });
 });
 
 describe('custom release notifier', () => {
@@ -134,7 +152,9 @@ describe('custom release notifier', () => {
         return `om_${sent.length}`;
       },
       updateCard: async (messageId, card) => { patched.push({ messageId, card }); },
+      notifyText: async () => undefined,
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
+      promote: async () => ({ productionHead: event().integration.head }),
     });
 
     await notifier.flush();
@@ -156,12 +176,15 @@ describe('custom release notifier', () => {
   it('只允许收件 owner 冻结，并在后台成功后固化卡片', async () => {
     const { store } = storeWithEvent();
     const patched: string[] = [];
+    const notices: string[] = [];
     const notifier = new CustomReleaseNotifier({
       store,
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_release',
       updateCard: async (_messageId, card) => { patched.push(card); },
+      notifyText: async (_owner, content) => { notices.push(content); },
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
+      promote: async () => ({ productionHead: event().integration.head }),
     });
     await notifier.flush();
 
@@ -184,6 +207,9 @@ describe('custom release notifier', () => {
       candidateTag: 'release/v3.7.1-custom.3',
     });
     expect(patched.at(-1)).toContain('已冻结');
+    expect(patched.at(-1)).toContain('custom_release_promote');
+    expect(notices.at(-1)).toContain('请打开');
+    expect(notices.at(-1)).toContain('推进 custom/prod');
   });
 
   it('冻结期间远端 HEAD 改变时只让旧卡过期，不创建候选结果', async () => {
@@ -193,7 +219,9 @@ describe('custom release notifier', () => {
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_release',
       updateCard: async () => undefined,
+      notifyText: async () => undefined,
       freeze: async () => { throw new StaleCustomReleaseHeadError('远端 custom/dev 已变化'); },
+      promote: async () => ({ productionHead: event().integration.head }),
     });
     await notifier.flush();
     await notifier.handleCardAction({
@@ -205,6 +233,34 @@ describe('custom release notifier', () => {
     expect(store.get(event().eventId)?.state.status).toBe('stale');
   });
 
+  it('升级启动时重绘最新已冻结卡并只补发一次结果提醒', async () => {
+    const { store } = storeWithEvent('1');
+    store.updateState(event('1').eventId, {
+      status: 'frozen',
+      messageId: 'om_frozen',
+      candidateTag: 'release/v3.7.1-custom.3',
+    });
+    const next = store.enqueue(event('2'));
+    store.updateState(next.event.eventId, { status: 'delivered', messageId: 'om_next' });
+    const patched: string[] = [];
+    const notices: string[] = [];
+    const notifier = new CustomReleaseNotifier({
+      store,
+      ownerOpenId: () => 'ou_owner',
+      sendCard: async () => 'om_unused',
+      updateCard: async (_messageId, card) => { patched.push(card); },
+      notifyText: async (_owner, content) => { notices.push(content); },
+      freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.4' }),
+      promote: async () => ({ productionHead: event('1').integration.head }),
+    });
+
+    await notifier.refreshLatestSettledCard();
+    await notifier.refreshLatestSettledCard();
+    expect(patched.at(-1)).toContain('custom_release_promote');
+    expect(notices).toHaveLength(1);
+    expect(store.get(event('1').eventId)?.state.notifiedStatus).toBe('frozen');
+  });
+
   it('daemon 重启后把中断中的冻结恢复为可重试状态', async () => {
     const { store } = storeWithEvent();
     store.updateState(event().eventId, { status: 'freezing', messageId: 'om_release' });
@@ -214,7 +270,9 @@ describe('custom release notifier', () => {
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_release',
       updateCard: async (_messageId, card) => { patched.push(card); },
+      notifyText: async () => undefined,
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
+      promote: async () => ({ productionHead: event().integration.head }),
     });
 
     await notifier.recoverInterruptedFreezes();
@@ -224,4 +282,5 @@ describe('custom release notifier', () => {
     });
     expect(patched.at(-1)).toContain('上次冻结未完成');
   });
+
 });

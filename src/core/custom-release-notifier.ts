@@ -3,38 +3,14 @@
  * primary daemon 独占投递队列，卡片回调只负责认领任务，耗时冻结在后台执行。
  */
 import type { CustomReleaseEventRecord } from '../services/custom-release-event.js';
-import {
-  CustomReleaseEventStore,
-  customReleaseMessageUuid,
-} from '../services/custom-release-event.js';
+import { customReleaseMessageUuid } from '../services/custom-release-event.js';
 import { buildCustomReleaseSummaryCard } from '../im/lark/custom-release-card.js';
-
-export class StaleCustomReleaseHeadError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'StaleCustomReleaseHeadError';
-  }
-}
-
-export interface CustomReleaseFreezeResult {
-  candidateTag: string;
-}
-
-export interface CustomReleaseNotifierDeps {
-  store: CustomReleaseEventStore;
-  ownerOpenId: () => string | undefined;
-  sendCard: (ownerOpenId: string, cardJson: string, uuid: string) => Promise<string>;
-  updateCard: (messageId: string, cardJson: string) => Promise<void>;
-  freeze: (record: CustomReleaseEventRecord) => Promise<CustomReleaseFreezeResult>;
-  log?: (message: string) => void;
-  pollIntervalMs?: number;
-}
-
-export interface CustomReleaseCardActionInput {
-  operatorOpenId?: string;
-  messageId?: string;
-  eventId?: string;
-}
+import { CustomReleaseResultNotifier } from './custom-release-result-notifier.js';
+import {
+  StaleCustomReleaseHeadError,
+  type CustomReleaseCardActionInput,
+  type CustomReleaseNotifierDeps,
+} from './custom-release-notifier-types.js';
 
 function errorText(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim().slice(0, 1000);
@@ -52,15 +28,24 @@ export class CustomReleaseNotifier {
   private flushing?: Promise<void>;
   private readonly jobs = new Set<Promise<void>>();
   private readonly log: (message: string) => void;
+  private readonly resultNotifier: CustomReleaseResultNotifier;
 
   constructor(private readonly deps: CustomReleaseNotifierDeps) {
     this.log = deps.log ?? (() => undefined);
+    this.resultNotifier = new CustomReleaseResultNotifier({
+      store: deps.store,
+      ownerOpenId: deps.ownerOpenId,
+      updateCard: deps.updateCard,
+      notifyText: deps.notifyText,
+      log: this.log,
+    });
   }
 
   /** 启动时立即排空一次，之后低频扫描；定时器本身不阻止进程退出。 */
   start(): void {
     if (this.timer) return;
     void this.recoverInterruptedFreezes()
+      .then(() => this.resultNotifier.refreshLatestSettledCard())
       .then(() => this.flush())
       .catch(error => this.log(`startup recovery/flush failed: ${errorText(error)}`));
     this.timer = setInterval(() => {
@@ -136,6 +121,11 @@ export class CustomReleaseNotifier {
     }
   }
 
+  /** 部署新实现后重绘最新终态卡，并补发尚未确认送达的结果提醒。 */
+  async refreshLatestSettledCard(): Promise<void> {
+    await this.resultNotifier.refreshLatestSettledCard();
+  }
+
   /**
    * 冻结回调只信任飞书 verified operator 和账本里的 messageId/eventId。
    * 成功认领后立即返回处理中卡片，测试与构建不占用飞书三秒回调预算。
@@ -143,7 +133,7 @@ export class CustomReleaseNotifier {
   async handleCardAction(input: CustomReleaseCardActionInput): Promise<any> {
     const owner = this.deps.ownerOpenId();
     if (!owner || input.operatorOpenId !== owner) {
-      return { toast: { type: 'error', content: '只有收到该私聊卡的 Bot owner 可以冻结版本' } };
+      return { toast: { type: 'error', content: '只有收到该私聊卡的 Bot owner 可以操作发版' } };
     }
     if (!input.eventId) {
       return { toast: { type: 'error', content: '发版事件参数无效' } };
@@ -152,6 +142,12 @@ export class CustomReleaseNotifier {
     if (!record || !record.state.messageId || record.state.messageId !== input.messageId) {
       return { toast: { type: 'error', content: '这张发版卡片已失效或来源不匹配' } };
     }
+    return input.action === 'custom_release_promote'
+      ? this.handlePromoteAction(record)
+      : this.handleFreezeAction(record);
+  }
+
+  private handleFreezeAction(record: CustomReleaseEventRecord): any {
     if (record.state.status === 'stale' || record.state.status === 'frozen' || record.state.status === 'freezing') {
       return rawCard(record, {
         type: 'info',
@@ -166,11 +162,35 @@ export class CustomReleaseNotifier {
     const claimed = this.deps.store.updateState(record.event.eventId, {
       status: 'freezing',
       lastError: undefined,
+      notifiedStatus: undefined,
     });
     const job = this.freezeInBackground(claimed);
     this.jobs.add(job);
     void job.finally(() => this.jobs.delete(job));
     return rawCard(claimed, { type: 'success', content: '已开始冻结验证' });
+  }
+
+  private handlePromoteAction(record: CustomReleaseEventRecord): any {
+    if (record.state.status === 'stale' || record.state.status === 'promoted' || record.state.status === 'promoting') {
+      return rawCard(record, {
+        type: 'info',
+        content: record.state.status === 'stale'
+          ? '已有更新的待发版，请使用最新私聊卡'
+          : record.state.status === 'promoted' ? '该候选版本已经推进生产' : '推进生产任务正在执行',
+      });
+    }
+    if (record.state.status !== 'frozen' && record.state.status !== 'promote_failed') {
+      return { toast: { type: 'warning', content: '当前发版卡片还不能推进生产' } };
+    }
+    const claimed = this.deps.store.updateState(record.event.eventId, {
+      status: 'promoting',
+      lastError: undefined,
+      notifiedStatus: undefined,
+    });
+    const job = this.promoteInBackground(claimed);
+    this.jobs.add(job);
+    void job.finally(() => this.jobs.delete(job));
+    return rawCard(claimed, { type: 'success', content: '已开始推进 custom/prod' });
   }
 
   private async freezeInBackground(record: CustomReleaseEventRecord): Promise<void> {
@@ -188,12 +208,39 @@ export class CustomReleaseNotifier {
         lastError: errorText(error),
       });
     }
-    if (!settled.state.messageId) return;
-    try {
-      await this.deps.updateCard(settled.state.messageId, buildCustomReleaseSummaryCard(settled));
-    } catch (error) {
-      this.log(`freeze result patch failed ${record.event.eventId.slice(0, 12)}: ${errorText(error)}`);
+    if (settled.state.messageId) {
+      try {
+        await this.deps.updateCard(settled.state.messageId, buildCustomReleaseSummaryCard(settled));
+      } catch (error) {
+        this.log(`freeze result patch failed ${record.event.eventId.slice(0, 12)}: ${errorText(error)}`);
+      }
     }
+    await this.resultNotifier.notifySettled(settled);
+  }
+
+  private async promoteInBackground(record: CustomReleaseEventRecord): Promise<void> {
+    let settled: CustomReleaseEventRecord;
+    try {
+      const result = await this.deps.promote(record);
+      settled = this.deps.store.updateState(record.event.eventId, {
+        status: 'promoted',
+        productionHead: result.productionHead,
+        lastError: undefined,
+      });
+    } catch (error) {
+      settled = this.deps.store.updateState(record.event.eventId, {
+        status: 'promote_failed',
+        lastError: errorText(error),
+      });
+    }
+    if (settled.state.messageId) {
+      try {
+        await this.deps.updateCard(settled.state.messageId, buildCustomReleaseSummaryCard(settled));
+      } catch (error) {
+        this.log(`promote result patch failed ${record.event.eventId.slice(0, 12)}: ${errorText(error)}`);
+      }
+    }
+    await this.resultNotifier.notifySettled(settled);
   }
 
   /** daemon 重启会中断子进程；把悬空状态改成明确可重试，并同步更新原卡片。 */
@@ -208,6 +255,19 @@ export class CustomReleaseNotifier {
         await this.deps.updateCard(recovered.state.messageId, buildCustomReleaseSummaryCard(recovered));
       } catch (error) {
         this.log(`interrupted freeze patch failed ${recovered.event.eventId.slice(0, 12)}: ${errorText(error)}`);
+      }
+    }
+    for (const interrupted of this.deps.store.list().filter(record => record.state.status === 'promoting')) {
+      const recovered = this.deps.store.updateState(interrupted.event.eventId, {
+        status: 'promote_failed',
+        lastError: 'daemon 重启中断了推进任务，请重新点击推进 custom/prod',
+        notifiedStatus: undefined,
+      });
+      if (!recovered.state.messageId) continue;
+      try {
+        await this.deps.updateCard(recovered.state.messageId, buildCustomReleaseSummaryCard(recovered));
+      } catch (error) {
+        this.log(`interrupted promote patch failed ${recovered.event.eventId.slice(0, 12)}: ${errorText(error)}`);
       }
     }
   }

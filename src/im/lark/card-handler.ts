@@ -1165,9 +1165,12 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
     return handleAskCardAction(data);
   }
 
-  if (value?.action === 'custom_release_freeze' && larkAppId) {
+  if (
+    (value?.action === 'custom_release_freeze' || value?.action === 'custom_release_promote')
+    && larkAppId
+  ) {
     if (!operatorOpenId) {
-      return { toast: { type: 'error', content: '无法确认冻结操作者身份' } };
+      return { toast: { type: 'error', content: '无法确认发版操作者身份' } };
     }
     if (!deps.customReleaseCardAction) {
       return { toast: { type: 'error', content: '自定义发版处理器未启用' } };
