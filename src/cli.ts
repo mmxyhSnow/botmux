@@ -85,7 +85,7 @@ import { isColdResumeDormant, sessionListDisposition } from './cli/session-list-
 import { dispatchPrimaryMessage, findStdinAliasAttachment, normalizeInteractiveCardInput, sendFileAttachments, sendVideoAttachments, shouldSendAsPureVideo, validateVideoAttachments } from './cli/send-dispatch.js';
 import { dispatchDeferredTopicSend, type DeferredScheduleRunData } from './cli/deferred-topic-send.js';
 import { resolveDaemonEnv } from './cli/daemon-lifecycle-env.js';
-import { buildPm2SpawnCommand } from './cli/pm2-command.js';
+import { buildPm2SpawnCommand, resolvePm2NodeInterpreter } from './cli/pm2-command.js';
 import { callDashboard, type DashboardEndpoint, type DashboardResult } from './cli/dashboard-endpoint.js';
 import { globalInstallUpdateLockTargetIn, installLatestBotmuxSync } from './core/maintenance.js';
 import { withFileLockSync } from './utils/file-lock.js';
@@ -416,7 +416,7 @@ function ecosystemConfig(activationAppId?: string): string {
     // Pin every managed core process to the Node that invoked this CLI. This
     // keeps GUI/launchd starts independent from PATH and lets Desktop replace
     // an external fleet without also killing unrelated plugin services.
-    interpreter: process.execPath,
+    interpreter: resolvePm2NodeInterpreter(process.execPath),
     cwd: CONFIG_DIR,
     autorestart: true,
     max_restarts: 10,
@@ -509,7 +509,7 @@ function ecosystemConfig(activationAppId?: string): string {
   apps.push({
     name: 'botmux-dashboard',
     script: join(PKG_ROOT, 'dist', 'dashboard.js'),
-    interpreter: process.execPath,
+    interpreter: resolvePm2NodeInterpreter(process.execPath),
     cwd: PKG_ROOT,
     autorestart: true,
     max_restarts: 10,
