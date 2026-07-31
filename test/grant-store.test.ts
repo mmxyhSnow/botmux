@@ -54,6 +54,21 @@ describe('grant-store', () => {
     expect(await store.addChatGrant('a1', 'oc_1', 'ou_guest')).toEqual({ ok: true, created: false });
   });
 
+  it('addChatGrant repairs stale runtime when the grant already exists on disk', async () => {
+    writeConfig({
+      allowedUsers: ['ou_owner'],
+      chatGrants: { oc_1: ['ou_guest'] },
+    });
+    const { registry, store } = await freshModules();
+    registry.getBot('a1').config.chatGrants = {};
+
+    const r = await store.addChatGrant('a1', 'oc_1', 'ou_guest');
+
+    expect(r).toEqual({ ok: true, created: false });
+    expect(readConfig().chatGrants).toEqual({ oc_1: ['ou_guest'] });
+    expect(registry.getBot('a1').config.chatGrants).toEqual({ oc_1: ['ou_guest'] });
+  });
+
   it('revokeGrant refuses to empty resolvedAllowedUsers (would_open_bot)', async () => {
     writeConfig({ allowedUsers: ['ou_owner'] });
     const { store } = await freshModules();
