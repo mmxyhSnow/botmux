@@ -37,9 +37,16 @@ function completedState(): CodexAppProgressCardSessionState {
       total: 2,
       next: '无',
       evidence: ['12 项测试通过'],
-      delivery: ['commit abc123'],
+      delivery: ['[产物链接](https://code.example/artifact)'],
       risks: ['等待外部观察'],
     },
+    finalResponse: [
+      '中文场景选择 **humanizer-zh**。',
+      '',
+      '[完整评估](https://docs.example/report)',
+      '',
+      '<script>alert("unsafe")</script>',
+    ].join('\n'),
   };
 }
 
@@ -61,8 +68,16 @@ describe('Codex App 完整过程 HTML', () => {
     expect(html).toContain('17:28 完成');
     expect(html).toContain('安全更新链路已上线');
     expect(html).toContain('12 项测试通过');
-    expect(html).toContain('commit abc123');
+    expect(html).toContain('产物与链接');
+    expect(html).toContain('href="https://code.example/artifact"');
+    expect(html).toContain('>产物链接</a>');
     expect(html).toContain('等待外部观察');
+    expect(html).toContain('<h2>最终结论</h2>');
+    expect(html).toContain('中文场景选择 <strong>humanizer-zh</strong>');
+    expect(html).toContain('href="https://docs.example/report"');
+    expect(html).toContain('>完整评估</a>');
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
     expect(html).toContain('第一条完整证据');
     expect(html).toContain('第二条完整证据');
   });
