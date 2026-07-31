@@ -42,6 +42,9 @@ import {
   stopCliRuntimeUpdateMonitor,
 } from './core/cli-runtime-update.js';
 import { sendRestartReportIfPending } from './core/restart-report.js';
+import { CustomReleaseEventStore } from './services/custom-release-event.js';
+import { CustomReleaseNotifier } from './core/custom-release-notifier.js';
+import { runCustomReleaseFreeze } from './core/custom-release-freeze.js';
 import { reconcileOutstandingTurns } from './core/restart-turn-reconciler.js';
 import { statSync } from 'node:fs';
 import { addReaction, getChatMode, getChatNameAndMode, getMessageChatId, listChatMemberOpenIds, MessageWithdrawnError, replyMessage, resolveAllowedUsersWithMap, sendMessage, sendUserMessage, updateMessage, type EntryResolveStatus } from './im/lark/client.js';
@@ -4240,6 +4243,9 @@ const handleCodexNotifierCardAction = createCodexNotifierCardActionHandler({
   logError: message => logger.error(message),
 });
 
+let customReleaseNotifier: CustomReleaseNotifier | undefined;
+let customReleaseNotifierAppId: string | undefined;
+
 const cardDeps: CardHandlerDeps = {
   activeSessions,
   sessionReply,
@@ -4282,6 +4288,16 @@ const cardDeps: CardHandlerDeps = {
   },
   vcMeetingCardAction: (data, appId) => handleVcMeetingCardAction(data, appId),
   codexNotifierCardAction: (data, appId) => handleCodexNotifierCardAction(data, appId),
+  customReleaseCardAction: (data, appId) => {
+    if (!customReleaseNotifier || appId !== customReleaseNotifierAppId) {
+      return Promise.resolve({ toast: { type: 'error', content: '这张发版卡片不属于当前 Bot' } });
+    }
+    return customReleaseNotifier.handleCardAction({
+      operatorOpenId: data.operator?.open_id,
+      messageId: data.context?.open_message_id ?? data.open_message_id,
+      eventId: data.action?.value?.event_id,
+    });
+  },
   v3GateDeps: {
     driveRun: (runId) => v3GateRunner.driveDetached(runId),
     // 审批权限：复用 canOperate（话题 owner / allowedUsers / oncall）。无 binding（corrupt /
@@ -18266,6 +18282,22 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   // Auto-update / auto-restart and the restart-report DM run only on the
   // primary daemon (bot-0) — a restart is host-wide.
   if (idx === 0) {
+    customReleaseNotifierAppId = cfg.larkAppId;
+    customReleaseNotifier = new CustomReleaseNotifier({
+      store: new CustomReleaseEventStore(config.session.dataDir),
+      ownerOpenId: () => resolvePrimaryOwnerOpenId(cfg.larkAppId),
+      sendCard: (openId, card, uuid) => sendUserMessage(
+        cfg.larkAppId,
+        openId,
+        card,
+        'interactive',
+        uuid,
+      ),
+      updateCard: (messageId, card) => updateMessage(cfg.larkAppId, messageId, card),
+      freeze: runCustomReleaseFreeze,
+      log: message => logger.info(`[custom-release] ${message}`),
+    });
+    customReleaseNotifier.start();
     startMaintenance();
     startCliRuntimeUpdateMonitor({
       dataDir: config.session.dataDir,
@@ -18389,6 +18421,9 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     }
     scheduler.stopScheduler();
     stopMaintenance();
+    customReleaseNotifier?.stop();
+    customReleaseNotifier = undefined;
+    customReleaseNotifierAppId = undefined;
     vcMeetingTerminalReconciler?.stop();
     clearInterval(vcMeetingDeliveryLeaseTimer);
     for (const timer of vcMeetingReceiverRecoveryTimers.values()) clearTimeout(timer);

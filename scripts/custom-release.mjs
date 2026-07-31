@@ -14,6 +14,9 @@ import {
   nextCustomVersion,
   parseCustomTag,
 } from './lib/custom-release-version.mjs';
+import {
+  executeCustomReleaseJoin,
+} from './lib/custom-release-join.mjs';
 
 const RESULT_PREFIX = 'BOTMUX_CUSTOM_RELEASE_RESULT=';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -150,8 +153,8 @@ function output(action, payload) {
   process.stdout.write(`${RESULT_PREFIX}${JSON.stringify({ ok: true, action, ...payload })}\n`);
 }
 
-/** 冻结 custom/dev 当前 HEAD；重复执行同一提交时保持幂等。 */
-function prepare(config) {
+/** 冻结 custom/dev 当前 HEAD；可绑定卡片里的版本和 HEAD，重复执行同一提交时保持幂等。 */
+function prepare(config, expectedHead = '', expectedVersion = '') {
   const branch = git(['symbolic-ref', '--quiet', '--short', 'HEAD']);
   if (branch !== integrationBranch) throw new Error(`prepare 只允许在 ${integrationBranch} 工作树执行`);
   assertClean();
@@ -159,6 +162,9 @@ function prepare(config) {
   const state = releaseState(config);
   if (git(['rev-parse', 'HEAD']) !== state.integrationHead) throw new Error(`本地 ${integrationBranch} 与远端不一致`);
   if (!state.productionIsAncestor) throw new Error(`${config.productionBranch} 不是 ${integrationBranch} 的祖先`);
+  if (expectedHead && state.integrationHead !== expectedHead) throw new Error('卡片绑定的 custom/dev HEAD 已过期');
+  const targetVersion = state.candidateVersion ?? state.pendingVersion;
+  if (expectedVersion && targetVersion !== expectedVersion) throw new Error('卡片绑定的待发版本已过期');
   if (state.candidateTag) {
     const remoteCommit = remoteTagCommit(config.originRemote, state.candidateTag);
     if (!remoteCommit) git(['push', config.originRemote, `refs/tags/${state.candidateTag}`], { capture: false });
@@ -170,13 +176,27 @@ function prepare(config) {
   run('pnpm', ['test'], { capture: false });
   run('pnpm', ['build'], { capture: false });
   assertClean();
-  const releaseTag = customTag('release', state.pendingVersion);
+  fetchState(config);
+  const finalState = releaseState(config);
+  if (git(['rev-parse', 'HEAD']) !== state.integrationHead || finalState.integrationHead !== state.integrationHead) {
+    throw new Error('冻结验证期间 custom/dev HEAD 已变化');
+  }
+  if (!finalState.productionIsAncestor) throw new Error(`${config.productionBranch} 不再是 ${integrationBranch} 的祖先`);
+  if (finalState.candidateTag) {
+    if (finalState.candidateVersion !== targetVersion) throw new Error('冻结验证期间候选版本已被占用');
+    const remoteCommit = remoteTagCommit(config.originRemote, finalState.candidateTag);
+    if (remoteCommit !== finalState.integrationHead) throw new Error(`远端候选标签指向异常: ${finalState.candidateTag}`);
+    output('prepare', { changed: false, ...finalState });
+    return;
+  }
+  if (finalState.pendingVersion !== targetVersion) throw new Error('冻结验证期间待发版本序号已变化');
+  const releaseTag = customTag('release', targetVersion);
   git(['tag', '-a', releaseTag, '-m', `release: ${state.pendingVersion}`]);
   git(['push', config.originRemote, `refs/tags/${releaseTag}`], { capture: false });
-  if (remoteTagCommit(config.originRemote, releaseTag) !== state.integrationHead) {
+  if (remoteTagCommit(config.originRemote, releaseTag) !== finalState.integrationHead) {
     throw new Error(`候选标签回读不一致: ${releaseTag}`);
   }
-  output('prepare', { changed: true, ...state, candidateTag: releaseTag });
+  output('prepare', { changed: true, ...finalState, candidateTag: releaseTag, candidateVersion: targetVersion });
 }
 
 /** 把已冻结候选提交以 fast-forward 方式推进到生产分支，不触碰本机运行态。 */
@@ -228,15 +248,29 @@ function main() {
   const [action = 'status', ...args] = process.argv.slice(2);
   const tagIndex = args.indexOf('--tag');
   const releaseTag = tagIndex >= 0 ? args[tagIndex + 1] : '';
+  const expectedHeadIndex = args.indexOf('--expected-head');
+  const expectedVersionIndex = args.indexOf('--expected-version');
+  const expectedHead = expectedHeadIndex >= 0 ? args[expectedHeadIndex + 1] ?? '' : '';
+  const expectedVersion = expectedVersionIndex >= 0 ? args[expectedVersionIndex + 1] ?? '' : '';
   const config = readConfig();
   assertRemoteIdentity(config);
   if (action === 'status') {
     fetchState(config);
     output('status', releaseState(config));
-  } else if (action === 'prepare') prepare(config);
+  } else if (action === 'join') {
+    output('join', executeCustomReleaseJoin({
+      repoRoot,
+      config,
+      args,
+      assertClean,
+      fetchState,
+      releaseState,
+      localHead: () => git(['rev-parse', 'HEAD']),
+    }));
+  } else if (action === 'prepare') prepare(config, expectedHead, expectedVersion);
   else if (action === 'promote') promote(config, releaseTag);
   else if (action === 'record-deploy') recordDeploy(config, releaseTag);
-  else throw new Error('Usage: pnpm release:status | release:prepare | release:promote -- --tag <release/...> | release:record-deploy -- --tag <release/...>');
+  else throw new Error('Usage: pnpm release:status | release:join -- --source <branch> --expected-head <sha> --title <text> | release:prepare | release:promote -- --tag <release/...> | release:record-deploy -- --tag <release/...>');
 }
 
 try {

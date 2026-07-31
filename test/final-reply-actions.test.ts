@@ -93,4 +93,12 @@ describe('isSafeFinalReplyActionPrompt', () => {
       expect(isSafeFinalReplyActionPrompt(prompt, 'explicit')).toBe(false);
     }
   });
+
+  it('rejects custom release freeze from generic task-thread quick actions', () => {
+    const prompt = '请冻结 3.7.1-custom.3，并回读 release 标签；不要推进生产或部署。';
+    expect(isSafeFinalReplyActionPrompt(prompt, 'explicit')).toBe(false);
+    const marker = { actions: [{ label: '冻结 3.7.1-custom.3', prompt, authorization: 'explicit' }] };
+    expect(extractFinalReplyActions(`已合入\n<!--botmux-actions:${JSON.stringify(marker)}-->`).actions).toEqual([]);
+    expect(isSafeFinalReplyActionPrompt('请冻结当前待发版 `3.7.1-custom.3`。', 'explicit')).toBe(false);
+  });
 });

@@ -22,6 +22,8 @@ const FORBIDDEN_ACTION_PATTERN =
   /(?:删除|清空|强推|强制推送|重置|回滚|授权|提权|管理员权限|支付|付款|转账|rm\s+-rf|git\s+reset\s+--hard|push\s+--force|force[- ]?push|delete|drop\s+(?:table|database)|truncate|rollback|grant\s+permission|payment)/i;
 const EXPLICIT_AUTHORIZATION_PATTERN =
   /(?:合入|部署|上线|发布|重启|\bmerge\b|\bdeploy\b|\brelease\b|\brestart\b)/i;
+const CUSTOM_RELEASE_FREEZE_ACTION_PATTERN =
+  /(?:冻结|freeze)[^<>\r\n]{0,40}(?:release\/v)?\d+\.\d+\.\d+-custom\.\d+/i;
 
 /**
  * 判断卡片动作能否作为新用户回合提交。
@@ -35,6 +37,7 @@ export function isSafeFinalReplyActionPrompt(
   return normalized.length > 0
     && normalized.length <= MAX_PROMPT_LENGTH
     && !FORBIDDEN_ACTION_PATTERN.test(normalized)
+    && !CUSTOM_RELEASE_FREEZE_ACTION_PATTERN.test(normalized)
     && (
       !EXPLICIT_AUTHORIZATION_PATTERN.test(normalized)
       || authorization === 'explicit'
