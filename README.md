@@ -16,6 +16,7 @@
 <p align="center">
   <a href="https://deepcoldy.github.io/botmux/"><b>📖 文档</b></a> ·
   <a href="#5-分钟接入"><b>🚀 快速接入</b></a> ·
+  <a href="docs/custom-fork-quickstart.md"><b>🛠️ 自定义版部署</b></a> ·
   <a href="https://bytedance.larkoffice.com/wiki/UBOXwH01CixfxfkqxUpcKgvQnsg"><b>✨ 效果展示</b></a> ·
   <a href="README.en.md">English</a>
 </p>
@@ -27,6 +28,8 @@
 ---
 
 Daemon 监听飞书消息，为每个新会话自动 spawn 一个独立的会话进程，把 AI 编程 CLI / Agent 的输出实时流式回传成飞书卡片，并提供可交互的 Web 终端。它**不重造 Agent 能力**，而是直接桥接你已经在用的工具（**20+ CLI / Agent 适配器**，见 [支持的 CLI / Agent](#支持的-cli--agent)）。
+
+> 使用 `mmxyhSnow/botmux` 自定义版时，请从 `custom/prod` 源码部署，不要执行下方安装官方 npm 包的命令。完整步骤见[自定义版 5 分钟接入](docs/custom-fork-quickstart.md)。
 
 ## 它解决什么
 
