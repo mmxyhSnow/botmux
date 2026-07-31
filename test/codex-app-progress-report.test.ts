@@ -2,7 +2,7 @@
  * Codex App 完整过程 HTML 的输出契约。
  * 用例确保群卡压缩后，完整证据仍能通过受保护的静态报告稳定回看。
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -44,6 +44,8 @@ function completedState(): CodexAppProgressCardSessionState {
       '中文场景选择 **humanizer-zh**。',
       '',
       '[完整评估](https://docs.example/report)',
+      '',
+      '- [开发提交 `61012639`](https://code.example/commit)，已合入 `custom/dev`：`d7ee16f1`。',
       '',
       '<script>alert("unsafe")</script>',
       '',
@@ -88,6 +90,10 @@ describe('Codex App 完整过程 HTML', () => {
     expect(html).toContain('中文场景选择 <strong>humanizer-zh</strong>');
     expect(html).toContain('href="https://docs.example/report"');
     expect(html).toContain('>完整评估</a>');
+    expect(html).toContain('<li><a href="https://code.example/commit" target="_blank" rel="noreferrer noopener">开发提交 <code>61012639</code></a>，已合入 <code>custom/dev</code>：<code>d7ee16f1</code>。</li>');
+    expect(html).toContain('.final-response li{position:relative;padding:14px 0 14px 36px;');
+    expect(html).toContain('.final-response li:before{position:absolute;top:16px;left:0;width:28px;');
+    expect(html).not.toContain('.final-response li{display:grid;grid-template-columns:28px minmax(0,1fr)');
     expect(html).not.toContain('botmux-actions');
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;');
@@ -117,6 +123,27 @@ describe('Codex App 完整过程 HTML', () => {
       '/progress-reports/../../sessions.json',
       dataDir,
     )).toBeUndefined();
+  });
+
+  it('读取历史报告时把混合行内内容恢复为单一正文流', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'botmux-progress-report-legacy-'));
+    roots.push(dataDir);
+    const reportId = '0123456789abcdef0123456789abcdef';
+    const reportDir = join(dataDir, 'progress-reports');
+    const filePath = join(reportDir, `${reportId}.html`);
+    const legacyHtml = '<style>.final-response li{display:grid;grid-template-columns:28px minmax(0,1fr);gap:8px;padding:14px 0;border-bottom:1px solid var(--border);color:var(--muted)}.final-response li:before{counter-increment:outcome;content:counter(outcome,decimal-leading-zero);padding-top:2px;color:#858a9a;font:700 9px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}</style>';
+    mkdirSync(reportDir);
+    writeFileSync(filePath, legacyHtml);
+
+    expect(resolveCodexAppProgressReportRequest(
+      `/progress-reports/${reportId}.html`,
+      dataDir,
+    )).toBe(filePath);
+    const normalized = readFileSync(filePath, 'utf8');
+
+    expect(normalized).toContain('.final-response li{position:relative;padding:14px 0 14px 36px;');
+    expect(normalized).toContain('.final-response li:before{position:absolute;top:16px;left:0;width:28px;');
+    expect(normalized).not.toContain('display:grid;grid-template-columns:28px');
   });
 
   it('保留 Dashboard 鉴权参数并替换为报告路径', () => {
