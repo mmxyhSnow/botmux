@@ -17,6 +17,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 const RESULT_PREFIX = 'BOTMUX_SOURCE_UPDATE_RESULT=';
 const STABLE_TAG = /^v(\d+)\.(\d+)\.(\d+)$/;
 const SAFE_NAME = /^[A-Za-z0-9._/-]+$/;
+const INTEGRATION_BRANCH = 'custom/dev';
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -185,12 +186,17 @@ async function main() {
     'fetch',
     '--prune',
     config.originRemote,
+    `+refs/heads/${INTEGRATION_BRANCH}:refs/remotes/${config.originRemote}/${INTEGRATION_BRANCH}`,
     `+refs/heads/${config.productionBranch}:refs/remotes/${config.originRemote}/${config.productionBranch}`,
   ], { timeout: 180_000 });
   git(root, ['fetch', '--prune', '--tags', config.upstreamRemote], { timeout: 180_000 });
   const remoteBase = `${config.originRemote}/${config.productionBranch}`;
   if (git(root, ['rev-parse', 'HEAD']) !== git(root, ['rev-parse', remoteBase])) {
     fail(`本机 ${config.productionBranch} 与 ${remoteBase} 不一致，请先人工核对`);
+  }
+  const integrationBase = `${config.originRemote}/${INTEGRATION_BRANCH}`;
+  if (git(root, ['rev-parse', integrationBase]) !== git(root, ['rev-parse', remoteBase])) {
+    fail(`${INTEGRATION_BRANCH} 存在待发改动；请先完成或放弃当前候选版本，再同步官方版本`);
   }
 
   const currentTag = alignedStableTag(root);
@@ -205,6 +211,7 @@ async function main() {
       ...baseResult,
       changed: false,
       upgradeBranch: null,
+      releaseTag: null,
       deployTag: null,
     })}\n`);
     return;
@@ -229,7 +236,12 @@ async function main() {
     ...compatibleUnitTests(upgradePath),
   ], 20 * 60_000);
   await run(upgradePath, 'pnpm', ['build'], 20 * 60_000);
+  const releaseTag = `release/${latestTag}-custom.1`;
+  if (git(upgradePath, ['tag', '--list', releaseTag])) fail(`候选标签已存在：${releaseTag}`);
+  git(upgradePath, ['tag', '-a', releaseTag, '-m', `release: ${latestTag} custom.1`]);
   git(upgradePath, ['push', config.originRemote, `HEAD:refs/heads/${upgradeBranch}`], { timeout: 180_000 });
+  git(upgradePath, ['push', config.originRemote, `refs/tags/${releaseTag}`], { timeout: 180_000 });
+  git(upgradePath, ['push', config.originRemote, `HEAD:refs/heads/${INTEGRATION_BRANCH}`], { timeout: 180_000 });
   git(upgradePath, ['push', config.originRemote, `HEAD:refs/heads/${config.productionBranch}`], { timeout: 180_000 });
 
   git(root, [
@@ -248,6 +260,7 @@ async function main() {
     ...baseResult,
     changed: true,
     upgradeBranch,
+    releaseTag,
     deployTag,
   })}\n`);
 }

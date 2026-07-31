@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   checkNode,
   analyzeInstalls,
+  customDeploymentVersionFromTags,
   officialVersionFromTags,
   type InstallProbeDeps,
 } from '../src/utils/install-diagnostics.js';
@@ -14,6 +15,20 @@ describe('officialVersionFromTags', () => {
       'v3.7.1',
       'v3.7.0',
     ])).toBe('3.7.1');
+  });
+});
+
+describe('customDeploymentVersionFromTags', () => {
+  it('读取同一提交上最新的自定义部署版本', () => {
+    expect(customDeploymentVersionFromTags([
+      'deploy/v3.7.1-custom.2',
+      'release/v3.7.1-custom.3',
+      'deploy/v3.7.1-custom.10',
+    ])).toBe('3.7.1-custom.10');
+  });
+
+  it('没有部署标签时返回 null', () => {
+    expect(customDeploymentVersionFromTags(['v3.7.1', 'release/v3.7.1-custom.3'])).toBeNull();
   });
 });
 

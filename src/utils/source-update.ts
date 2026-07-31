@@ -30,6 +30,7 @@ export interface SourceUpdateResult {
   changed: boolean;
   branch: string;
   upgradeBranch: string | null;
+  releaseTag: string | null;
   deployTag: string | null;
 }
 

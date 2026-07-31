@@ -42,6 +42,24 @@ export function officialVersionFromTags(tags: string[]): string | null {
   return tag ? tag.slice(1) : null;
 }
 
+/** 从精确指向运行 HEAD 的部署标签中读取 fork 版本。 */
+export function customDeploymentVersionFromTags(tags: string[]): string | null {
+  const versions = tags
+    .map(value => value.match(/^deploy\/v(\d+)\.(\d+)\.(\d+)-custom\.(\d+)$/))
+    .filter((value): value is RegExpMatchArray => Boolean(value))
+    .map(value => ({
+      version: `${value[1]}.${value[2]}.${value[3]}-custom.${value[4]}`,
+      parts: value.slice(1).map(Number),
+    }))
+    .sort((left, right) => (
+      right.parts[0] - left.parts[0]
+      || right.parts[1] - left.parts[1]
+      || right.parts[2] - left.parts[2]
+      || right.parts[3] - left.parts[3]
+    ));
+  return versions[0]?.version ?? null;
+}
+
 /**
  * 更新卡展示版本：发布包读取 package.json；源码部署从 HEAD 可达标签中选最新正式版。
  * `deploy/v3.7.1-custom.1` 等自定义部署标签与 canary 标签都不能冒充官方对齐版本。
@@ -59,6 +77,26 @@ export function resolveCurrentVersion(): string {
     return officialVersionFromTags(tags) ?? raw;
   } catch {
     return raw; // no git / no tags / not a checkout
+  }
+}
+
+/**
+ * 维护卡展示实际部署版本；官方更新比较仍使用 resolveCurrentVersion，避免把 custom 后缀误判为
+ * upstream 预发布版本。
+ */
+export function resolveCurrentDeploymentVersion(): string {
+  const raw = botmuxVersion();
+  if (raw !== '0.0.0') return raw;
+  try {
+    const tags = execFileSync('git', ['tag', '--points-at', 'HEAD', '--list', 'deploy/v*-custom.*'], {
+      cwd: botmuxInstallRoot(),
+      encoding: 'utf-8',
+      timeout: 3_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).split(/\r?\n/);
+    return customDeploymentVersionFromTags(tags) ?? resolveCurrentVersion();
+  } catch {
+    return resolveCurrentVersion();
   }
 }
 

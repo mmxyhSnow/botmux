@@ -10,7 +10,7 @@ import { githubAuthHeaders, type GithubAuthResolveOptions } from './github-auth.
 import type { RestartKind } from '../services/restart-intent-store.js';
 import { consumeRestartIntent } from '../services/restart-intent-store.js';
 import { countActiveSessionsOnDisk } from '../services/session-store.js';
-import { resolveCurrentVersion } from '../utils/install-diagnostics.js';
+import { resolveCurrentDeploymentVersion } from '../utils/install-diagnostics.js';
 import { t, localeForBot, type Locale } from '../i18n/index.js';
 
 export const GITHUB_REPO = 'deepcoldy/botmux';
@@ -114,7 +114,7 @@ export async function sendRestartReportIfPending(w: RestartReportWiring): Promis
 
   const locale = localeForBot(w.primaryLarkAppId);
   const sessionCount = countActiveSessionsOnDisk();
-  const version = resolveCurrentVersion();
+  const version = resolveCurrentDeploymentVersion();
   let changelog: string | undefined;
   if (intent.kind === 'update' && intent.newVersion) {
     changelog = (await fetchChangelog(intent.newVersion, { auth: w.githubAuth }))

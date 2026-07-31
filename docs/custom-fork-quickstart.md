@@ -4,8 +4,9 @@
 daemon，使用自己的飞书应用、CLI 登录态、工作目录和会话数据；大家通过公开 GitHub 仓库共享代码，
 也可以把各自的机器人拉进同一个群协作。
 
-## 先理解三个分支角色
+## 先理解四个分支角色
 
+- `mmxyhSnow/botmux:custom/dev`：已确认加入待发版的需求集成线，候选版本从这里冻结。
 - `mmxyhSnow/botmux:custom/prod`：自定义版生产真源，新部署和日常更新都跟随它。
 - `mmxyhSnow/botmux:master`：只跟随官方代码，不包含全部自定义能力。
 - `deepcoldy/botmux`：官方只读上游，只由维护者按正式版本标签同步。
@@ -228,18 +229,31 @@ botmux status
 
 1. 把 GitHub 用户名发给仓库 owner，由 owner 邀请为 collaborator。
 2. 在自己的 GitHub 账号添加 SSH 公钥，私钥始终保留在本机。
-3. 从最新 `origin/custom/prod` 创建单一职责的 `feat/*`、`fix/*` 或 `docs/*` 分支。
-4. 提交 PR 到 `custom/prod`，由另一位维护者 review 后合入；不要直接在生产 checkout 开发。
+3. 从最新 `origin/custom/dev` 创建单一职责的 `feat/*`、`fix/*`、`refactor/*` 或 `docs/*` 分支。
+4. 开发分支验证并 push 后，由需求提出者选择是否加入当前待发版；只有确认后才合入 `custom/dev`。
+5. 不直接向 `custom/prod` 提交开发 PR；生产分支只接收已冻结的候选版本。
 
 共同遵守以下分支约定：
 
 - `master`：官方镜像。
+- `custom/dev`：待发需求集成真源。
 - `custom/prod`：自定义生产真源。
 - `upgrade/vX.Y.Z`：合入官方正式版的临时升级分支。
-- `deploy/vX.Y.Z-custom.N`：已部署快照标签。
+- `release/vX.Y.Z-custom.N`：通过测试和构建的不可变候选版本。
+- `deploy/vX.Y.Z-custom.N`：同号候选版本的已部署快照标签。
 
-各部署者只拉取 `custom/prod` 即可。官方升级、生产标签和回滚由维护者串行操作，避免多个部署者
-同时推进生产真源。
+查看待发状态、冻结候选、推进生产和部署留痕分别使用：
+
+```bash
+pnpm release:status
+pnpm release:prepare
+pnpm release:promote -- --tag release/vX.Y.Z-custom.N
+pnpm release:record-deploy -- --tag release/vX.Y.Z-custom.N
+```
+
+`release:prepare` 在 `custom/dev` 执行全量 unit 与构建后才打候选标签；`release:promote` 只把准确候选
+commit fast-forward 到 `custom/prod`，不会部署或重启；`release:record-deploy` 只能在真实运行态验收后
+执行。各部署者仍只拉取 `custom/prod`，官方升级、候选冻结、生产推进、部署标签和回滚由维护者串行操作。
 
 ## 常见问题
 
