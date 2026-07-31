@@ -654,8 +654,44 @@ export function buildMarkdownCard(
   locale?: Locale,
   workingDir?: string,
   localHomeLinkMode: LocalHomeLinkMode = 'filesystem',
+  quickActions: Array<{
+    label: string;
+    prompt: string;
+    sessionId: string;
+    rootId: string;
+    cliId: string;
+  }> = [],
 ): string {
   const elements = md ? buildCardBodyElements(md, workingDir, localHomeLinkMode) : [];
+  if (quickActions.length > 0) {
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: 'default',
+      columns: quickActions.map((action, index) => ({
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        vertical_align: 'center',
+        elements: [{
+          tag: 'button',
+          text: { tag: 'plain_text', content: action.label },
+          type: index === 0 ? 'primary' : 'default',
+          behaviors: [{
+            type: 'callback',
+            value: {
+              action: 'final_reply_quick_action',
+              label: action.label,
+              prompt: action.prompt,
+              session_id: action.sessionId,
+              root_id: action.rootId,
+              cli_id: action.cliId,
+            },
+          }],
+        }],
+      })),
+    });
+  }
   const footerParts: string[] = [];
   const brandSeg = brandFooterSegment(brand);
   if (brandSeg) footerParts.push(brandSeg);

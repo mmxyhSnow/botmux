@@ -4244,6 +4244,42 @@ const cardDeps: CardHandlerDeps = {
   activeSessions,
   sessionReply,
   lastRepoScan,
+  submitUserTurn: async ({ session, prompt, operatorOpenId, sourceMessageId }) => {
+    const anchor = sessionAnchorId(session);
+    if (!anchor || activeSessions.get(sessionKey(anchor, session.larkAppId)) !== session) {
+      throw new Error('快捷操作对应的会话已失效');
+    }
+    const messageId = sourceMessageId ?? `final-action-${randomUUID()}`;
+    const scope = session.scope;
+    const chatType = session.chatType === 'p2p' ? 'p2p' : 'group';
+    const threadRoot = scope === 'thread' ? anchor : undefined;
+    const data = {
+      sender: {
+        sender_type: 'user',
+        sender_id: { open_id: operatorOpenId },
+      },
+      message: {
+        message_id: messageId,
+        message_type: 'text',
+        chat_id: session.chatId,
+        chat_type: chatType,
+        content: JSON.stringify({ text: prompt }),
+        create_time: String(Date.now()),
+        ...(threadRoot ? { root_id: threadRoot, thread_id: threadRoot } : {}),
+      },
+    };
+    await handleThreadReply(data, {
+      chatId: session.chatId,
+      messageId,
+      chatType,
+      scope,
+      anchor,
+      larkAppId: session.larkAppId,
+      ...(scope === 'chat' && session.currentReplyTarget?.rootMessageId
+        ? { replyRootId: session.currentReplyTarget.rootMessageId }
+        : {}),
+    });
+  },
   vcMeetingCardAction: (data, appId) => handleVcMeetingCardAction(data, appId),
   codexNotifierCardAction: (data, appId) => handleCodexNotifierCardAction(data, appId),
   v3GateDeps: {

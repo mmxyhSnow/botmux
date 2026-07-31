@@ -249,6 +249,45 @@ describe('Bridge final_output delivery (P2 retry)', () => {
     expect(ds.lastBridgeEmittedUuid).toBe(SCOPED_DEDUPE_KEY);
   });
 
+  it('strips the final action marker and renders its callback button', async () => {
+    const sessionReply = vi.fn(async () => 'om_reply');
+    initWorkerPool({
+      sessionReply,
+      getSessionWorkingDir: () => '/tmp',
+      getActiveCount: () => 1,
+      closeSession: vi.fn(),
+    });
+    const ds = makeDs();
+    const marker = '<!--botmux-actions:{"actions":[{"label":"执行 push","prompt":"请 push 当前分支并回读远端 HEAD。"}]}-->';
+    const { __testOnly_deliverFinalOutput } = await import('../src/core/worker-pool.js') as any;
+
+    __testOnly_deliverFinalOutput(ds, {
+      ...finalOutputMsg(),
+      content: `还没 push。\n${marker}`,
+    }, 'tag', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const cardJson = sessionReply.mock.calls[0][1] as string;
+    const card = JSON.parse(cardJson);
+    expect(cardJson).not.toContain('botmux-actions');
+    expect(card.body.elements[0].content).toContain('还没 push');
+    const button = card.body.elements
+      .find((element: any) => element.tag === 'column_set')
+      ?.columns[0].elements[0];
+    expect(button).toMatchObject({
+      text: { content: '执行 push' },
+      behaviors: [{
+        type: 'callback',
+        value: {
+          action: 'final_reply_quick_action',
+          session_id: 'sid-final-out',
+          root_id: 'om_root',
+          prompt: '请 push 当前分支并回读远端 HEAD。',
+        },
+      }],
+    });
+  });
+
   it('drops final_output whose worker sessionId does not match the daemon session', async () => {
     const sessionReply = vi.fn(async () => 'om_reply');
     initWorkerPool({

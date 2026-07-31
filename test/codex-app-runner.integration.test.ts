@@ -217,6 +217,7 @@ describe('codex-app-runner app-server protocol integration', () => {
     expect(initialize?.params.capabilities).toEqual({ experimentalApi: true });
     const threadStart = result.requests.find(request => request.method === 'thread/start');
     expect(threadStart?.params.developerInstructions).toContain('request_user_input');
+    expect(threadStart?.params.developerInstructions).toContain('<!--botmux-actions:');
 
     const turns = result.requests.filter(request => request.method === 'turn/start');
     expect(turns).toHaveLength(1);

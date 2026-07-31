@@ -94,6 +94,7 @@ import {
   openLocalCliInIterm,
   preflightLocalCliOpen,
 } from '../../services/local-cli-opener.js';
+import { isSafeFinalReplyActionPrompt } from '../../services/final-reply-actions.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -120,6 +121,13 @@ export interface CardHandlerDeps {
   codexNotifierCardAction?: (data: CardActionData, larkAppId: string) => Promise<any>;
   /** 授权成功后重放之前被拦截的消息，让用户无需再 @ 一遍。 */
   replayGrantedMessage?: (data: any, larkAppId: string) => void;
+  /** 将最终回复卡上的快捷按钮作为一个新的普通用户回合交回 daemon 统一路由。 */
+  submitUserTurn?: (input: {
+    session: DaemonSession;
+    prompt: string;
+    operatorOpenId: string;
+    sourceMessageId?: string;
+  }) => Promise<void>;
 }
 
 /**
@@ -230,6 +238,7 @@ const LEGACY_SELF_HEAL_ACTIONS = new Set(['toggle_display', 'toggle_stream', 're
 // In-memory (per daemon lifetime) — a restart resets it, which at worst allows
 // one re-trigger on an old card; acceptable. Capped to avoid unbounded growth.
 const voicedCardIds = new Set<string>();
+const submittedFinalReplyActionCards = new Set<string>();
 
 // Instruction injected into the session when the voice button is clicked. The
 // model (which still has its just-sent reply in context) condenses it into
@@ -900,6 +909,66 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
     }
     await sessionReply(sessionAnchorId(target), cardJson, 'interactive');
     return { toast: { type: 'info', content: '已打开完整历史' } };
+  }
+  if (value?.action === 'final_reply_quick_action') {
+    const rootId = value.root_id;
+    const target = getSessionByActionValue(
+      activeSessions,
+      rootId,
+      larkAppId,
+      value.session_id,
+      value.action,
+    );
+    const loc = localeForBot(target?.larkAppId ?? larkAppId);
+    if (!target) {
+      return { toast: { type: 'warning', content: t('card.final_action.session_gone', undefined, loc) } };
+    }
+    if (!validateCardCliBinding(target, value)) {
+      return { toast: { type: 'warning', content: t('card.final_action.session_gone', undefined, loc) } };
+    }
+    if (!operatorOpenId || (
+      !canTalk(target.larkAppId, target.chatId, operatorOpenId, undefined, undefined, target.chatType)
+      && !canOperate(target.larkAppId, target.chatId, operatorOpenId)
+    )) {
+      return { toast: { type: 'warning', content: t('card.final_action.need_auth', undefined, loc) } };
+    }
+    const prompt = typeof value.prompt === 'string' ? value.prompt.trim() : '';
+    if (!isSafeFinalReplyActionPrompt(prompt)) {
+      logger.warn(`[${tag(target)}] Rejected unsafe final reply quick action`);
+      return { toast: { type: 'warning', content: t('card.final_action.unsafe', undefined, loc) } };
+    }
+    const dedupeKey = cardMessageId ?? `${target.session.sessionId}:${prompt}`;
+    if (submittedFinalReplyActionCards.has(dedupeKey)) {
+      return { toast: { type: 'info', content: t('card.final_action.already', undefined, loc) } };
+    }
+    if (!isLiveWorkerIdleOrLimited(target)) {
+      return { toast: { type: 'warning', content: t('card.final_action.worker_busy', undefined, loc) } };
+    }
+    if (!deps.submitUserTurn) {
+      return { toast: { type: 'warning', content: t('card.final_action.unavailable', undefined, loc) } };
+    }
+    submittedFinalReplyActionCards.add(dedupeKey);
+    if (submittedFinalReplyActionCards.size > 5000) {
+      submittedFinalReplyActionCards.clear();
+      submittedFinalReplyActionCards.add(dedupeKey);
+    }
+    try {
+      await deps.submitUserTurn({
+        session: target,
+        prompt,
+        operatorOpenId,
+        ...(cardMessageId ? { sourceMessageId: cardMessageId } : {}),
+      });
+      logger.info(`[${tag(target)}] Final reply quick action submitted by ${operatorOpenId}`);
+      return { toast: { type: 'success', content: t('card.final_action.submitted', undefined, loc) } };
+    } catch (error) {
+      submittedFinalReplyActionCards.delete(dedupeKey);
+      logger.warn(
+        `[${tag(target)}] Final reply quick action failed: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { toast: { type: 'error', content: t('card.final_action.failed', undefined, loc) } };
+    }
   }
   // ─── 机器过载告警卡动作（overload_clean_stopped / overload_suspend_idle / noop）──
   // 不绑 session。owner 强闸门 + nonce 一次性核销（每按钮各一次，防重复点/超时重投/旧卡）。

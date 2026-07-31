@@ -48,6 +48,10 @@ import { isSuspendableBackendType, getSessionPersistentBackendType, persistentBa
 import { getBot, getAllBots, loadBotConfigs, resolveBrandLabel } from '../bot-registry.js';
 import { RestartCoordinator, type RestartObserver } from './restart-coordinator.js';
 import { runtimeBuildIdentity } from '../utils/runtime-build-id.js';
+import {
+  extractFinalReplyActions,
+  type ExtractedFinalReplyActions,
+} from '../services/final-reply-actions.js';
 
 /** A random id minted once per daemon process (this lifetime). Stamped onto
  *  isolated persistent panes so a suspend→resume reattach (same id) is
@@ -4345,7 +4349,10 @@ function deliverFinalOutput(
   msg: Extract<WorkerToDaemon, { type: 'final_output' }>,
   t: string,
   attempt: number,
+  extracted: ExtractedFinalReplyActions = extractFinalReplyActions(msg.content),
 ): void {
+  // 内部动作协议不能进入 HTTP、文档评论、交付账本或普通正文；重试时复用首次解析结果。
+  if (extracted.content !== msg.content) msg = { ...msg, content: extracted.content };
   const managedReceiver = !!ds.session.vcMeetingReceiver;
   // Wait Mode / HTTP Sync Override:
   // If this turn is being waited for by an HTTP webhook request, intercept the
@@ -4602,6 +4609,14 @@ function deliverFinalOutput(
             localeForBot(ds.larkAppId),
             ds.workingDir,
             localHomeLinkMode,
+            !managedReceiver && !imOrigin
+              ? extracted.actions.map(action => ({
+                  ...action,
+                  sessionId: ds.session.sessionId,
+                  rootId: sessionAnchorId(ds),
+                  cliId: effectiveCliId,
+                }))
+              : [],
           );
 
       const proposedOutput = {
@@ -4751,7 +4766,7 @@ function deliverFinalOutput(
         return;
       }
       logger.warn(`[${t}] Bridge final_output attempt ${next} failed (${err.message}); retrying in ${FINAL_OUTPUT_RETRY_BACKOFF_MS[next]}ms`);
-      deliverFinalOutput(ds, msg, t, next);
+      deliverFinalOutput(ds, msg, t, next, extracted);
     }
   }, FINAL_OUTPUT_RETRY_BACKOFF_MS[attempt] ?? 0);
 }

@@ -27,6 +27,7 @@ export function codexAppDeveloperInstructions(input: {
       '只有出现新证据、阶段变化或真实阻塞时才发送 commentary 进展；不要发送心跳或只有“仍在处理”的更新。',
       '每条有实质进展的 commentary 末尾追加一行结构化标记（不要放进代码块）：`<!--botmux-progress:{"title":"AI 生成的短任务名","stage":"当前阶段","current":"正在处理","completed":["已完成项"],"total":3,"next":"下一步","blocker":null,"evidence":[],"delivery":[],"risks":[]}-->`。标记必须是单行有效 JSON；`total` 是可选的正整数总任务数，未知时省略；没有真实阻塞时 `blocker` 必须为 `null`。',
       '发送最终答案前，先发送最后一条带结构化标记的 commentary，把阶段设为“完成”或“失败”，并填写验证证据、提交或部署交付、剩余风险，供进度卡保留验收摘要。',
+      '写最终答案时，结合当前场景判断用户是否很可能马上执行一个具体的低风险后续操作。若有，在正常正文末尾追加单行标记：`<!--botmux-actions:{"actions":[{"label":"执行 push","prompt":"请将当前分支 push 到 origin，并回读远端 HEAD。"}]}-->`。只提供 1–3 个已经具备目标信息、点击后可直接作为新用户回合执行的动作；按钮文案要短，prompt 要自包含。没有明显后续操作时不要输出标记。删除、清空、重置、强推、部署、发布、重启、权限变更、付款等高风险或需要额外授权的操作禁止放入快捷按钮。',
       '`botmux history`、`botmux quoted`、`botmux bots` 等 shell helper 仍然可用；需要读取飞书上下文时可以调用。',
       identity ? `<identity>\n${identity}\n</identity>` : '',
     ].filter(Boolean).join('\n\n');
@@ -42,6 +43,7 @@ export function codexAppDeveloperInstructions(input: {
     'Send a commentary progress update only when there is new evidence, a stage change, or a real blocker; never send heartbeat-only updates.',
     'Append one single-line structured marker to every substantive commentary update, outside code fences: `<!--botmux-progress:{"title":"AI-generated short task title","stage":"current stage","current":"current work","completed":["completed item"],"total":3,"next":"next step","blocker":null,"evidence":[],"delivery":[],"risks":[]}-->`. The marker must contain valid JSON; `total` is an optional positive integer and should be omitted when unknown; `blocker` must be null unless human input or external authority is truly required.',
     'Before the final answer, send one last commentary update with the structured marker, set the stage to completed or failed, and include validation evidence, delivery, and remaining risks so the progress card keeps a closeout summary.',
+    'When writing the final answer, infer whether the user is likely to take a concrete low-risk next step. If so, append one final single-line marker after the normal prose: `<!--botmux-actions:{"actions":[{"label":"Push branch","prompt":"Push the current branch to origin and verify the remote HEAD."}]}-->`. Include only 1–3 self-contained actions that can be submitted as a new user turn when clicked. Omit the marker when there is no obvious next step. Never offer destructive, reset, force-push, deployment, release, restart, permission, or payment actions as quick buttons.',
     '`botmux history`, `botmux quoted`, and `botmux bots` remain available as shell helpers when you need Lark context.',
     identity ? `<identity>\n${identity}\n</identity>` : '',
   ].filter(Boolean).join('\n\n');
