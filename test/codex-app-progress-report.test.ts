@@ -65,12 +65,16 @@ describe('Codex App 完整过程 HTML', () => {
     const html = readFileSync(report.filePath, 'utf8');
 
     expect(report.reportId).toMatch(/^[a-f0-9]{32}$/);
-    expect(html).toContain('<article class="report">');
+    expect(html).toContain('<article class="report phase-completed">');
     expect(html).toContain('class="summary-panel"');
     expect(html).toContain('class="conclusion-panel"');
     expect(html).toContain('class="evidence-panel"');
     expect(html).toContain('class="timeline-panel"');
-    expect(html).toContain('font-size:clamp(36px,4vw,60px)');
+    expect(html).toContain('class="proof-grid"');
+    expect(html).toContain('class="report-footer"');
+    expect(html).toContain('grid-template-columns:minmax(0,1fr) minmax(0,2fr)');
+    expect(html).toContain('font-size:clamp(38px,6vw,48px)');
+    expect(html).toMatch(/<strong class="task-code">BM-[A-F0-9]{6}<\/strong>/);
     expect(html).toContain('修复 &lt;Botmux&gt; &amp; Dashboard');
     expect(html).toContain('用时 18 分钟');
     expect(html).toContain('17:28 完成');
@@ -90,6 +94,9 @@ describe('Codex App 完整过程 HTML', () => {
     expect(html).toContain('第一条完整证据');
     expect(html).toContain('第二条完整证据');
     expect(html).toContain('<strong>17:10</strong>');
+    expect(html).toContain('<h3>过程记录 01</h3>');
+    expect(html).not.toContain('cdn.tailwindcss.com');
+    expect(html).not.toContain('fonts.googleapis.com');
     expect(html.indexOf('<h2>最终结论</h2>')).toBeLessThan(
       html.indexOf('>产物与链接<'),
     );
