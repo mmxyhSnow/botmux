@@ -13,8 +13,14 @@ export interface CustomReleaseFreezeResult {
   candidateTag: string;
 }
 
+/** 远端生产分支推进器的内部结果；一键部署继续消费该 HEAD。 */
 export interface CustomReleasePromoteResult {
   productionHead: string;
+}
+
+export interface CustomReleaseDeployResult {
+  productionHead: string;
+  deployTag: string;
 }
 
 export interface CustomReleaseNotifierDeps {
@@ -24,9 +30,14 @@ export interface CustomReleaseNotifierDeps {
   updateCard: (messageId: string, cardJson: string) => Promise<void>;
   notifyText: (ownerOpenId: string, content: string, uuid: string) => Promise<void>;
   freeze: (record: CustomReleaseEventRecord) => Promise<CustomReleaseFreezeResult>;
-  promote: (record: CustomReleaseEventRecord) => Promise<CustomReleasePromoteResult>;
+  /** 完成推进、构建、wrapper 切换并发起脱离当前 daemon 的重启。 */
+  deploy: (record: CustomReleaseEventRecord) => Promise<void>;
+  /** 新 daemon 启动后验收实际运行态并记录同号部署标签。 */
+  finalizeDeploy: (record: CustomReleaseEventRecord) => Promise<CustomReleaseDeployResult>;
   log?: (message: string) => void;
   pollIntervalMs?: number;
+  /** 重启驱动未接管时，旧 daemon 把悬空 deploying 恢复为可重试的等待时间。 */
+  restartHandoffTimeoutMs?: number;
 }
 
 export interface CustomReleaseCardActionInput {

@@ -42,20 +42,22 @@ export function officialVersionFromTags(tags: string[]): string | null {
   return tag ? tag.slice(1) : null;
 }
 
-/** 从精确指向运行 HEAD 的部署标签中读取 fork 版本。 */
+/** 从精确指向运行 HEAD 的候选/部署标签中读取最新 fork 版本。 */
 export function customDeploymentVersionFromTags(tags: string[]): string | null {
   const versions = tags
-    .map(value => value.match(/^deploy\/v(\d+)\.(\d+)\.(\d+)-custom\.(\d+)$/))
+    .map(value => value.match(/^(deploy|release)\/v(\d+)\.(\d+)\.(\d+)-custom\.(\d+)$/))
     .filter((value): value is RegExpMatchArray => Boolean(value))
     .map(value => ({
-      version: `${value[1]}.${value[2]}.${value[3]}-custom.${value[4]}`,
-      parts: value.slice(1).map(Number),
+      version: `${value[2]}.${value[3]}.${value[4]}-custom.${value[5]}`,
+      parts: value.slice(2).map(Number),
+      deployed: value[1] === 'deploy',
     }))
     .sort((left, right) => (
       right.parts[0] - left.parts[0]
       || right.parts[1] - left.parts[1]
       || right.parts[2] - left.parts[2]
       || right.parts[3] - left.parts[3]
+      || Number(right.deployed) - Number(left.deployed)
     ));
   return versions[0]?.version ?? null;
 }
@@ -88,7 +90,9 @@ export function resolveCurrentDeploymentVersion(): string {
   const raw = botmuxVersion();
   if (raw !== '0.0.0') return raw;
   try {
-    const tags = execFileSync('git', ['tag', '--points-at', 'HEAD', '--list', 'deploy/v*-custom.*'], {
+    const tags = execFileSync('git', [
+      'tag', '--points-at', 'HEAD', '--list', 'deploy/v*-custom.*', '--list', 'release/v*-custom.*',
+    ], {
       cwd: botmuxInstallRoot(),
       encoding: 'utf-8',
       timeout: 3_000,

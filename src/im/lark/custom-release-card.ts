@@ -24,7 +24,7 @@ function statusLines(record: CustomReleaseEventRecord): string[] {
   if (state.status === 'frozen') {
     return [
       `✅ 已冻结 ${code(state.candidateTag ?? `release/v${event.release.pendingVersion}`)}。`,
-      `下一步：点击下方“推进 ${code(event.production.branch)}”。此步只更新生产分支，不会部署或重启。`,
+      `下一步：点击下方“推进并部署 ${code(event.release.pendingVersion)}”。按钮点击本身即授权推进生产、构建、切换运行版本并重启。`,
     ];
   }
   if (state.status === 'freeze_failed') {
@@ -45,7 +45,25 @@ function statusLines(record: CustomReleaseEventRecord): string[] {
   if (state.status === 'promoted') {
     return [
       `✅ 已推进 ${code(event.production.branch)} @ ${code(state.productionHead ?? event.integration.head, 8)}。`,
-      '下一步：部署并重启。该步骤会改变运行态，仍需在 Botmux 对话中单独明确授权。',
+      `下一步：点击下方“部署并重启 ${code(event.release.pendingVersion)}”。按钮点击本身即为部署授权。`,
+    ];
+  }
+  if (state.status === 'deploying') {
+    return [
+      `⏳ 正在推进并部署 ${code(state.candidateTag ?? `release/v${event.release.pendingVersion}`)}。`,
+      '将依次更新生产分支、构建、切换 wrapper 并重启；新 daemon 会继续验收并回写结果。',
+    ];
+  }
+  if (state.status === 'deploy_failed') {
+    return [
+      `❌ ${code(event.release.pendingVersion)} 尚未完成部署。`,
+      state.lastError ? `原因：${text(state.lastError)}` : '',
+    ].filter(Boolean);
+  }
+  if (state.status === 'deployed') {
+    return [
+      `✅ 已部署 ${code(state.deployTag ?? `deploy/v${event.release.pendingVersion}`)}。`,
+      `生产与运行 HEAD：${code(state.productionHead ?? event.integration.head, 8)}。`,
     ];
   }
   return ['尚未冻结、未推进生产、未部署。'];
@@ -62,11 +80,16 @@ function cumulativeLines(record: CustomReleaseEventRecord): string[] {
 
 function actionButton(record: CustomReleaseEventRecord): Record<string, unknown> | undefined {
   const canFreeze = record.state.status === 'delivered' || record.state.status === 'freeze_failed';
-  const canPromote = record.state.status === 'frozen' || record.state.status === 'promote_failed';
+  const canPromote = record.state.status === 'frozen'
+    || record.state.status === 'promote_failed'
+    || record.state.status === 'promoted'
+    || record.state.status === 'deploy_failed';
   if (!canFreeze && !canPromote) return undefined;
   const action = canPromote ? 'custom_release_promote' : 'custom_release_freeze';
   const label = canPromote
-    ? `${record.state.status === 'promote_failed' ? '重新' : ''}推进 ${record.event.production.branch}`
+    ? record.state.status === 'promoted'
+      ? `部署并重启 ${record.event.release.pendingVersion}`
+      : `${record.state.status === 'promote_failed' || record.state.status === 'deploy_failed' ? '重新' : ''}推进并部署 ${record.event.release.pendingVersion}`
     : `${record.state.status === 'freeze_failed' ? '重新' : ''}冻结 ${record.event.release.pendingVersion}`;
   return {
     tag: 'column_set',
@@ -122,11 +145,12 @@ export function buildCustomReleaseSummaryCard(record: CustomReleaseEventRecord):
   const elements: Record<string, unknown>[] = [{ tag: 'markdown', content: body }];
   const button = actionButton(record);
   if (button) elements.push(button);
-  const template = record.state.status === 'frozen' || record.state.status === 'promoted'
+  const template = record.state.status === 'frozen' || record.state.status === 'promoted' || record.state.status === 'deployed'
     ? 'green'
     : record.state.status === 'stale'
       || record.state.status === 'freeze_failed'
       || record.state.status === 'promote_failed'
+      || record.state.status === 'deploy_failed'
       ? 'orange'
       : 'blue';
   return JSON.stringify({

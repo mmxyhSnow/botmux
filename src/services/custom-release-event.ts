@@ -51,7 +51,10 @@ export type CustomReleaseEventStatus =
   | 'frozen'
   | 'promoting'
   | 'promote_failed'
-  | 'promoted';
+  | 'promoted'
+  | 'deploying'
+  | 'deploy_failed'
+  | 'deployed';
 
 export interface CustomReleaseEventState {
   status: CustomReleaseEventStatus;
@@ -62,6 +65,7 @@ export interface CustomReleaseEventState {
   supersededBy?: string;
   candidateTag?: string;
   productionHead?: string;
+  deployTag?: string;
   notifiedStatus?: CustomReleaseEventStatus;
 }
 
@@ -79,6 +83,7 @@ const STATUS = new Set<CustomReleaseEventStatus>([
   'queued', 'delivering', 'delivery_failed', 'delivered',
   'freezing', 'freeze_failed', 'stale', 'frozen',
   'promoting', 'promote_failed', 'promoted',
+  'deploying', 'deploy_failed', 'deployed',
 ]);
 
 function plain(value: unknown): value is Record<string, unknown> {
@@ -159,7 +164,7 @@ export function parseCustomReleaseRecord(value: unknown): CustomReleaseEventReco
     || typeof state.updatedAt !== 'string'
     || !Number.isFinite(Date.parse(state.updatedAt))
   ) throw new Error('自定义发版状态无效');
-  for (const key of ['messageId', 'lastError', 'supersededBy', 'candidateTag'] as const) {
+  for (const key of ['messageId', 'lastError', 'supersededBy', 'candidateTag', 'deployTag'] as const) {
     if (state[key] !== undefined && !shortText(state[key], key === 'lastError' ? 1000 : 240)) {
       throw new Error(`自定义发版状态字段无效: ${key}`);
     }

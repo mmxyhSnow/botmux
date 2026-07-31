@@ -19,7 +19,7 @@ describe('officialVersionFromTags', () => {
 });
 
 describe('customDeploymentVersionFromTags', () => {
-  it('读取同一提交上最新的自定义部署版本', () => {
+  it('读取同一提交上最新的候选或部署版本', () => {
     expect(customDeploymentVersionFromTags([
       'deploy/v3.7.1-custom.2',
       'release/v3.7.1-custom.3',
@@ -27,8 +27,16 @@ describe('customDeploymentVersionFromTags', () => {
     ])).toBe('3.7.1-custom.10');
   });
 
-  it('没有部署标签时返回 null', () => {
-    expect(customDeploymentVersionFromTags(['v3.7.1', 'release/v3.7.1-custom.3'])).toBeNull();
+  it('没有 deploy 标签时仍展示候选版本', () => {
+    expect(customDeploymentVersionFromTags(['v3.7.1', 'release/v3.7.1-custom.3']))
+      .toBe('3.7.1-custom.3');
+  });
+
+  it('同号候选和部署并存时保持相同版本号', () => {
+    expect(customDeploymentVersionFromTags([
+      'release/v3.7.1-custom.4',
+      'deploy/v3.7.1-custom.4',
+    ])).toBe('3.7.1-custom.4');
   });
 });
 
