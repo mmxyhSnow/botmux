@@ -41,7 +41,10 @@ import {
   startCliRuntimeUpdateMonitor,
   stopCliRuntimeUpdateMonitor,
 } from './core/cli-runtime-update.js';
-import { sendRestartReportIfPending } from './core/restart-report.js';
+import {
+  buildRestartTurnProgressText,
+  sendRestartReportIfPending,
+} from './core/restart-report.js';
 import { reconcileOutstandingTurns } from './core/restart-turn-reconciler.js';
 import { statSync } from 'node:fs';
 import { addReaction, getChatMode, getChatNameAndMode, getMessageChatId, listChatMemberOpenIds, MessageWithdrawnError, replyMessage, resolveAllowedUsersWithMap, sendMessage, sendUserMessage, updateMessage, type EntryResolveStatus } from './im/lark/client.js';
@@ -18062,10 +18065,15 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       sessions: activeSessions.values(),
       reportUnconfirmed,
       lookupSessionStatus: sessionId => sessionStore.getSession(sessionId)?.status,
-      formatUnconfirmed: record => tr('restart.turn_unconfirmed', {
-        progress: record.promptSummary
-          || tr('restart.turn_received', undefined, localeForBot(cfg.larkAppId)),
-      }, localeForBot(cfg.larkAppId)),
+      formatUnconfirmed: (record, progress) => {
+        const locale = localeForBot(cfg.larkAppId);
+        return tr('restart.turn_unconfirmed', {
+          progress: progress
+            ? buildRestartTurnProgressText(progress, locale)
+            : record.promptSummary
+              || tr('restart.turn_received', undefined, locale),
+        }, locale);
+      },
       send: (record, content, uuid) => sessionReply(
         record.anchor,
         content,

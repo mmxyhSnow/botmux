@@ -12,6 +12,7 @@ import {
   hasActiveRestartLeaseTo,
   writeManualIntentIfAbsentTo,
   normalizeRestartReason,
+  resolveRestartSource,
   restartIntentPathIn,
 } from '../src/services/restart-intent-store.js';
 
@@ -78,10 +79,11 @@ describe('restart-intent store', () => {
   });
 
   it('writeManualIntentIfAbsent writes a manual intent when none exists', () => {
-    writeManualIntentIfAbsentTo(dir, T0, iso(T0), '  发布维护通知卡片\n增强  ');
+    writeManualIntentIfAbsentTo(dir, T0, iso(T0), '  发布维护通知卡片\n增强  ', 'ai');
     expect(consumeRestartIntentTo(dir, T0 + 1_000)).toMatchObject({
       kind: 'manual',
       reason: '发布维护通知卡片 增强',
+      source: 'ai',
     });
   });
 
@@ -89,6 +91,18 @@ describe('restart-intent store', () => {
     expect(normalizeRestartReason('  修复\n卡片  ')).toBe('修复 卡片');
     expect(normalizeRestartReason('   ')).toBeUndefined();
     expect(normalizeRestartReason('x'.repeat(250))).toHaveLength(200);
+  });
+
+  it('infers AI only from a managed Botmux turn and otherwise keeps the real source', () => {
+    expect(resolveRestartSource(undefined, {
+      BOTMUX_SESSION_ID: 'session-a',
+      BOTMUX_TURN_ID: 'turn-a',
+    })).toBe('ai');
+    expect(resolveRestartSource('dashboard', {
+      BOTMUX_SESSION_ID: 'session-a',
+      BOTMUX_TURN_ID: 'turn-a',
+    })).toBe('dashboard');
+    expect(resolveRestartSource(undefined, {})).toBe('cli');
   });
 
   it('writeManualIntentIfAbsent does NOT clobber an existing fresh richer intent', () => {

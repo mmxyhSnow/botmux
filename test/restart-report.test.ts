@@ -3,7 +3,12 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { countActiveSessionsOnDisk } from '../src/services/session-store.js';
-import { buildRestartReportText, sendRestartReportIfPending, fetchChangelog } from '../src/core/restart-report.js';
+import {
+  buildRestartReportText,
+  buildRestartTurnProgressText,
+  sendRestartReportIfPending,
+  fetchChangelog,
+} from '../src/core/restart-report.js';
 import { writeRestartIntentTo, restartIntentPathIn } from '../src/services/restart-intent-store.js';
 
 function writeSessions(dir: string, name: string, sessions: Record<string, { status: string }>) {
@@ -36,7 +41,24 @@ describe('countActiveSessionsOnDisk', () => {
 });
 
 describe('buildRestartReportText', () => {
-  it('plain restart: version + session count + dashboard link, no changelog', () => {
+  it('renders persisted structured progress for restart recovery', () => {
+    const progress = buildRestartTurnProgressText({
+      stage: '运行态切换',
+      current: '切换生产进程',
+      completed: ['完成合入', '完成构建与推送'],
+      next: '核对进程状态',
+      evidence: ['commit abc123'],
+      delivery: ['origin/custom/prod'],
+    });
+    expect(progress).toContain('阶段：运行态切换');
+    expect(progress).toContain('当前：切换生产进程');
+    expect(progress).toContain('已完成：完成合入；完成构建与推送');
+    expect(progress).toContain('验证：commit abc123');
+    expect(progress).toContain('交付：origin/custom/prod');
+    expect(progress).toContain('下一步：核对进程状态');
+  });
+
+  it('plain CLI restart: version + session count + neutral source, no changelog', () => {
     const md = buildRestartReportText({
       kind: 'manual',
       version: '2.65.0',
@@ -46,8 +68,30 @@ describe('buildRestartReportText', () => {
     expect(md).toContain('2.65.0');
     expect(md).toContain('3');
     expect(md).toContain('http://10.0.0.1:7891/?t=abc');
-    expect(md).toContain('维护原因：管理员手动重启服务');
+    expect(md).toContain('维护原因：通过 CLI 触发服务重启');
+    expect(md).not.toContain('管理员');
     expect(md.toLowerCase()).not.toContain('changelog');
+  });
+
+  it('shows AI attribution when the restart caller declares the AI source', () => {
+    const md = buildRestartReportText({
+      kind: 'manual',
+      source: 'ai',
+      version: '3.7.1',
+      sessionCount: 50,
+    });
+    expect(md).toContain('维护原因：AI 按用户授权执行服务重启');
+    expect(md).not.toContain('管理员');
+  });
+
+  it('shows Dashboard attribution for dashboard-triggered restarts', () => {
+    const md = buildRestartReportText({
+      kind: 'manual',
+      source: 'dashboard',
+      version: '3.7.1',
+      sessionCount: 50,
+    });
+    expect(md).toContain('维护原因：通过 Dashboard 触发服务重启');
   });
 
   it('shows the concrete maintenance reason when the restart caller provides one', () => {

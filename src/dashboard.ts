@@ -3236,7 +3236,7 @@ const server = createServer(async (req, res) => {
             if (upd && typeof upd.oldVersion === 'string' && typeof upd.newVersion === 'string' && upd.oldVersion !== upd.newVersion) {
               writeRestartIntent({ kind: 'update', oldVersion: upd.oldVersion, newVersion: upd.newVersion, at: new Date().toISOString() });
             } else {
-              writeManualIntentIfAbsent();
+              writeManualIntentIfAbsent(Date.now(), undefined, 'dashboard');
             }
           } catch (error) {
             clearRestartLease(leaseId);
