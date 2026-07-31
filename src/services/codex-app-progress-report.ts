@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import MarkdownIt from 'markdown-it';
 import type { CodexAppProgressCardSessionState } from '../types.js';
 import { resolveBotmuxDataDir } from '../core/data-dir.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
@@ -18,6 +19,25 @@ export interface CodexAppProgressReportFile {
   reportId: string;
   filePath: string;
 }
+
+/**
+ * 最终回复来自模型 Markdown。禁用原始 HTML 和图片自动加载，只保留安全文本、
+ * 常用格式与显式链接，避免完整过程页成为脚本或外部资源注入入口。
+ */
+const REPORT_MARKDOWN = new MarkdownIt({
+  html: false,
+  linkify: true,
+  breaks: true,
+});
+REPORT_MARKDOWN.disable('image');
+const defaultLinkOpen = REPORT_MARKDOWN.renderer.rules.link_open;
+REPORT_MARKDOWN.renderer.rules.link_open = (tokens, index, options, env, self) => {
+  tokens[index].attrSet('target', '_blank');
+  tokens[index].attrSet('rel', 'noreferrer noopener');
+  return defaultLinkOpen
+    ? defaultLinkOpen(tokens, index, options, env, self)
+    : self.renderToken(tokens, index, options);
+};
 
 /** 为同一逻辑任务生成稳定标识，运行中可覆盖更新，终态后自然冻结。 */
 function progressReportId(state: CodexAppProgressCardSessionState): string {
@@ -55,11 +75,24 @@ function elapsedMinutes(state: CodexAppProgressCardSessionState): number {
   return Math.max(1, Math.floor((state.updatedAtMs - state.startedAtMs) / 60_000));
 }
 
-function listSection(title: string, items: string[] | undefined, empty: string): string {
+function listSection(
+  title: string,
+  items: string[] | undefined,
+  empty: string,
+  renderLinks = false,
+): string {
   const content = items?.length
-    ? `<ul>${items.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
+    ? `<ul>${items.map(item =>
+        `<li>${renderLinks ? REPORT_MARKDOWN.renderInline(item) : escapeHtml(item)}</li>`).join('')}</ul>`
     : `<p class="muted">${escapeHtml(empty)}</p>`;
   return `<section><h2>${escapeHtml(title)}</h2>${content}</section>`;
+}
+
+function finalResponseSection(finalResponse: string | undefined): string {
+  const content = finalResponse?.trim();
+  return content
+    ? `<section class="final-response"><h2>最终结论</h2>${REPORT_MARKDOWN.render(content)}</section>`
+    : '<section><h2>最终结论</h2><p class="muted">未归档最终回复</p></section>';
 }
 
 /** 将当前持久化投影渲染成不依赖脚本和外部资源的单文件 HTML。 */
@@ -95,6 +128,11 @@ export function renderCodexAppProgressReport(
     .meta,.muted{color:#646a73}.summary{display:grid;grid-template-columns:1fr 1fr;gap:16px}
     .summary div{min-width:0}.summary strong{display:block;margin-bottom:4px}.alert{border-color:#f7ba1e;background:#fffbe8}
     .timeline{padding-left:24px}.timeline li{padding:0 0 14px 8px;white-space:normal}.timeline li:last-child{padding-bottom:0}
+    .final-response p,.final-response ul,.final-response ol,.final-response pre,.final-response table{margin:0 0 12px}
+    .final-response>:last-child{margin-bottom:0}.final-response a{color:#1456f0;overflow-wrap:anywhere}
+    .final-response pre{padding:12px;overflow:auto;background:#f2f3f5;border-radius:8px}
+    .final-response table{display:block;max-width:100%;overflow:auto;border-collapse:collapse}
+    .final-response th,.final-response td{padding:6px 10px;border:1px solid #dee0e3;text-align:left}
     @media(max-width:640px){main{padding:16px 12px 40px}.summary{grid-template-columns:1fr}header,section{padding:16px}}
   </style>
 </head>
@@ -112,9 +150,10 @@ export function renderCodexAppProgressReport(
     <div><strong>下一步</strong>${escapeHtml(overview?.next ?? '无')}</div>
   </section>
   ${blocker}
+  ${finalResponseSection(state.finalResponse)}
   ${listSection('已完成', overview?.completed, '暂无已完成项')}
   ${listSection('验证证据', overview?.evidence, '未记录独立验证证据')}
-  ${listSection('交付物', overview?.delivery, '无外部交付')}
+  ${listSection('产物与链接', overview?.delivery, '无外部交付', true)}
   ${listSection('剩余风险', overview?.risks, '无已知剩余风险')}
   <section><h2>完整时间线</h2>${historyHtml}</section>
 </main>

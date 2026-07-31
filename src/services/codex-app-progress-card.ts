@@ -206,6 +206,23 @@ export class CodexAppProgressCard {
     });
   }
 
+  /** 保存与当前任务绑定的最终回复，并立即刷新稳定报告链接对应的 HTML。 */
+  recordFinal(turnId: string, content: string): Promise<void> {
+    return this.enqueue(async () => {
+      const finalResponse = content.trim();
+      if (
+        !finalResponse
+        || !this.state
+        || !this.state.acceptedTurnIds.includes(turnId)
+        || this.state.finalResponse === finalResponse
+      ) return;
+      this.state.finalResponse = finalResponse;
+      this.state.updatedAtMs = this.now().getTime();
+      this.persist();
+      await this.publishCurrentReport();
+    });
+  }
+
   interrupt(): Promise<void> {
     const turnId = this.state?.activeTurnId;
     return turnId ? this.settle(turnId, 'interrupted') : Promise.resolve();
@@ -252,14 +269,20 @@ export class CodexAppProgressCard {
     if (this.state) this.operations.persist(cloneState(this.state));
   }
 
-  private async syncCard(): Promise<void> {
+  /** 报告失败不能阻断主卡；稳定 URL 会在下一次状态同步时再次覆盖刷新。 */
+  private async publishCurrentReport(): Promise<string | undefined> {
     if (!this.state) return;
-    let reportUrl: string | undefined;
     try {
-      reportUrl = await this.operations.publishReport?.(cloneState(this.state));
+      return await this.operations.publishReport?.(cloneState(this.state));
     } catch {
       // 报告是主卡的增强入口，写入失败不得阻断用户看到最新任务状态。
+      return undefined;
     }
+  }
+
+  private async syncCard(): Promise<void> {
+    if (!this.state) return;
+    const reportUrl = await this.publishCurrentReport();
     const cardJson = renderCodexAppProgressCard(this.state, { reportUrl });
     if (this.state.messageId) {
       try {

@@ -4096,6 +4096,16 @@ function setupWorkerHandlers(
           logger.debug(`[${t}] final_output captured/discarded for silent turn ${msg.turnId.substring(0, 8)}`);
           break;
         }
+        if (codexAppProgressEnabled(ds)) {
+          try {
+            await codexAppProgressCardFor(ds).recordFinal(msg.turnId, msg.content);
+          } catch (error) {
+            logger.warn(
+              `[${t}] Codex App 最终结论归档失败: `
+              + `${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
         if (!msg.sessionId) {
           logger.warn(`[${t}] final_output missing sessionId; accepting for compatibility (session=${ds.session.sessionId}, turn=${msg.turnId.substring(0, 8)})`);
         }
