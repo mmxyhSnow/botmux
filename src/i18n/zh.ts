@@ -1142,6 +1142,8 @@ export const messages: Record<string, string> = {
   'cli_update.card_title': '{cli} 有新版本',
   'cli_update.available': '⬆️ **检测到 {cli} 新版本**',
   'cli_update.version_delta': '版本：{current} → {latest}',
+  'cli_update.release_notes': '**更新内容**',
+  'cli_update.release_details': '完整发布说明：{url}',
   'cli_update.binary': '当前二进制：{path}',
   'cli_update.install_target': '安装位置：{path}',
   'cli_update.command': '建议在宿主终端执行：{command}',

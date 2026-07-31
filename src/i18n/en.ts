@@ -1139,6 +1139,8 @@ export const messages: Record<string, string> = {
   'cli_update.card_title': 'New {cli} version available',
   'cli_update.available': '⬆️ **A new {cli} version is available**',
   'cli_update.version_delta': 'Version: {current} → {latest}',
+  'cli_update.release_notes': '**What’s new**',
+  'cli_update.release_details': 'Full release notes: {url}',
   'cli_update.binary': 'Current binary: {path}',
   'cli_update.install_target': 'Install target: {path}',
   'cli_update.command': 'Run on the host: {command}',
