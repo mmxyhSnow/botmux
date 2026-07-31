@@ -2,7 +2,10 @@
 import { spawn } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import type { CustomReleaseEventRecord } from '../services/custom-release-event.js';
-import { StaleCustomReleaseHeadError, type CustomReleaseFreezeResult } from './custom-release-notifier.js';
+import {
+  StaleCustomReleaseHeadError,
+  type CustomReleaseFreezeResult,
+} from './custom-release-notifier-types.js';
 
 const RESULT_PREFIX = 'BOTMUX_CUSTOM_RELEASE_RESULT=';
 const MAX_TAIL = 64 * 1024;

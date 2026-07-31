@@ -5,7 +5,7 @@ import {
   runCustomReleaseFreeze,
   type CustomReleaseFreezeDeps,
 } from '../src/core/custom-release-freeze.js';
-import { StaleCustomReleaseHeadError } from '../src/core/custom-release-notifier.js';
+import { StaleCustomReleaseHeadError } from '../src/core/custom-release-notifier-types.js';
 
 const head = '1'.repeat(40);
 

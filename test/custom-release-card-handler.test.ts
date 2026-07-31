@@ -19,10 +19,10 @@ async function fresh() {
   return handler;
 }
 
-function action(operator?: string) {
+function action(operator?: string, actionName = 'custom_release_freeze') {
   return {
     ...(operator ? { operator: { open_id: operator } } : {}),
-    action: { value: { action: 'custom_release_freeze', event_id: '1'.repeat(64) } },
+    action: { value: { action: actionName, event_id: '1'.repeat(64) } },
     context: { open_message_id: 'om_release' },
   };
 }
@@ -73,5 +73,20 @@ describe('custom release card action', () => {
 
     expect(result?.toast?.type).toBe('error');
     expect(customReleaseCardAction).not.toHaveBeenCalled();
+  });
+
+  it('把推进生产点击交给同一受控发布处理器', async () => {
+    const handler = await fresh();
+    const customReleaseCardAction = vi.fn(async () => ({ ok: true }));
+    const data = action('ou_owner', 'custom_release_promote');
+    const result = await handler.handleCardAction(data, {
+      activeSessions: new Map(),
+      sessionReply: vi.fn(async () => 'om_reply'),
+      lastRepoScan: new Map(),
+      customReleaseCardAction,
+    }, 'h1');
+
+    expect(result).toEqual({ ok: true });
+    expect(customReleaseCardAction).toHaveBeenCalledWith(data, 'h1');
   });
 });

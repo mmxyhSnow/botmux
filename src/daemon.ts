@@ -48,6 +48,7 @@ import {
 import { CustomReleaseEventStore } from './services/custom-release-event.js';
 import { CustomReleaseNotifier } from './core/custom-release-notifier.js';
 import { runCustomReleaseFreeze } from './core/custom-release-freeze.js';
+import { runCustomReleasePromote } from './core/custom-release-promote.js';
 import { reconcileOutstandingTurns } from './core/restart-turn-reconciler.js';
 import { statSync } from 'node:fs';
 import { addReaction, getChatMode, getChatNameAndMode, getMessageChatId, listChatMemberOpenIds, MessageWithdrawnError, replyMessage, resolveAllowedUsersWithMap, sendMessage, sendUserMessage, updateMessage, type EntryResolveStatus } from './im/lark/client.js';
@@ -4295,7 +4296,12 @@ const cardDeps: CardHandlerDeps = {
     if (!customReleaseNotifier || appId !== customReleaseNotifierAppId) {
       return Promise.resolve({ toast: { type: 'error', content: '这张发版卡片不属于当前 Bot' } });
     }
+    const rawAction = data.action?.value?.action;
+    const action = rawAction === 'custom_release_freeze' || rawAction === 'custom_release_promote'
+      ? rawAction
+      : undefined;
     return customReleaseNotifier.handleCardAction({
+      action,
       operatorOpenId: data.operator?.open_id,
       messageId: data.context?.open_message_id ?? data.open_message_id,
       eventId: data.action?.value?.event_id,
@@ -18302,7 +18308,15 @@ export async function startDaemon(botIndex?: number): Promise<void> {
         uuid,
       ),
       updateCard: (messageId, card) => updateMessage(cfg.larkAppId, messageId, card),
+      notifyText: (openId, content, uuid) => sendUserMessage(
+        cfg.larkAppId,
+        openId,
+        content,
+        'text',
+        uuid,
+      ).then(() => undefined),
       freeze: runCustomReleaseFreeze,
+      promote: runCustomReleasePromote,
       log: message => logger.info(`[custom-release] ${message}`),
     });
     customReleaseNotifier.start();

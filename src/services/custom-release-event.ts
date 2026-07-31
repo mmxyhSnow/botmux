@@ -48,7 +48,10 @@ export type CustomReleaseEventStatus =
   | 'freezing'
   | 'freeze_failed'
   | 'stale'
-  | 'frozen';
+  | 'frozen'
+  | 'promoting'
+  | 'promote_failed'
+  | 'promoted';
 
 export interface CustomReleaseEventState {
   status: CustomReleaseEventStatus;
@@ -58,6 +61,8 @@ export interface CustomReleaseEventState {
   lastError?: string;
   supersededBy?: string;
   candidateTag?: string;
+  productionHead?: string;
+  notifiedStatus?: CustomReleaseEventStatus;
 }
 
 export interface CustomReleaseEventRecord {
@@ -73,6 +78,7 @@ const VERSION = /^\d+\.\d+\.\d+-custom\.\d+$/;
 const STATUS = new Set<CustomReleaseEventStatus>([
   'queued', 'delivering', 'delivery_failed', 'delivered',
   'freezing', 'freeze_failed', 'stale', 'frozen',
+  'promoting', 'promote_failed', 'promoted',
 ]);
 
 function plain(value: unknown): value is Record<string, unknown> {
@@ -158,6 +164,13 @@ export function parseCustomReleaseRecord(value: unknown): CustomReleaseEventReco
       throw new Error(`自定义发版状态字段无效: ${key}`);
     }
   }
+  if (state.productionHead !== undefined && !sha(state.productionHead)) {
+    throw new Error('自定义发版状态字段无效: productionHead');
+  }
+  if (
+    state.notifiedStatus !== undefined
+    && (typeof state.notifiedStatus !== 'string' || !STATUS.has(state.notifiedStatus as CustomReleaseEventStatus))
+  ) throw new Error('自定义发版状态字段无效: notifiedStatus');
   return { schemaVersion: 1, event, state: state as unknown as CustomReleaseEventState };
 }
 
