@@ -54,19 +54,23 @@ describe('grant-store', () => {
     expect(await store.addChatGrant('a1', 'oc_1', 'ou_guest')).toEqual({ ok: true, created: false });
   });
 
-  it('addChatGrant repairs stale runtime when the grant already exists on disk', async () => {
-    writeConfig({
-      allowedUsers: ['ou_owner'],
-      chatGrants: { oc_1: ['ou_guest'] },
-    });
+  it('idempotent chat re-grant repairs stale runtime access immediately', async () => {
+    writeConfig({ allowedUsers: ['ou_owner'] });
     const { registry, store } = await freshModules();
-    registry.getBot('a1').config.chatGrants = {};
+    const dispatcher = await import('../src/im/lark/event-dispatcher.js');
+
+    // 模拟其它进程在当前 daemon 加载配置后写入授权；内存仍保持启动时的旧快照。
+    writeConfig({ allowedUsers: ['ou_owner'], chatGrants: { oc_1: ['ou_guest'] } });
+    expect(registry.getBot('a1').config.chatGrants).toBeUndefined();
 
     const r = await store.addChatGrant('a1', 'oc_1', 'ou_guest');
 
     expect(r).toEqual({ ok: true, created: false });
     expect(readConfig().chatGrants).toEqual({ oc_1: ['ou_guest'] });
-    expect(registry.getBot('a1').config.chatGrants).toEqual({ oc_1: ['ou_guest'] });
+    expect(dispatcher.evaluateTalk('a1', 'oc_1', 'ou_guest')).toMatchObject({
+      allowed: true,
+      reason: 'chatGrant',
+    });
   });
 
   it('revokeGrant refuses to empty resolvedAllowedUsers (would_open_bot)', async () => {
