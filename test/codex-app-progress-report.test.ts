@@ -95,6 +95,9 @@ describe('Codex App 完整过程 HTML', () => {
     expect(html).toContain('第二条完整证据');
     expect(html).toContain('<strong>17:10</strong>');
     expect(html).toContain('<h3>过程记录 01</h3>');
+    expect(html).toMatch(
+      /<strong>17:28<\/strong><span>记录 03<\/span>[\s\S]*本轮已完成[\s\S]*<strong>17:12<\/strong><span>记录 02<\/span>[\s\S]*第二条完整证据[\s\S]*<strong>17:10<\/strong><span>记录 01<\/span>[\s\S]*第一条完整证据/,
+    );
     expect(html).not.toContain('cdn.tailwindcss.com');
     expect(html).not.toContain('fonts.googleapis.com');
     expect(html.indexOf('<h2>最终结论</h2>')).toBeLessThan(
