@@ -7,7 +7,8 @@
  * daemon startup wiring.
  */
 import { githubAuthHeaders, type GithubAuthResolveOptions } from './github-auth.js';
-import type { RestartKind } from '../services/restart-intent-store.js';
+import type { CodexAppProgressOverview } from '../types.js';
+import type { RestartKind, RestartSource } from '../services/restart-intent-store.js';
 import { consumeRestartIntent } from '../services/restart-intent-store.js';
 import { countActiveSessionsOnDisk } from '../services/session-store.js';
 import { resolveCurrentDeploymentVersion } from '../utils/install-diagnostics.js';
@@ -31,11 +32,44 @@ export interface RestartReportInput {
   newVersion?: string;
   /** 发起维护时记录的具体原因。 */
   reason?: string;
+  /** 手动维护的真实触发入口。 */
+  source?: RestartSource;
   changelog?: string;
 }
 
 function vtag(v: string): string {
   return v.startsWith('v') ? v : `v${v}`;
+}
+
+/** 将与待恢复轮次精确匹配的结构化进度压成可读摘要。 */
+export function buildRestartTurnProgressText(
+  overview: CodexAppProgressOverview,
+  locale?: Locale,
+): string {
+  const lines = [
+    t('restart.turn_progress_stage', { value: overview.stage }, locale),
+    t('restart.turn_progress_current', { value: overview.current }, locale),
+  ];
+  if (overview.completed.length > 0) {
+    lines.push(t('restart.turn_progress_completed', {
+      value: overview.completed.join('；'),
+    }, locale));
+  }
+  if (overview.evidence?.length) {
+    lines.push(t('restart.turn_progress_evidence', {
+      value: overview.evidence.join('；'),
+    }, locale));
+  }
+  if (overview.delivery?.length) {
+    lines.push(t('restart.turn_progress_delivery', {
+      value: overview.delivery.join('；'),
+    }, locale));
+  }
+  if (overview.blocker) {
+    lines.push(t('restart.turn_progress_blocker', { value: overview.blocker }, locale));
+  }
+  lines.push(t('restart.turn_progress_next', { value: overview.next }, locale));
+  return lines.join('\n');
 }
 
 /** The human-facing markdown body of the report. Pure — unit tested. */
@@ -47,7 +81,10 @@ export function buildRestartReportText(input: RestartReportInput, locale?: Local
       ? t('restart.rolled_back_restarted', undefined, locale)
       : t('restart.restarted', undefined, locale));
 
-  const reason = input.reason?.trim() || t(`restart.reason_${input.kind}`, undefined, locale);
+  const reasonKey = input.kind === 'manual' && input.source
+    ? `restart.reason_${input.source}`
+    : `restart.reason_${input.kind}`;
+  const reason = input.reason?.trim() || t(reasonKey, undefined, locale);
   lines.push(t('restart.reason', { reason }, locale));
 
   if (input.kind !== 'manual' && input.oldVersion && input.newVersion) {
@@ -129,6 +166,7 @@ export async function sendRestartReportIfPending(w: RestartReportWiring): Promis
     oldVersion: intent.oldVersion,
     newVersion: intent.newVersion,
     reason: intent.reason,
+    source: intent.source,
     changelog,
   }, locale);
   try {

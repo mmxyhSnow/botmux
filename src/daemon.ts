@@ -41,7 +41,10 @@ import {
   startCliRuntimeUpdateMonitor,
   stopCliRuntimeUpdateMonitor,
 } from './core/cli-runtime-update.js';
-import { sendRestartReportIfPending } from './core/restart-report.js';
+import {
+  buildRestartTurnProgressText,
+  sendRestartReportIfPending,
+} from './core/restart-report.js';
 import { CustomReleaseEventStore } from './services/custom-release-event.js';
 import { CustomReleaseNotifier } from './core/custom-release-notifier.js';
 import { runCustomReleaseFreeze } from './core/custom-release-freeze.js';
@@ -18078,10 +18081,15 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       sessions: activeSessions.values(),
       reportUnconfirmed,
       lookupSessionStatus: sessionId => sessionStore.getSession(sessionId)?.status,
-      formatUnconfirmed: record => tr('restart.turn_unconfirmed', {
-        progress: record.promptSummary
-          || tr('restart.turn_received', undefined, localeForBot(cfg.larkAppId)),
-      }, localeForBot(cfg.larkAppId)),
+      formatUnconfirmed: (record, progress) => {
+        const locale = localeForBot(cfg.larkAppId);
+        return tr('restart.turn_unconfirmed', {
+          progress: progress
+            ? buildRestartTurnProgressText(progress, locale)
+            : record.promptSummary
+              || tr('restart.turn_received', undefined, locale),
+        }, locale);
+      },
       send: (record, content, uuid) => sessionReply(
         record.anchor,
         content,

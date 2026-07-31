@@ -16,6 +16,7 @@ import { config } from '../config.js';
 import { readProcessStartIdentity } from '../core/session-marker.js';
 
 export type RestartKind = 'manual' | 'update' | 'rollback';
+export type RestartSource = 'cli' | 'ai' | 'dashboard';
 
 export interface RestartIntent {
   kind: RestartKind;
@@ -24,6 +25,8 @@ export interface RestartIntent {
   newVersion?: string;
   /** 发起方提供的具体维护原因；缺省时由卡片按 kind 给出可理解的原因。 */
   reason?: string;
+  /** 触发本次维护的真实入口；旧数据缺省时按普通 CLI 处理。 */
+  source?: RestartSource;
   /** ISO 8601 timestamp the breadcrumb was written. */
   at: string;
 }
@@ -46,7 +49,8 @@ export function writeRestartIntentTo(dir: string, intent: RestartIntent): void {
   const path = restartIntentPathIn(dir);
   const tmp = `${path}.${process.pid}.tmp`;
   const reason = normalizeRestartReason(intent.reason);
-  writeFileSync(tmp, JSON.stringify({ ...intent, reason }, null, 2) + '\n');
+  const source = normalizeRestartSource(intent.source);
+  writeFileSync(tmp, JSON.stringify({ ...intent, reason, source }, null, 2) + '\n');
   renameSync(tmp, path);
 }
 
@@ -55,6 +59,23 @@ export function normalizeRestartReason(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
   const value = raw.replace(/\s+/g, ' ').trim();
   return value ? value.slice(0, 200) : undefined;
+}
+
+/** 只接受维护通知支持的固定触发来源，避免把任意外部文本带进卡片。 */
+export function normalizeRestartSource(raw: unknown): RestartSource | undefined {
+  return raw === 'cli' || raw === 'ai' || raw === 'dashboard' ? raw : undefined;
+}
+
+/**
+ * 显式来源优先；未声明时仅在 Botmux 托管轮次环境中判定为 AI，
+ * 普通宿主终端保持为 CLI，避免再次把执行主体误写成管理员。
+ */
+export function resolveRestartSource(
+  raw: unknown,
+  env: Record<string, string | undefined> = process.env,
+): RestartSource {
+  return normalizeRestartSource(raw)
+    ?? (env.BOTMUX_SESSION_ID && env.BOTMUX_TURN_ID ? 'ai' : 'cli');
 }
 
 export function clearRestartIntentTo(dir: string): void {
@@ -67,7 +88,10 @@ function readRaw(dir: string): RestartIntent | null {
   try {
     const v = JSON.parse(readFileSync(path, 'utf-8'));
     if (v && typeof v === 'object' && typeof v.kind === 'string' && typeof v.at === 'string') {
-      return v as RestartIntent;
+      return {
+        ...v,
+        source: normalizeRestartSource(v.source),
+      } as RestartIntent;
     }
   } catch {
     /* corrupt → treated as absent (and cleaned up by consume) */
@@ -174,10 +198,16 @@ export function consumeRestartIntentTo(dir: string, nowMs: number): RestartInten
 /** Write a `manual` breadcrumb only when no *fresh* breadcrumb already exists —
  *  so a maintenance-written `update` breadcrumb is not clobbered
  *  by the `botmux restart` it spawns. */
-export function writeManualIntentIfAbsentTo(dir: string, nowMs: number, atIso: string, reason?: string): void {
+export function writeManualIntentIfAbsentTo(
+  dir: string,
+  nowMs: number,
+  atIso: string,
+  reason?: string,
+  source: RestartSource = 'cli',
+): void {
   const existing = readRaw(dir);
   if (existing && isFresh(existing, nowMs)) return;
-  writeRestartIntentTo(dir, { kind: 'manual', reason, at: atIso });
+  writeRestartIntentTo(dir, { kind: 'manual', reason, source, at: atIso });
 }
 
 // ---- default-dir wrappers (production wiring) ----
@@ -206,6 +236,16 @@ export function clearRestartLease(id: string): void {
   clearRestartLeaseTo(config.session.dataDir, id);
 }
 
-export function writeManualIntentIfAbsent(nowMs: number = Date.now(), reason?: string): void {
-  writeManualIntentIfAbsentTo(config.session.dataDir, nowMs, new Date(nowMs).toISOString(), reason);
+export function writeManualIntentIfAbsent(
+  nowMs: number = Date.now(),
+  reason?: string,
+  source: RestartSource = resolveRestartSource(undefined),
+): void {
+  writeManualIntentIfAbsentTo(
+    config.session.dataDir,
+    nowMs,
+    new Date(nowMs).toISOString(),
+    reason,
+    source,
+  );
 }

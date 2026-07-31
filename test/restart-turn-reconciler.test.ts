@@ -129,6 +129,84 @@ describe('restart turn reconciler', () => {
     expect(ledger.listOutstanding('app_a')).toEqual([]);
   });
 
+  it('无可靠终态时优先使用与当前 turn 精确匹配的结构化进度', async () => {
+    const ds = makeSession('idle');
+    ds.session.codexAppProgressCard = {
+      phase: 'running',
+      activeTurnId: id.turnId,
+      acceptedTurnIds: [id.turnId],
+      pendingTurns: [],
+      title: '生产部署',
+      content: '已完成构建',
+      overview: {
+        stage: '运行态切换',
+        current: '切换生产进程',
+        completed: ['完成合入', '完成构建与推送'],
+        next: '核对进程状态',
+        evidence: ['commit abc123', 'build id build-1'],
+        delivery: ['origin/custom/prod'],
+      },
+    };
+    const send = vi.fn(async () => 'om_structured_progress');
+
+    await reconcileOutstandingTurns({
+      dataDir,
+      larkAppId: 'app_a',
+      ledger,
+      sessions: [ds],
+      send,
+      formatUnconfirmed: (record, progress) => [
+        record.promptSummary,
+        progress?.stage,
+        progress?.current,
+        progress?.completed.join('；'),
+        progress?.evidence?.join('；'),
+      ].filter(Boolean).join('\n'),
+    });
+
+    expect(send).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('运行态切换'),
+      stableTurnDeliveryUuid(id),
+    );
+    expect(send.mock.calls[0]?.[1]).toContain('完成合入；完成构建与推送');
+    expect(send.mock.calls[0]?.[1]).toContain('commit abc123；build id build-1');
+  });
+
+  it('结构化进度属于其它 turn 时回退到原始任务，避免串用旧任务状态', async () => {
+    const ds = makeSession('idle');
+    ds.session.codexAppProgressCard = {
+      phase: 'running',
+      activeTurnId: 'om_other_turn',
+      acceptedTurnIds: ['om_other_turn'],
+      pendingTurns: [],
+      title: '其它任务',
+      content: '其它任务进度',
+      overview: {
+        stage: '不应出现',
+        current: '不应串用',
+        completed: ['其它任务已完成'],
+        next: '其它任务下一步',
+      },
+    };
+    const send = vi.fn(async () => 'om_prompt_fallback');
+
+    await reconcileOutstandingTurns({
+      dataDir,
+      larkAppId: 'app_a',
+      ledger,
+      sessions: [ds],
+      send,
+      formatUnconfirmed: (record, progress) => progress?.current ?? record.promptSummary,
+    });
+
+    expect(send).toHaveBeenCalledWith(
+      expect.anything(),
+      '原始任务',
+      stableTurnDeliveryUuid(id),
+    );
+  });
+
   it('并发扫描通过恢复租约只执行一次外部发送', async () => {
     ledger.recordFinal(id, {
       content: '唯一结论',

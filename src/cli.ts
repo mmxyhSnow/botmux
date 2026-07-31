@@ -8,7 +8,7 @@
  *   botmux setup list|add|configure|edit|remove — scripted (non-TUI) bot management, see `botmux setup help`
  *   botmux start          — start daemon and auto plugin services
  *   botmux stop [--with-plugin] — stop daemon (optionally stop auto plugin services)
- *   botmux restart [--include-pm2] [--with-plugin] [--reason <text>] — 重启 daemon，并确保自动插件服务运行
+ *   botmux restart [--include-pm2] [--with-plugin] [--reason <text>] [--source <cli|ai|dashboard>] — 重启 daemon，并确保自动插件服务运行
  *   botmux logs [--lines] — view daemon logs
  *   botmux status         — show daemon status
  *   botmux upgrade|update — upgrade to latest version
@@ -134,7 +134,12 @@ import {
   whiteboardPath,
 } from './services/whiteboard-store.js';
 import { buildBridgeSendMarkerContent } from './services/bridge-fallback-gate.js';
-import { bindRestartLeaseTo, normalizeRestartReason, writeManualIntentIfAbsentTo } from './services/restart-intent-store.js';
+import {
+  bindRestartLeaseTo,
+  normalizeRestartReason,
+  resolveRestartSource,
+  writeManualIntentIfAbsentTo,
+} from './services/restart-intent-store.js';
 import { repairMissingChatScope, stripLegacyPendingCardFields } from './services/session-store.js';
 import {
   evaluateVcMeetingManagedSend,
@@ -2550,7 +2555,16 @@ async function cmdRestart(): Promise<void> {
     const reason = normalizeRestartReason(
       argValue(process.argv.slice(3), '--reason') ?? process.env.BOTMUX_RESTART_REASON,
     );
-    writeManualIntentIfAbsentTo(resolveDataDir(), now, new Date(now).toISOString(), reason);
+    const source = resolveRestartSource(
+      argValue(process.argv.slice(3), '--source') ?? process.env.BOTMUX_RESTART_SOURCE,
+    );
+    writeManualIntentIfAbsentTo(
+      resolveDataDir(),
+      now,
+      new Date(now).toISOString(),
+      reason,
+      source,
+    );
   } catch { /* breadcrumb is best-effort */ }
   killDuplicatePm2GodDaemons();
   preflightNodeSanity();
@@ -4792,7 +4806,8 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
               默认使用 botmux 内置 Feishu Web QR 登录尝试自动导入权限/redirect/发布版本；可加 --no-open-platform-auto 跳过
   start       启动 daemon，并启动 mode=auto 的插件 service
   stop        停止 daemon（默认不停止插件 service；--with-plugin 显式停止 mode=auto 的插件 service）
-  restart     重启 daemon（--reason <原因> 会展示在维护通知卡片；--with-plugin 显式重启 auto service；--include-pm2 同时重启 PM2 God）
+  restart     重启 daemon（自动识别托管 AI 轮次；--reason <原因>、--source <cli|ai|dashboard> 可显式声明通知归因）
+              --with-plugin 显式重启 auto service；--include-pm2 同时重启 PM2 God
   logs        查看 daemon 日志（--lines N, --bot <0-based-index|pm2-name|appId>）
   status      查看 daemon 状态
   upgrade     升级到最新版本（别名：update）
