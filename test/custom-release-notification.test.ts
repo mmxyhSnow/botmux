@@ -194,7 +194,7 @@ describe('custom release notifier', () => {
     expect(patched.some(item => item.messageId === 'om_1' && item.card.includes('已有更新'))).toBe(true);
   });
 
-  it('只允许收件 owner 冻结，并在后台成功后固化卡片', async () => {
+  it('只允许收件 owner 冻结，成功后只更新原卡片', async () => {
     const { store } = storeWithEvent();
     const patched: string[] = [];
     const notices: string[] = [];
@@ -233,8 +233,7 @@ describe('custom release notifier', () => {
     });
     expect(patched.at(-1)).toContain('已冻结');
     expect(patched.at(-1)).toContain('custom_release_promote');
-    expect(notices.at(-1)).toContain('请打开');
-    expect(notices.at(-1)).toContain('推进并部署 3.7.1-custom.3');
+    expect(notices).toHaveLength(0);
   });
 
   it('冻结期间远端 HEAD 改变时只让旧卡过期，不创建候选结果', async () => {
@@ -262,7 +261,7 @@ describe('custom release notifier', () => {
     expect(store.get(event().eventId)?.state.status).toBe('stale');
   });
 
-  it('升级启动时重绘最新已冻结卡并只补发一次结果提醒', async () => {
+  it('升级启动时重绘最新已冻结卡且不补发结果文字', async () => {
     const { store } = storeWithEvent('1');
     store.updateState(event('1').eventId, {
       status: 'frozen',
@@ -290,8 +289,8 @@ describe('custom release notifier', () => {
     await notifier.refreshLatestSettledCard();
     await notifier.refreshLatestSettledCard();
     expect(patched.at(-1)).toContain('custom_release_promote');
-    expect(notices).toHaveLength(1);
-    expect(store.get(event('1').eventId)?.state.notifiedStatus).toBe('frozen');
+    expect(notices).toHaveLength(0);
+    expect(store.get(event('1').eventId)?.state.notifiedStatus).toBeUndefined();
   });
 
   it('daemon 重启后把中断中的冻结恢复为可重试状态', async () => {
