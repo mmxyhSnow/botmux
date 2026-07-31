@@ -37,6 +37,11 @@ description: Maintain the mmxyhSnow/botmux custom/dev integration and custom/pro
 两个 action 的 prompt 必须包含开发分支、commit、目标 `custom/dev` 和待发版本，不能只写“继续”。
 用户没有选择前，不得默认加入待发版。
 
+用户授权加入后必须走 `pnpm release:join` 统一入口。远端 `custom/dev` push 并回读成功后，primary daemon
+会给 Bot owner 新发一张私聊汇总卡，展示本次合入和当前待发版累计改动，卡片末尾提供 HEAD 绑定的
+“冻结 `<version>`”按钮。原任务线程只报告合入和通知排队结果，不得再附冻结按钮；冻结、推进生产、
+部署和重启仍是各自独立授权。
+
 ```html
 <!--botmux-actions:{"actions":[{"label":"加入待发版 3.7.1-custom.3","prompt":"请核对开发分支 refactor/example 的远端 HEAD 仍为 <commit>，将该提交正常合入 custom/dev，push 后回读远端 HEAD 和待发版本；不要推进 custom/prod 或部署。","authorization":"explicit"},{"label":"暂不加入","prompt":"请保持 refactor/example@<commit> 为独立开发分支，确认 custom/dev、custom/prod 和版本标签均不变。"}]}-->
 ```

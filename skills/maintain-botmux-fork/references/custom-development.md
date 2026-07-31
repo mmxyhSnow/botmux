@@ -69,27 +69,37 @@ pnpm release:status
 最终卡片末尾必须给出“加入待发版 `<pendingVersion>`”和“暂不加入”两个动作。加入动作的 prompt
 必须写明准确开发分支、commit、目标 `custom/dev` 和待发版本，并带显式授权；用户未选择前不得合入。
 
-收到加入授权后，在专用 `custom/dev` checkout 重新 fetch，确认用户点选的 commit 仍是开发分支远端
-HEAD，再把它合入最新 `origin/custom/dev`。并发需求必须保留各自提交和可审计 merge，不得强推或
-覆盖其它已加入需求：
+收到加入授权后，在专用 `custom/dev` checkout 使用统一入口。命令会在一次性隔离 clone 中重新 fetch，
+确认用户点选的 commit 仍是开发分支远端 HEAD，再把它合入最新 `origin/custom/dev`；push 竞态会从新
+远端基线无污染重试。成功后回读远端、快进规范 checkout，并把私聊通知事件原子排入持久化队列：
 
 ```bash
-git fetch origin --prune
-git merge --ff-only origin/custom/dev
-git merge --no-ff origin/<development-branch> -m 'merge: 加入待发版 <version>'
-git push origin HEAD:refs/heads/custom/dev
-git ls-remote origin refs/heads/custom/dev
-pnpm release:status
+pnpm release:join -- \
+  --source origin/<development-branch> \
+  --expected-head <commit> \
+  --title '<本次合入的简明标题>'
 ```
 
-若 push 竞态失败，重新 fetch、核对新加入内容后再正常 merge；禁止 `--force`。
+命令的 `BOTMUX_CUSTOM_RELEASE_RESULT` 必须包含新的 `integrationHead`、`pendingVersion` 和
+`notification.eventId/status`。原任务线程只报告合入结果和通知状态，不附冻结按钮，也不把
+`notification.status=queued` 误报成已送达。
+
+primary daemon 只向当前 Bot 的 primary owner 新发一张私聊卡：
+
+- “本次合入”来自本次 merge 前后 Git 差异；“当前版本累计”来自最近候选/部署边界到新 HEAD 的
+  第一父链 merge 和 diff，不依赖 AI 临时记忆。
+- 新卡送达后，上一张仍待冻结的卡会标为过期；即使视觉更新失败，服务端事件状态也会拒绝旧卡。
+- 投递以仓库与 `custom/dev` HEAD 为幂等键；失败保留在持久化队列，由 daemon 重试。
 
 ## 冻结候选版本
 
-只有用户明确要求切候选版本时，才在 clean 且与远端一致的 `custom/dev` checkout 执行：
+冻结入口默认只出现在每次合入后的 owner 私聊汇总卡末尾，不在各任务线程重复发送。用户点击后，
+daemon 立即把卡片改成“正在冻结”，后台在 clean 且与远端一致的 `custom/dev` checkout 执行：
 
 ```bash
-pnpm release:prepare
+pnpm release:prepare -- \
+  --expected-head <卡片绑定的-custom/dev-HEAD> \
+  --expected-version <卡片绑定的-pendingVersion>
 ```
 
 脚本运行 unit 全量和 `pnpm build`，然后把当前 `custom/dev` HEAD 固定为
@@ -98,6 +108,8 @@ pnpm release:prepare
 不要创建 fork 所有的裸 `v*` 标签。
 
 候选 tag 创建后内容不可再修改。后续新需求继续加入 `custom/dev` 时自然进入下一个 `custom.N`。
+测试和构建结束、创建 tag 之前必须再次 fetch 并核对 HEAD 与版本；期间若有新合入，只把旧卡标为过期，
+不得为旧 HEAD 创建候选标签。
 
 ## 推进生产与部署
 

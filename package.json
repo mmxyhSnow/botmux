@@ -33,6 +33,7 @@
     "creds:sync": "node dist/cli.js suspend --isolated",
     "switch:here": "pnpm build && pnpm use:here",
     "release:status": "node scripts/custom-release.mjs status",
+    "release:join": "node scripts/custom-release.mjs join",
     "release:prepare": "node scripts/custom-release.mjs prepare",
     "release:promote": "node scripts/custom-release.mjs promote",
     "release:record-deploy": "node scripts/custom-release.mjs record-deploy",
