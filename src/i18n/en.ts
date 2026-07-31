@@ -1074,6 +1074,7 @@ export const messages: Record<string, string> = {
 
   // Card action toasts (dedupe / in-flight / approver gate)
   'toast.action_received_no_repeat': 'Action received — please don’t click again',
+  'toast.action_completed_no_repeat': 'Action completed — please don’t click again',
   'toast.action_in_progress': 'Action in progress — please wait',
   'toast.action_received_bg': 'Action received — processing in the background',
   'toast.not_in_approver_list': 'You’re not on the approver list — no action taken',

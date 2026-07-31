@@ -1077,6 +1077,7 @@ export const messages: Record<string, string> = {
 
   // Card action toasts (dedupe / in-flight / approver gate)
   'toast.action_received_no_repeat': '操作已收到，请勿重复点击',
+  'toast.action_completed_no_repeat': '该操作已完成，请勿重复点击',
   'toast.action_in_progress': '操作正在处理中，请稍候',
   'toast.action_received_bg': '操作已收到，后台处理中',
   'toast.not_in_approver_list': '你不在该审批人名单里，无法操作',
