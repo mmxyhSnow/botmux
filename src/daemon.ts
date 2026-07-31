@@ -48,7 +48,10 @@ import {
 import { CustomReleaseEventStore } from './services/custom-release-event.js';
 import { CustomReleaseNotifier } from './core/custom-release-notifier.js';
 import { runCustomReleaseFreeze } from './core/custom-release-freeze.js';
-import { runCustomReleasePromote } from './core/custom-release-promote.js';
+import {
+  finalizeCustomReleaseDeployment,
+  runCustomReleaseDeployment,
+} from './core/custom-release-deploy.js';
 import { reconcileOutstandingTurns } from './core/restart-turn-reconciler.js';
 import { statSync } from 'node:fs';
 import { addReaction, getChatMode, getChatNameAndMode, getMessageChatId, listChatMemberOpenIds, MessageWithdrawnError, replyMessage, resolveAllowedUsersWithMap, sendMessage, sendUserMessage, updateMessage, type EntryResolveStatus } from './im/lark/client.js';
@@ -18316,7 +18319,8 @@ export async function startDaemon(botIndex?: number): Promise<void> {
         uuid,
       ).then(() => undefined),
       freeze: runCustomReleaseFreeze,
-      promote: runCustomReleasePromote,
+      deploy: runCustomReleaseDeployment,
+      finalizeDeploy: finalizeCustomReleaseDeployment,
       log: message => logger.info(`[custom-release] ${message}`),
     });
     customReleaseNotifier.start();

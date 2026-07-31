@@ -8,7 +8,7 @@ import { CustomReleaseEventStore } from '../services/custom-release-event.js';
 import { buildCustomReleaseSummaryCard } from '../im/lark/custom-release-card.js';
 
 const NOTICE_STATUSES = new Set<CustomReleaseEventStatus>([
-  'frozen', 'freeze_failed', 'stale', 'promoted', 'promote_failed',
+  'frozen', 'freeze_failed', 'stale', 'promoted', 'promote_failed', 'deployed', 'deploy_failed',
 ]);
 
 interface CustomReleaseResultNotifierDeps {
@@ -31,7 +31,7 @@ function resultMessageUuid(eventId: string, status: CustomReleaseEventStatus): s
 function resultNotice(record: CustomReleaseEventRecord): string {
   const { event, state } = record;
   if (state.status === 'frozen') {
-    return `候选版本 ${event.release.pendingVersion} 已冻结。请打开“待发版 ${event.release.pendingVersion} 已更新”私聊卡，点击“推进 custom/prod”；该操作不会部署或重启。`;
+    return `候选版本 ${event.release.pendingVersion} 已冻结。请打开“待发版 ${event.release.pendingVersion} 已更新”私聊卡，点击“推进并部署 ${event.release.pendingVersion}”；按钮点击本身即为完整发布授权。`;
   }
   if (state.status === 'freeze_failed') {
     return `候选版本 ${event.release.pendingVersion} 冻结失败，未创建候选标签。${state.lastError ? `原因：${state.lastError}` : ''}`;
@@ -40,7 +40,13 @@ function resultNotice(record: CustomReleaseEventRecord): string {
     return `待发版 ${event.release.pendingVersion} 对应的 custom/dev 已变化，请使用最新私聊汇总卡。`;
   }
   if (state.status === 'promoted') {
-    return `候选版本 ${event.release.pendingVersion} 已推进 custom/prod。下一步是部署并重启；该步骤会改变运行态，请在 Botmux 对话中单独明确授权。`;
+    return `候选版本 ${event.release.pendingVersion} 已推进 custom/prod。请打开原私聊卡点击“部署并重启 ${event.release.pendingVersion}”；无需再发送授权消息。`;
+  }
+  if (state.status === 'deployed') {
+    return `候选版本 ${event.release.pendingVersion} 已完成推进、部署和重启，并记录 ${state.deployTag ?? `deploy/v${event.release.pendingVersion}`}。`;
+  }
+  if (state.status === 'deploy_failed') {
+    return `候选版本 ${event.release.pendingVersion} 部署未完成。请查看原私聊卡后重试。${state.lastError ? `原因：${state.lastError}` : ''}`;
   }
   return `候选版本 ${event.release.pendingVersion} 推进 custom/prod 失败。${state.lastError ? `原因：${state.lastError}` : ''}`;
 }

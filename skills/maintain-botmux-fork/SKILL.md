@@ -62,6 +62,8 @@ description: Maintain the mmxyhSnow/botmux custom/dev integration and custom/pro
 - 不强推、重写或回退 `custom/prod` 历史。回滚优先新增 `revert` 提交。
 - 同步官方、切换全局 wrapper、重启 daemon 和创建部署标签都会改变生产状态；仅在用户明确要求
   升级、部署、重启或回滚时执行。
+- owner 点击 HEAD 绑定私聊发版卡上的“推进并部署候选版本”按钮，就是对该卡候选 Tag 的完整显式授权；
+  回调必须直接完成推进、构建、wrapper 切换、重启与运行态验收，不得再要求用户补发一条授权消息。
 
 ## 先做身份与状态校验
 

@@ -113,14 +113,23 @@ pnpm release:prepare -- \
 
 ## 推进生产与部署
 
-推进生产、部署和重启都是独立的显式授权边界。先用准确候选标签推进远端生产分支：
+owner 收到 HEAD 绑定的私聊汇总卡后，点击“推进并部署 X.Y.Z-custom.N”本身就是针对该候选 Tag 的
+完整显式授权，不再要求回到任务对话补发“授权”。卡片回调按顺序完成：
+
+1. 再次核对卡片 messageId、owner、候选 Tag 与远端 HEAD。
+2. 快进 `custom/prod`，更新 canonical 生产 checkout，安装依赖并构建。
+3. 切换全局 wrapper，写入包含候选版本的维护原因并用脱离式驱动重启。
+4. 新 daemon 验证实际执行路径、本地/远端生产 HEAD 后，创建同号 `deploy/*` 标签并回写原卡。
+
+任一步失败都保留可重试状态，运行态未验收通过时不得创建 deploy 标签。命令行人工路径仍可拆分执行，
+先用准确候选标签推进远端生产分支：
 
 ```bash
 pnpm release:promote -- --tag release/vX.Y.Z-custom.N
 ```
 
-脚本只允许 `custom/prod` fast-forward 到该候选 commit，不切换本机 wrapper、不重启。收到部署授权后，
-回 canonical `custom/prod` checkout：
+脚本只允许 `custom/prod` fast-forward 到该候选 commit，不切换本机 wrapper、不重启。命令行另行收到
+部署授权后，回 canonical `custom/prod` checkout：
 
 ```bash
 git fetch origin --prune --tags
@@ -133,7 +142,7 @@ botmux status
 ```
 
 核对 wrapper、PM2 执行路径、近期日志和与变更相符的真实飞书/Dashboard/CLI 交互。全部验收通过后才
-记录同号部署快照：
+记录同号部署快照；私聊卡自动路径由新 daemon 执行同一门禁：
 
 ```bash
 pnpm release:record-deploy -- --tag release/vX.Y.Z-custom.N

@@ -147,8 +147,8 @@ pm2 jlist | jq -r '.[] | [.name,.pm2_env.status,.pm2_env.pm_exec_path] | @tsv'
 
 ## 常见安装问题
 
-- `package.json` 显示 `0.0.0`：源码部署的正常状态。当前官方对齐版本取 HEAD 可达的最新正式
-  `vX.Y.Z` 标签。
+- `package.json` 显示 `0.0.0`：源码部署的正常状态。官方更新比较取 HEAD 可达的最新正式
+  `vX.Y.Z` 标签；维护重启卡优先显示精确指向运行 HEAD 的最新 `release/*` / `deploy/*` 候选版本。
 - 修改后功能未生效：通常是只跑了 `pnpm build`，未 `pnpm use:here`/`switch:here`，
   或 daemon 仍从另一个 checkout 启动。
 - 出现多个 `botmux`：用 `type -a botmux`、wrapper 内容和 PM2 `pm_exec_path` 确认实际生效版本。

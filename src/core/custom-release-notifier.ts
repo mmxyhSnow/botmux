@@ -1,6 +1,6 @@
 /**
  * 自定义发版通知编排器。
- * primary daemon 独占投递队列，卡片回调只负责认领任务，耗时冻结在后台执行。
+ * primary daemon 独占投递队列，卡片回调只负责认领任务，耗时冻结/部署在后台执行。
  */
 import type { CustomReleaseEventRecord } from '../services/custom-release-event.js';
 import { customReleaseMessageUuid } from '../services/custom-release-event.js';
@@ -171,26 +171,34 @@ export class CustomReleaseNotifier {
   }
 
   private handlePromoteAction(record: CustomReleaseEventRecord): any {
-    if (record.state.status === 'stale' || record.state.status === 'promoted' || record.state.status === 'promoting') {
+    if (record.state.status === 'stale' || record.state.status === 'deploying' || record.state.status === 'deployed') {
       return rawCard(record, {
         type: 'info',
         content: record.state.status === 'stale'
           ? '已有更新的待发版，请使用最新私聊卡'
-          : record.state.status === 'promoted' ? '该候选版本已经推进生产' : '推进生产任务正在执行',
+          : record.state.status === 'deployed' ? '该候选版本已经完成部署' : '推进并部署任务正在执行',
       });
     }
-    if (record.state.status !== 'frozen' && record.state.status !== 'promote_failed') {
-      return { toast: { type: 'warning', content: '当前发版卡片还不能推进生产' } };
+    if (
+      record.state.status !== 'frozen'
+      && record.state.status !== 'promote_failed'
+      && record.state.status !== 'promoted'
+      && record.state.status !== 'deploy_failed'
+    ) {
+      return { toast: { type: 'warning', content: '当前发版卡片还不能推进并部署' } };
     }
     const claimed = this.deps.store.updateState(record.event.eventId, {
-      status: 'promoting',
+      status: 'deploying',
       lastError: undefined,
       notifiedStatus: undefined,
     });
-    const job = this.promoteInBackground(claimed);
+    const job = this.deployInBackground(claimed);
     this.jobs.add(job);
     void job.finally(() => this.jobs.delete(job));
-    return rawCard(claimed, { type: 'success', content: '已开始推进 custom/prod' });
+    return rawCard(claimed, {
+      type: 'success',
+      content: `已授权推进并部署 ${record.event.release.pendingVersion}`,
+    });
   }
 
   private async freezeInBackground(record: CustomReleaseEventRecord): Promise<void> {
@@ -218,26 +226,45 @@ export class CustomReleaseNotifier {
     await this.resultNotifier.notifySettled(settled);
   }
 
-  private async promoteInBackground(record: CustomReleaseEventRecord): Promise<void> {
-    let settled: CustomReleaseEventRecord;
+  private async deployInBackground(record: CustomReleaseEventRecord): Promise<void> {
     try {
-      const result = await this.deps.promote(record);
-      settled = this.deps.store.updateState(record.event.eventId, {
-        status: 'promoted',
-        productionHead: result.productionHead,
-        lastError: undefined,
-      });
+      // 成功后当前 daemon 会被重启；保持 deploying，由新进程验收运行态并收敛终态。
+      await this.deps.deploy(record);
+      const watchdog = setTimeout(() => {
+        void this.failUnclaimedRestart(record.event.eventId);
+      }, this.deps.restartHandoffTimeoutMs ?? 30_000);
+      watchdog.unref?.();
+      return;
     } catch (error) {
-      settled = this.deps.store.updateState(record.event.eventId, {
-        status: 'promote_failed',
+      const settled = this.deps.store.updateState(record.event.eventId, {
+        status: 'deploy_failed',
         lastError: errorText(error),
       });
+      if (settled.state.messageId) {
+        try {
+          await this.deps.updateCard(settled.state.messageId, buildCustomReleaseSummaryCard(settled));
+        } catch (patchError) {
+          this.log(`deploy result patch failed ${record.event.eventId.slice(0, 12)}: ${errorText(patchError)}`);
+        }
+      }
+      await this.resultNotifier.notifySettled(settled);
     }
+  }
+
+  /** 脱离式重启若没有杀掉旧 daemon，避免事件永久停在“部署中”。 */
+  private async failUnclaimedRestart(eventId: string): Promise<void> {
+    const current = this.deps.store.get(eventId);
+    if (current?.state.status !== 'deploying') return;
+    const settled = this.deps.store.updateState(eventId, {
+      status: 'deploy_failed',
+      lastError: '重启驱动未在预期时间内接管，请重新点击推进并部署',
+      notifiedStatus: undefined,
+    });
     if (settled.state.messageId) {
       try {
         await this.deps.updateCard(settled.state.messageId, buildCustomReleaseSummaryCard(settled));
       } catch (error) {
-        this.log(`promote result patch failed ${record.event.eventId.slice(0, 12)}: ${errorText(error)}`);
+        this.log(`restart handoff patch failed ${eventId.slice(0, 12)}: ${errorText(error)}`);
       }
     }
     await this.resultNotifier.notifySettled(settled);
@@ -269,6 +296,33 @@ export class CustomReleaseNotifier {
       } catch (error) {
         this.log(`interrupted promote patch failed ${recovered.event.eventId.slice(0, 12)}: ${errorText(error)}`);
       }
+    }
+    for (const interrupted of this.deps.store.list().filter(record => record.state.status === 'deploying')) {
+      let recovered: CustomReleaseEventRecord;
+      try {
+        const result = await this.deps.finalizeDeploy(interrupted);
+        recovered = this.deps.store.updateState(interrupted.event.eventId, {
+          status: 'deployed',
+          productionHead: result.productionHead,
+          deployTag: result.deployTag,
+          lastError: undefined,
+          notifiedStatus: undefined,
+        });
+      } catch (error) {
+        recovered = this.deps.store.updateState(interrupted.event.eventId, {
+          status: 'deploy_failed',
+          lastError: errorText(error),
+          notifiedStatus: undefined,
+        });
+      }
+      if (recovered.state.messageId) {
+        try {
+          await this.deps.updateCard(recovered.state.messageId, buildCustomReleaseSummaryCard(recovered));
+        } catch (error) {
+          this.log(`interrupted deploy patch failed ${recovered.event.eventId.slice(0, 12)}: ${errorText(error)}`);
+        }
+      }
+      await this.resultNotifier.notifySettled(recovered);
     }
   }
 

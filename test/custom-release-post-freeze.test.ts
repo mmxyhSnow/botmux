@@ -13,6 +13,7 @@ const tempDirs: string[] = [];
 const candidateHead = '1'.repeat(40);
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -56,19 +57,21 @@ function frozenStore(): CustomReleaseEventStore {
 }
 
 describe('custom release post-freeze actions', () => {
-  it('冻结后点击只推进生产分支，成功后提示单独部署', async () => {
+  it('冻结后点击直接认领完整发布，不再等待一条额外授权消息', async () => {
     const store = frozenStore();
-    const patched: string[] = [];
-    const notices: string[] = [];
-    const promote = vi.fn(async () => ({ productionHead: candidateHead }));
+    const deploy = vi.fn(async () => undefined);
     const notifier = new CustomReleaseNotifier({
       store,
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_release',
-      updateCard: async (_messageId, card) => { patched.push(card); },
-      notifyText: async (_owner, content) => { notices.push(content); },
+      updateCard: async () => undefined,
+      notifyText: async () => undefined,
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
-      promote,
+      deploy,
+      finalizeDeploy: async () => ({
+        productionHead: candidateHead,
+        deployTag: 'deploy/v3.7.1-custom.3',
+      }),
     });
 
     const accepted = await notifier.handleCardAction({
@@ -77,37 +80,94 @@ describe('custom release post-freeze actions', () => {
       messageId: 'om_release',
       eventId: event().eventId,
     });
-    expect(JSON.stringify(accepted)).toContain('推进');
+    expect(JSON.stringify(accepted)).toContain('已授权推进并部署 3.7.1-custom.3');
     await notifier.waitForIdle();
-    expect(promote).toHaveBeenCalledOnce();
+    expect(deploy).toHaveBeenCalledOnce();
     expect(store.get(event().eventId)?.state).toMatchObject({
-      status: 'promoted',
-      productionHead: candidateHead,
+      status: 'deploying',
     });
-    expect(patched.at(-1)).toContain('下一步：部署并重启');
-    expect(notices.at(-1)).toContain('已推进 custom/prod');
   });
 
-  it('daemon 重启后把中断中的生产推进恢复为可重试状态', async () => {
+  it('新 daemon 启动后验收运行态、记录 deploy 标签并回写原卡', async () => {
     const store = frozenStore();
-    store.updateState(event().eventId, { status: 'promoting' });
+    store.updateState(event().eventId, { status: 'deploying' });
     const patched: string[] = [];
+    const notices: string[] = [];
     const notifier = new CustomReleaseNotifier({
       store,
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_release',
       updateCard: async (_messageId, card) => { patched.push(card); },
-      notifyText: async () => undefined,
+      notifyText: async (_owner, content) => { notices.push(content); },
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
-      promote: async () => ({ productionHead: candidateHead }),
+      deploy: async () => undefined,
+      finalizeDeploy: async () => ({
+        productionHead: candidateHead,
+        deployTag: 'deploy/v3.7.1-custom.3',
+      }),
     });
 
     await notifier.recoverInterruptedFreezes();
     expect(store.get(event().eventId)?.state).toMatchObject({
-      status: 'promote_failed',
-      lastError: expect.stringContaining('重启中断'),
+      status: 'deployed',
+      productionHead: candidateHead,
+      deployTag: 'deploy/v3.7.1-custom.3',
     });
-    expect(patched.at(-1)).toContain('重新点击推进');
-    expect(patched.at(-1)).toContain('custom_release_promote');
+    expect(patched.at(-1)).toContain('已部署');
+    expect(patched.at(-1)).not.toContain('custom_release_promote');
+    expect(notices.at(-1)).toContain('已完成推进、部署和重启');
+  });
+
+  it('新 daemon 运行态验收失败时恢复为可重试部署', async () => {
+    const store = frozenStore();
+    store.updateState(event().eventId, { status: 'deploying' });
+    const notifier = new CustomReleaseNotifier({
+      store,
+      ownerOpenId: () => 'ou_owner',
+      sendCard: async () => 'om_release',
+      updateCard: async () => undefined,
+      notifyText: async () => undefined,
+      freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
+      deploy: async () => undefined,
+      finalizeDeploy: async () => { throw new Error('运行路径不一致'); },
+    });
+
+    await notifier.recoverInterruptedFreezes();
+    expect(store.get(event().eventId)?.state).toMatchObject({
+      status: 'deploy_failed',
+      lastError: '运行路径不一致',
+    });
+  });
+
+  it('重启驱动未接管旧 daemon 时不会永久卡在部署中', async () => {
+    vi.useFakeTimers();
+    const store = frozenStore();
+    const notifier = new CustomReleaseNotifier({
+      store,
+      ownerOpenId: () => 'ou_owner',
+      sendCard: async () => 'om_release',
+      updateCard: async () => undefined,
+      notifyText: async () => undefined,
+      freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
+      deploy: async () => undefined,
+      finalizeDeploy: async () => ({
+        productionHead: candidateHead,
+        deployTag: 'deploy/v3.7.1-custom.3',
+      }),
+      restartHandoffTimeoutMs: 10,
+    });
+
+    await notifier.handleCardAction({
+      action: 'custom_release_promote',
+      operatorOpenId: 'ou_owner',
+      messageId: 'om_release',
+      eventId: event().eventId,
+    });
+    await notifier.waitForIdle();
+    await vi.advanceTimersByTimeAsync(11);
+    expect(store.get(event().eventId)?.state).toMatchObject({
+      status: 'deploy_failed',
+      lastError: expect.stringContaining('重启驱动'),
+    });
   });
 });

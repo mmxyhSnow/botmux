@@ -120,7 +120,7 @@ describe('custom release summary card', () => {
     expect(card).not.toContain('custom_release_freeze');
   });
 
-  it('冻结后在原卡给出推进生产选项并保留部署边界', () => {
+  it('冻结后在原卡给出推进并部署选项，点击即为完整授权', () => {
     const { record } = storeWithEvent();
     const card = JSON.parse(buildCustomReleaseSummaryCard({
       ...record,
@@ -132,10 +132,27 @@ describe('custom release summary card', () => {
       },
     }));
     const encoded = JSON.stringify(card);
-    expect(encoded).toContain('推进 custom/prod');
-    expect(encoded).toContain('不会部署或重启');
+    expect(encoded).toContain('推进并部署 3.7.1-custom.3');
+    expect(encoded).toContain('按钮点击本身即授权');
     expect(encoded).toContain('custom_release_promote');
     expect(card.body.elements.at(-1).tag).toBe('column_set');
+  });
+
+  it('兼容已推进但尚未留 deploy 标签的旧卡，直接提供部署重启按钮', () => {
+    const { record } = storeWithEvent();
+    const encoded = buildCustomReleaseSummaryCard({
+      ...record,
+      state: {
+        ...record.state,
+        status: 'promoted',
+        messageId: 'om_release',
+        candidateTag: 'release/v3.7.1-custom.3',
+        productionHead: record.event.integration.head,
+      },
+    });
+    expect(encoded).toContain('部署并重启 3.7.1-custom.3');
+    expect(encoded).toContain('按钮点击本身即为部署授权');
+    expect(encoded).toContain('custom_release_promote');
   });
 });
 
@@ -154,7 +171,11 @@ describe('custom release notifier', () => {
       updateCard: async (messageId, card) => { patched.push({ messageId, card }); },
       notifyText: async () => undefined,
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
-      promote: async () => ({ productionHead: event().integration.head }),
+      deploy: async () => undefined,
+      finalizeDeploy: async () => ({
+        productionHead: event().integration.head,
+        deployTag: 'deploy/v3.7.1-custom.3',
+      }),
     });
 
     await notifier.flush();
@@ -184,7 +205,11 @@ describe('custom release notifier', () => {
       updateCard: async (_messageId, card) => { patched.push(card); },
       notifyText: async (_owner, content) => { notices.push(content); },
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
-      promote: async () => ({ productionHead: event().integration.head }),
+      deploy: async () => undefined,
+      finalizeDeploy: async () => ({
+        productionHead: event().integration.head,
+        deployTag: 'deploy/v3.7.1-custom.3',
+      }),
     });
     await notifier.flush();
 
@@ -209,7 +234,7 @@ describe('custom release notifier', () => {
     expect(patched.at(-1)).toContain('已冻结');
     expect(patched.at(-1)).toContain('custom_release_promote');
     expect(notices.at(-1)).toContain('请打开');
-    expect(notices.at(-1)).toContain('推进 custom/prod');
+    expect(notices.at(-1)).toContain('推进并部署 3.7.1-custom.3');
   });
 
   it('冻结期间远端 HEAD 改变时只让旧卡过期，不创建候选结果', async () => {
@@ -221,7 +246,11 @@ describe('custom release notifier', () => {
       updateCard: async () => undefined,
       notifyText: async () => undefined,
       freeze: async () => { throw new StaleCustomReleaseHeadError('远端 custom/dev 已变化'); },
-      promote: async () => ({ productionHead: event().integration.head }),
+      deploy: async () => undefined,
+      finalizeDeploy: async () => ({
+        productionHead: event().integration.head,
+        deployTag: 'deploy/v3.7.1-custom.3',
+      }),
     });
     await notifier.flush();
     await notifier.handleCardAction({
@@ -251,7 +280,11 @@ describe('custom release notifier', () => {
       updateCard: async (_messageId, card) => { patched.push(card); },
       notifyText: async (_owner, content) => { notices.push(content); },
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.4' }),
-      promote: async () => ({ productionHead: event('1').integration.head }),
+      deploy: async () => undefined,
+      finalizeDeploy: async () => ({
+        productionHead: event('1').integration.head,
+        deployTag: 'deploy/v3.7.1-custom.3',
+      }),
     });
 
     await notifier.refreshLatestSettledCard();
@@ -272,7 +305,11 @@ describe('custom release notifier', () => {
       updateCard: async (_messageId, card) => { patched.push(card); },
       notifyText: async () => undefined,
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
-      promote: async () => ({ productionHead: event().integration.head }),
+      deploy: async () => undefined,
+      finalizeDeploy: async () => ({
+        productionHead: event().integration.head,
+        deployTag: 'deploy/v3.7.1-custom.3',
+      }),
     });
 
     await notifier.recoverInterruptedFreezes();
