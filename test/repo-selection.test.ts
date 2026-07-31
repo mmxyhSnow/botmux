@@ -10,9 +10,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resolveRepoSelection } from '../src/core/command-handler.js';
 import { logger } from '../src/utils/logger.js';
+import { initGitRepository } from './helpers/git-repository.js';
 
 function gitInit(dir: string, branch = 'main'): void {
-  execSync(`git init -q -b ${branch} "${dir}"`, { stdio: 'pipe' });
+  initGitRepository(dir, branch);
   execSync('git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init', {
     cwd: dir,
     stdio: 'pipe',

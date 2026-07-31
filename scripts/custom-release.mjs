@@ -173,8 +173,9 @@ function prepare(config, expectedHead = '', expectedVersion = '') {
     return;
   }
 
-  run('pnpm', ['test'], { capture: false });
+  // CLI 级测试依赖 dist/cli.js，冻结必须先构建当前 HEAD 再运行全量门禁。
   run('pnpm', ['build'], { capture: false });
+  run('pnpm', ['test'], { capture: false });
   assertClean();
   fetchState(config);
   const finalState = releaseState(config);

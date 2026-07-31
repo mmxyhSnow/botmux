@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
   utimesSync,
@@ -108,6 +109,29 @@ function fixture(): { root: string; scratchParent: string } {
   const scratchParent = join(root, 'scratch');
   mkdirSync(scratchParent, { recursive: true });
   return { root, scratchParent };
+}
+
+/** 返回仍把 cwd 指向本次 scratch 的宿主进程；目录删除后也能识别 deleted 链接。 */
+function hostProcessesUsingDirectory(directory: string): number[] {
+  return readdirSync('/proc')
+    .filter((name) => /^\d+$/.test(name))
+    .flatMap((name) => {
+      try {
+        return readlinkSync(`/proc/${name}/cwd`).startsWith(directory) ? [Number(name)] : [];
+      } catch {
+        return [];
+      }
+    });
+}
+
+/** 等待宿主完成 namespace 子进程回收；硬超时确保真实孤儿仍会让门禁失败。 */
+async function waitForDirectoryUsersToExit(directory: string, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (hostProcessesUsingDirectory(directory).length === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  } while (Date.now() < deadline);
+  throw new Error(`scratch directory is still used by host pids: ${hostProcessesUsingDirectory(directory).join(',')}`);
 }
 
 function bot(cliId: BotSnapshot['cliId'] = 'claude-code'): BotSnapshot {
@@ -407,10 +431,12 @@ setInterval(() => {}, 1000);
       (error: unknown) => ({ ok: false as const, error }),
     );
     let helperPid = 0;
+    let scratchDir = '';
     for (let attempt = 0; attempt < 80 && helperPid === 0; attempt++) {
       const scratch = readdirSync(dirs.scratchParent).find((name) => name.startsWith('botmux-v3-distill-'));
       if (scratch) {
-        try { helperPid = Number(readFileSync(join(dirs.scratchParent, scratch, 'helper.pid'), 'utf8')); } catch { /* not written yet */ }
+        scratchDir = join(dirs.scratchParent, scratch);
+        try { helperPid = Number(readFileSync(join(scratchDir, 'helper.pid'), 'utf8')); } catch { /* not written yet */ }
       }
       if (helperPid === 0) await new Promise((resolve) => setTimeout(resolve, 25));
     }
@@ -419,7 +445,7 @@ setInterval(() => {}, 1000);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatchObject({ code: 'MODEL_FAILED' });
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(900);
-    expect(() => process.kill(helperPid, 0)).toThrow();
+    await waitForDirectoryUsersToExit(scratchDir);
     expect(readdirSync(dirs.scratchParent)).toEqual([]);
     },
   );
