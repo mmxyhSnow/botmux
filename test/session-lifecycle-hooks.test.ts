@@ -362,12 +362,11 @@ describe('worker-pool lifecycle hook integration', () => {
     );
   });
 
-  it('Codex App opt-in reuses one status card across progress and accepted steer', async () => {
+  it('Codex App defaults progress cards on and reuses one across accepted steer', async () => {
     botConfigState.value = {
       larkAppId: 'app_test',
       larkAppSecret: 'secret',
       cliId: 'codex-app',
-      codexAppImmediateProgressCard: true,
     };
     const sessionReply = vi.fn(async () => 'om_progress_card');
     initWorkerPool({
@@ -434,6 +433,29 @@ describe('worker-pool lifecycle hook integration', () => {
       acceptedTurnIds: ['om_first', 'om_steer'],
       messageId: 'om_progress_card',
     });
+  });
+
+  it('Codex App allows an explicit false to disable progress cards', async () => {
+    botConfigState.value = {
+      larkAppId: 'app_test',
+      larkAppSecret: 'secret',
+      cliId: 'codex-app',
+      codexAppImmediateProgressCard: false,
+    };
+    const sessionReply = vi.fn(async () => 'om_progress_card');
+    initWorkerPool({
+      sessionReply,
+      getSessionWorkingDir: () => '/repo',
+      getActiveCount: () => 1,
+      closeSession: vi.fn(),
+    });
+    const ds = makeDs({ worker: makeFakeWorker() });
+    ds.session.cliId = 'codex-app';
+
+    await beginCodexAppProgressTurn(ds, 'om_disabled', '无需进度卡');
+
+    expect(sessionReply).not.toHaveBeenCalled();
+    expect(ds.session.codexAppProgressCard).toBeUndefined();
   });
 
   it('ignores accepted steer feedback from a replaced worker generation', async () => {

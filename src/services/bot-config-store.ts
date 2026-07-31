@@ -47,6 +47,8 @@ export interface ConfigFieldSpec {
   enumValues?: readonly string[];
   /** kind==='string' 的最大长度（trim 后计），超出 coerce 报 too_long。缺省不限。 */
   maxLen?: number;
+  /** kind==='boolean' 的缺省值；缺省 false。true 时显式 false 必须落盘。 */
+  booleanDefault?: boolean;
   /** kind==='stringList' 的自定义解析器（自由文本 → 归一化数组）。缺省用
    *  customPassthroughCommands 的逗号/空格分隔解析；带参数的命令行字段
    *  （如 startupCommands）须指定按逗号/换行分隔、保留内部空格的解析器。 */
@@ -81,7 +83,7 @@ export const CONFIG_FIELDS: readonly ConfigFieldSpec[] = [
   { key: 'worktreeMultiPicker', configKey: 'worktreeMultiPicker', kind: 'boolean', effect: 'immediate', clearable: false, hint: 'repo 卡片 worktree 选择器默认多仓库模式 on|off（卡片「切换多仓库选择器」按钮同款）' },
   { key: 'disableCliBypass', configKey: 'disableCliBypass', kind: 'boolean', effect: 'next-session', clearable: false, hint: '不加 CLI 审批/sandbox 绕过参数 on|off' },
   { key: 'codexAppCleanInput', configKey: 'codexAppCleanInput', kind: 'boolean', effect: 'immediate', clearable: false, hint: '实验性：Codex App 用户气泡只保留真实输入，Botmux 元数据走隐藏上下文；默认 off，从下一次 turn 派发生效，不改已有历史' },
-  { key: 'codexAppImmediateProgressCard', configKey: 'codexAppImmediateProgressCard', kind: 'boolean', effect: 'immediate', clearable: false, hint: 'Codex App 收到消息后立即创建单张状态卡，并用真实 assistant 进展更新；默认 off' },
+  { key: 'codexAppImmediateProgressCard', configKey: 'codexAppImmediateProgressCard', kind: 'boolean', effect: 'immediate', clearable: false, booleanDefault: true, hint: 'Codex App 收到消息后立即创建单张状态卡，并用真实 assistant 进展更新；默认 on，显式 off 才关闭' },
   { key: 'restrictGrantCommands', configKey: 'restrictGrantCommands', kind: 'boolean', effect: 'immediate', clearable: false, hint: '被授权人仅能纯对话、拦截斜杠命令 on|off' },
   { key: 'p2pMode', configKey: 'p2pMode', kind: 'enum', effect: 'immediate', clearable: true, enumValues: ['thread', 'chat'], hint: '私聊单聊模式 thread|chat；默认 chat=扁平连续会话，thread=每条 DM 独立会话（chat/unset 回默认）' },
   { key: 'maxLiveWorkers', configKey: 'maxLiveWorkers', kind: 'number', effect: 'immediate', clearable: true, hint: '最大常驻会话数；超过后最久未用的会话自动休眠（退出后台进程和 CLI、回收内存，下条消息冷恢复）；unset=默认 30' },
@@ -114,7 +116,10 @@ export function parseBooleanValue(raw: string): boolean | undefined {
 
 /** 展示某字段当前值的人类可读文本。 */
 function formatFieldValue(spec: ConfigFieldSpec, value: unknown): string {
-  if (spec.kind === 'boolean') return value === true ? 'on' : 'off';
+  if (spec.kind === 'boolean') {
+    const resolved = typeof value === 'boolean' ? value : spec.booleanDefault === true;
+    return resolved ? 'on' : 'off';
+  }
   if (spec.kind === 'allowedUsers' || spec.kind === 'stringList') {
     const arr = Array.isArray(value) ? value : [];
     return arr.length ? arr.join(', ') : '∅';
@@ -215,9 +220,15 @@ export async function applyConfigField(
     if (effective === null) {
       delete entry[spec.configKey];
     } else if (spec.kind === 'boolean') {
-      // 与 parseBotConfigsFromText 一致：true 才写，false → 删 key（bots.json 保持干净）。
-      if (effective === true) entry[spec.configKey] = true;
-      else delete entry[spec.configKey];
+      // 缺省开启的开关必须保留显式 false；设回缺省 true 时删除 key，保持配置干净。
+      if (spec.booleanDefault === true) {
+        if (effective === false) entry[spec.configKey] = false;
+        else delete entry[spec.configKey];
+      } else if (effective === true) {
+        entry[spec.configKey] = true;
+      } else {
+        delete entry[spec.configKey];
+      }
     } else if (spec.kind === 'json') {
       entry[spec.configKey] = effective as any;
     } else {
@@ -231,7 +242,9 @@ export async function applyConfigField(
   if (effective === null) {
     (bot.config as any)[spec.configKey] = undefined;
   } else if (spec.kind === 'boolean') {
-    (bot.config as any)[spec.configKey] = effective || undefined;
+    (bot.config as any)[spec.configKey] = spec.booleanDefault === true
+      ? (effective === false ? false : undefined)
+      : (effective === true ? true : undefined);
   } else if (spec.kind === 'json') {
     (bot.config as any)[spec.configKey] = effective;
   } else {

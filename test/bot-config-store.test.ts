@@ -218,7 +218,7 @@ describe('bot-config store', () => {
     expect(missing.codexAppCleanInput).toBeUndefined();
   });
 
-  it('parses codexAppImmediateProgressCard strictly and defaults it off', async () => {
+  it('parses codexAppImmediateProgressCard strictly and preserves explicit false', async () => {
     const { registry } = await freshModules();
     const [on, off, invalid, missing] = registry.parseBotConfigsFromText(JSON.stringify([
       { larkAppId: 'progress-on', larkAppSecret: 's', cliId: 'codex-app', codexAppImmediateProgressCard: true },
@@ -227,7 +227,7 @@ describe('bot-config store', () => {
       { larkAppId: 'progress-missing', larkAppSecret: 's', cliId: 'codex-app' },
     ]));
     expect(on.codexAppImmediateProgressCard).toBe(true);
-    expect(off.codexAppImmediateProgressCard).toBeUndefined();
+    expect(off.codexAppImmediateProgressCard).toBe(false);
     expect(invalid.codexAppImmediateProgressCard).toBeUndefined();
     expect(missing.codexAppImmediateProgressCard).toBeUndefined();
   });
@@ -421,18 +421,25 @@ describe('bot-config store', () => {
     expect(registry.getBot('app_default').config.codexAppCleanInput).toBeUndefined();
   });
 
-  it('codexAppImmediateProgressCard is immediate, default-off, and deletes its key when disabled', async () => {
+  it('codexAppImmediateProgressCard defaults on and preserves explicit off', async () => {
     const { registry, store } = await loaded({ cliId: 'codex-app' });
     const spec = store.findConfigField('codexAppImmediateProgressCard')!;
     expect(spec.effect).toBe('immediate');
     expect(registry.getBot('app_default').config.codexAppImmediateProgressCard).toBeUndefined();
+    expect(store.getConfigSnapshot('app_default')).toMatchObject({
+      ok: true,
+      rows: expect.arrayContaining([
+        expect.objectContaining({ key: 'codexAppImmediateProgressCard', value: 'on' }),
+      ]),
+    });
+
+    const disabled = await store.applyConfigField('app_default', spec, false);
+    expect(disabled).toMatchObject({ ok: true, oldText: 'on', newText: 'off', effect: 'immediate' });
+    expect(readConfig().codexAppImmediateProgressCard).toBe(false);
+    expect(registry.getBot('app_default').config.codexAppImmediateProgressCard).toBe(false);
 
     const enabled = await store.applyConfigField('app_default', spec, true);
     expect(enabled).toMatchObject({ ok: true, oldText: 'off', newText: 'on', effect: 'immediate' });
-    expect(readConfig().codexAppImmediateProgressCard).toBe(true);
-    expect(registry.getBot('app_default').config.codexAppImmediateProgressCard).toBe(true);
-
-    await store.applyConfigField('app_default', spec, false);
     expect(readConfig().codexAppImmediateProgressCard).toBeUndefined();
     expect(registry.getBot('app_default').config.codexAppImmediateProgressCard).toBeUndefined();
   });

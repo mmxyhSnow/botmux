@@ -294,7 +294,7 @@ function codexAppProgressEnabled(ds: DaemonSession): boolean {
   try {
     const bot = getBot(ds.larkAppId).config;
     return (ds.session.cliId ?? bot.cliId) === 'codex-app'
-      && bot.codexAppImmediateProgressCard === true;
+      && bot.codexAppImmediateProgressCard !== false;
   } catch {
     return false;
   }

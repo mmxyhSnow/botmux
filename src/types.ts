@@ -468,7 +468,7 @@ export interface Session {
     paneCols?: number;
     paneRows?: number;
   };
-  /** 仅在 bot 显式开启时持久化 Codex App 即时进度卡状态。 */
+  /** Codex App 即时进度卡状态；功能缺省开启，仅 bot 显式关闭时不写入。 */
   codexAppProgressCard?: CodexAppProgressCardSessionState;
 }
 
