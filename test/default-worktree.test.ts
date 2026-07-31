@@ -15,6 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { initGitRepository } from './helpers/git-repository.js';
 
 vi.mock('@larksuiteoapi/node-sdk', () => {
   class FakeClient { constructor(public opts: Record<string, unknown>) {} }
@@ -40,7 +41,7 @@ function git(cwd: string, ...args: string[]): string {
 function makeRepo(name: string): string {
   const upstream = join(tempRoot, `${name}-upstream`);
   mkdirSync(upstream);
-  git(upstream, 'init', '-b', 'master');
+  initGitRepository(upstream, 'master');
   git(upstream, 'commit', '--allow-empty', '-m', 'init');
   const clone = join(tempRoot, name);
   git(tempRoot, 'clone', upstream, clone);
@@ -104,7 +105,7 @@ describe('maybeCreateDefaultWorktree', () => {
       isBotDefaultDir: true, locale: 'zh',
     });
 
-    const branch = git(r.dir, 'branch', '--show-current');
+    const branch = git(r.dir, 'symbolic-ref', '--short', 'HEAD');
     expect(git(repo, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`)).toBe('');
   });
 
@@ -116,7 +117,7 @@ describe('maybeCreateDefaultWorktree', () => {
       isBotDefaultDir: true, locale: 'zh',
     });
 
-    const branch = git(r.dir, 'branch', '--show-current');
+    const branch = git(r.dir, 'symbolic-ref', '--short', 'HEAD');
     expect(git(repo, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`)).toContain(`refs/heads/${branch}`);
   });
 
