@@ -1446,6 +1446,9 @@ describe('Worker turn_terminal routing', () => {
       status: 'completed',
     };
     (ds.worker as any).emit('message', terminal);
+
+    // durable 终态凭据必须先于进度卡 UI 异步投影，不得被卡片更新阻塞。
+    expect(onTurnTerminal).toHaveBeenCalledTimes(1);
     await Promise.resolve();
 
     expect(onTurnTerminal).toHaveBeenCalledTimes(1);

@@ -3976,6 +3976,22 @@ function setupWorkerHandlers(
           );
           break;
         }
+        // Defense in depth: the worker sends a token-matched revoke before the
+        // terminal IPC, but an older/mixed worker must still lose authority at
+        // this exact terminal edge. Tuple-match prevents a late turn N event
+        // from clearing a capability already rotated for turn N+1.
+        if (ds.managedTurnOrigin?.turnId === msg.turnId
+          && ds.managedTurnOrigin.dispatchAttempt === msg.dispatchAttempt) {
+          ds.managedTurnOrigin = undefined;
+        }
+        // durable 终态必须先于飞书 UI 投影，避免卡片网络请求阻塞凭据持久化。
+        try {
+          await cb.onTurnTerminal?.(ds, msg, { workerGeneration });
+        } catch (err: any) {
+          // The durable receipt remains non-terminal and can be reconciled;
+          // never let a projection/store failure crash the worker IPC loop.
+          logger.error(`[${t}] Failed to persist turn_terminal for ${msg.turnId.substring(0, 8)}: ${err.message}`);
+        }
         if (immediateProgressCardEnabled(ds)) {
           const phase = msg.status === 'completed'
             ? 'completed'
@@ -3990,21 +4006,6 @@ function setupWorkerHandlers(
               + `${error instanceof Error ? error.message : String(error)}`,
             );
           }
-        }
-        // Defense in depth: the worker sends a token-matched revoke before the
-        // terminal IPC, but an older/mixed worker must still lose authority at
-        // this exact terminal edge. Tuple-match prevents a late turn N event
-        // from clearing a capability already rotated for turn N+1.
-        if (ds.managedTurnOrigin?.turnId === msg.turnId
-          && ds.managedTurnOrigin.dispatchAttempt === msg.dispatchAttempt) {
-          ds.managedTurnOrigin = undefined;
-        }
-        try {
-          await cb.onTurnTerminal?.(ds, msg, { workerGeneration });
-        } catch (err: any) {
-          // The durable receipt remains non-terminal and can be reconciled;
-          // never let a projection/store failure crash the worker IPC loop.
-          logger.error(`[${t}] Failed to persist turn_terminal for ${msg.turnId.substring(0, 8)}: ${err.message}`);
         }
         try {
           await cb.onDeferredScheduleTurnSettled?.(ds, { turnId: msg.turnId, source: 'terminal' });
