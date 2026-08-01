@@ -8,7 +8,11 @@
  */
 import { githubAuthHeaders, type GithubAuthResolveOptions } from './github-auth.js';
 import type { CodexAppProgressOverview } from '../types.js';
-import type { RestartKind, RestartSource } from '../services/restart-intent-store.js';
+import type {
+  RestartKind,
+  RestartSource,
+  SourceDeploymentIntent,
+} from '../services/restart-intent-store.js';
 import { consumeRestartIntent } from '../services/restart-intent-store.js';
 import { countActiveSessionsOnDisk } from '../services/session-store.js';
 import { resolveCurrentDeploymentVersion } from '../utils/install-diagnostics.js';
@@ -34,6 +38,8 @@ export interface RestartReportInput {
   reason?: string;
   /** 手动维护的真实触发入口。 */
   source?: RestartSource;
+  /** 官方源码同步在本次新 daemon 中完成的部署留痕结果。 */
+  sourceDeployment?: { releaseTag: string; deployTag?: string; error?: string };
   changelog?: string;
 }
 
@@ -96,6 +102,11 @@ export function buildRestartReportText(input: RestartReportInput, locale?: Local
   lines.push(t('restart.unfinished_sessions', { count: input.sessionCount }, locale));
   if (input.dashboardUrl) lines.push(t('restart.dashboard', { url: input.dashboardUrl }, locale));
   if (input.dashboardLocalUrl) lines.push(t('restart.dashboard_local', { url: input.dashboardLocalUrl }, locale));
+  if (input.sourceDeployment?.deployTag) {
+    lines.push(t('restart.source_deploy_succeeded', { tag: input.sourceDeployment.deployTag }, locale));
+  } else if (input.sourceDeployment?.error) {
+    lines.push(t('restart.source_deploy_failed', { error: input.sourceDeployment.error }, locale));
+  }
 
   if (input.kind === 'update' && input.changelog && input.changelog.trim()) {
     lines.push('');
@@ -132,6 +143,8 @@ export interface RestartReportWiring {
   dashboardLocalUrl?: string | undefined;
   /** Send the interactive card as a p2p DM to the owner. */
   sendCard: (openId: string, cardJson: string) => Promise<void>;
+  /** 源码同步重启后的运行态验收；缺省时明确告警且不创建 deploy 标签。 */
+  finalizeSourceDeployment?: (intent: SourceDeploymentIntent) => Promise<{ deployTag: string }>;
   githubAuth?: GithubAuthResolveOptions;
   now?: number;
   log?: (msg: string) => void;
@@ -147,6 +160,19 @@ export async function sendRestartReportIfPending(w: RestartReportWiring): Promis
   const log = w.log ?? (() => {});
   const intent = consumeRestartIntent(w.now ?? Date.now());
   if (!intent) return; // no breadcrumb → crash/reboot → stay silent
+  let sourceDeployment: RestartReportInput['sourceDeployment'];
+  if (intent.sourceDeployment) {
+    try {
+      if (!w.finalizeSourceDeployment) throw new Error('source deployment finalizer unavailable');
+      const finalized = await w.finalizeSourceDeployment(intent.sourceDeployment);
+      sourceDeployment = { releaseTag: intent.sourceDeployment.releaseTag, deployTag: finalized.deployTag };
+      log(`source deployment finalized (${finalized.deployTag})`);
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 300);
+      sourceDeployment = { releaseTag: intent.sourceDeployment.releaseTag, error: message };
+      log(`source deployment finalization failed: ${message}`);
+    }
+  }
   if (!w.ownerOpenId) { log('restart-report: no owner configured — skipping DM'); return; }
 
   const locale = localeForBot(w.primaryLarkAppId);
@@ -167,6 +193,7 @@ export async function sendRestartReportIfPending(w: RestartReportWiring): Promis
     newVersion: intent.newVersion,
     reason: intent.reason,
     source: intent.source,
+    sourceDeployment,
     changelog,
   }, locale);
   try {

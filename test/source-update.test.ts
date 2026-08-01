@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   githubRepoFromRemote,
   parseSourceUpdateConfig,
+  sourceDeploymentForRestart,
   sourceUpdatePlanFromProbe,
 } from '../src/utils/source-update.js';
 
@@ -41,5 +44,30 @@ describe('source checkout update plan', () => {
     })).toBeNull();
     expect(parseSourceUpdateConfig({ ...config, productionBranch: 'custom/prod; touch /tmp/x' })).toBeNull();
     expect(parseSourceUpdateConfig({ ...config, command: 'rm -rf /' })).toBeNull();
+  });
+
+  it('只把服务端刚完成且版本匹配的源码候选交给重启验收', () => {
+    const result = {
+      oldVersion: '3.7.1',
+      newVersion: '3.8.0',
+      changed: true,
+      branch: 'custom/prod',
+      upgradeBranch: 'upgrade/v3.8.0',
+      releaseTag: 'release/v3.8.0-custom.1',
+      deployTag: null,
+      productionHead: 'a'.repeat(40),
+    };
+    expect(sourceDeploymentForRestart(result, '3.7.1', '3.8.0')).toEqual({
+      releaseTag: result.releaseTag,
+      expectedHead: result.productionHead,
+    });
+    expect(sourceDeploymentForRestart(result, '3.7.1', '9.9.9')).toBeUndefined();
+  });
+
+  it('官方同步安装阶段不再创建或 push deploy 标签', () => {
+    const script = readFileSync(join(process.cwd(), 'scripts', 'sync-official-source.mjs'), 'utf8');
+    expect(script).not.toContain("['tag', '-a', deployTag");
+    expect(script).not.toContain('refs/tags/${deployTag}');
+    expect(script).toContain('deployTag: null');
   });
 });

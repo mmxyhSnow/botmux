@@ -1125,6 +1125,8 @@ export const messages: Record<string, string> = {
   'restart.unfinished_sessions': '未结束会话：{count} 个',
   'restart.dashboard': 'Dashboard：{url}',
   'restart.dashboard_local': '本地直连（平台异常时可用）：{url}',
+  'restart.source_deploy_succeeded': '部署留痕：{tag}',
+  'restart.source_deploy_failed': '⚠️ 部署留痕失败，未创建 deploy 标签：{error}',
   'restart.changelog_label': '更新内容：',
   'restart.changelog_link_fallback': '详情：{url}',
   'restart.card_title': 'botmux 维护通知',

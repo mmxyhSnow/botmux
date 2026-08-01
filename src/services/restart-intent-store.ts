@@ -18,6 +18,11 @@ import { readProcessStartIdentity } from '../core/session-marker.js';
 export type RestartKind = 'manual' | 'update' | 'rollback';
 export type RestartSource = 'cli' | 'ai' | 'dashboard';
 
+export interface SourceDeploymentIntent {
+  releaseTag: string;
+  expectedHead: string;
+}
+
 export interface RestartIntent {
   kind: RestartKind;
   /** Present for an update or rollback: the version delta to report. */
@@ -27,6 +32,8 @@ export interface RestartIntent {
   reason?: string;
   /** 触发本次维护的真实入口；旧数据缺省时按普通 CLI 处理。 */
   source?: RestartSource;
+  /** 源码同步专用：新 daemon 验收后再写 deploy 标签，禁止安装阶段提前留痕。 */
+  sourceDeployment?: SourceDeploymentIntent;
   /** ISO 8601 timestamp the breadcrumb was written. */
   at: string;
 }
@@ -50,7 +57,8 @@ export function writeRestartIntentTo(dir: string, intent: RestartIntent): void {
   const tmp = `${path}.${process.pid}.tmp`;
   const reason = normalizeRestartReason(intent.reason);
   const source = normalizeRestartSource(intent.source);
-  writeFileSync(tmp, JSON.stringify({ ...intent, reason, source }, null, 2) + '\n');
+  const sourceDeployment = normalizeSourceDeployment(intent.sourceDeployment);
+  writeFileSync(tmp, JSON.stringify({ ...intent, reason, source, sourceDeployment }, null, 2) + '\n');
   renameSync(tmp, path);
 }
 
@@ -64,6 +72,18 @@ export function normalizeRestartReason(raw: unknown): string | undefined {
 /** 只接受维护通知支持的固定触发来源，避免把任意外部文本带进卡片。 */
 export function normalizeRestartSource(raw: unknown): RestartSource | undefined {
   return raw === 'cli' || raw === 'ai' || raw === 'dashboard' ? raw : undefined;
+}
+
+/** 只持久化固定候选标签和完整 SHA，避免 Dashboard 请求注入任意 Git 参数。 */
+export function normalizeSourceDeployment(raw: unknown): SourceDeploymentIntent | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const value = raw as Record<string, unknown>;
+  if (Object.keys(value).some(key => key !== 'releaseTag' && key !== 'expectedHead')) return undefined;
+  if (typeof value.releaseTag !== 'string' || !/^release\/v\d+\.\d+\.\d+-custom\.\d+$/.test(value.releaseTag)) {
+    return undefined;
+  }
+  if (typeof value.expectedHead !== 'string' || !/^[0-9a-f]{40}$/.test(value.expectedHead)) return undefined;
+  return { releaseTag: value.releaseTag, expectedHead: value.expectedHead };
 }
 
 /**
@@ -91,6 +111,7 @@ function readRaw(dir: string): RestartIntent | null {
       return {
         ...v,
         source: normalizeRestartSource(v.source),
+        sourceDeployment: normalizeSourceDeployment(v.sourceDeployment),
       } as RestartIntent;
     }
   } catch {

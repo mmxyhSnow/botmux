@@ -52,6 +52,11 @@ import {
   finalizeCustomReleaseDeployment,
   runCustomReleaseDeployment,
 } from './core/custom-release-deploy.js';
+import {
+  productionSkillSyncNotice,
+  reconcileProductionMaintenanceSkill,
+} from './core/production-skill-sync.js';
+import { finalizeSourceUpdateDeployment } from './core/source-update-deploy.js';
 import { reconcileOutstandingTurns } from './core/restart-turn-reconciler.js';
 import { statSync } from 'node:fs';
 import { addReaction, getChatMode, getChatNameAndMode, getMessageChatId, listChatMemberOpenIds, MessageWithdrawnError, replyMessage, resolveAllowedUsersWithMap, sendMessage, sendUserMessage, updateMessage, type EntryResolveStatus } from './im/lark/client.js';
@@ -18324,6 +18329,24 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       log: message => logger.info(`[custom-release] ${message}`),
     });
     customReleaseNotifier.start();
+    // 生产 daemon 启动后立即校验维护手册版本。自动修复只作用于已安装且来源可信的
+    // maintain-botmux-fork；失败仅告警，不阻塞会话恢复和正常消息处理。
+    void reconcileProductionMaintenanceSkill().then((result) => {
+      logger.info(
+        `[production-skill] status=${result.status} runtime=${result.runtimeCommit?.slice(0, 8) ?? '-'} `
+        + `installed=${result.installedCommit?.slice(0, 8) ?? result.previousCommit?.slice(0, 8) ?? '-'} `
+        + `reason=${result.reason ?? '-'}`,
+      );
+      const notice = productionSkillSyncNotice(result);
+      const ownerOpenId = resolvePrimaryOwnerOpenId(cfg.larkAppId);
+      if (!notice || !ownerOpenId) return;
+      void sendUserMessage(cfg.larkAppId, ownerOpenId, notice, 'text')
+        .catch(error => logger.warn(
+          `[production-skill] owner notice failed: ${error instanceof Error ? error.message : String(error)}`,
+        ));
+    }).catch(error => logger.warn(
+      `[production-skill] reconcile crashed: ${error instanceof Error ? error.message : String(error)}`,
+    ));
     startMaintenance();
     startCliRuntimeUpdateMonitor({
       dataDir: config.session.dataDir,
@@ -18343,6 +18366,10 @@ export async function startDaemon(botIndex?: number): Promise<void> {
         ownerOpenId: resolvePrimaryOwnerOpenId(cfg.larkAppId),
         dashboardUrl: dash.url,
         dashboardLocalUrl: dash.localUrl,
+        finalizeSourceDeployment: intent => finalizeSourceUpdateDeployment(
+          intent.releaseTag,
+          intent.expectedHead,
+        ),
         sendCard: (openId, card) => sendUserMessage(cfg.larkAppId, openId, card, 'interactive').then(() => undefined),
         log: (m) => logger.info(`[restart-report] ${m}`),
       });

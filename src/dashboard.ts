@@ -102,7 +102,12 @@ import {
   writeRestartIntent,
 } from './services/restart-intent-store.js';
 import { withFileLock } from './utils/file-lock.js';
-import { runSourceUpdate, tryResolveSourceUpdatePlan } from './utils/source-update.js';
+import {
+  runSourceUpdate,
+  sourceDeploymentForRestart,
+  tryResolveSourceUpdatePlan,
+  type SourceUpdateResult,
+} from './utils/source-update.js';
 import { spawn } from 'node:child_process';
 import {
   applySettingsWrite,
@@ -1144,6 +1149,9 @@ let updateInFlight = false;
 // the successful plan (including its stable package root) so follow-up status,
 // update, and restart requests do not reuse the removed old runtime realpath.
 let lastSuccessfulUpdatePlan: GlobalInstallPlan | undefined;
+// 源码同步结果只在当前 Dashboard 进程内用于下一次 restart handoff；新 daemon
+// 通过持久化 intent 独立验收，不信任浏览器回传 release tag 或 commit。
+let lastSuccessfulSourceUpdate: SourceUpdateResult | undefined;
 
 // Cache the upstream version/changelog lookups so the nav-badge check + the
 // Settings card don't hammer the npm registry / GitHub on every page load.
@@ -2973,6 +2981,7 @@ const server = createServer(async (req, res) => {
         if (!node.ok) return jsonRes(res, 400, { ok: false, error: 'node_too_old', node });
         if (updateInFlight) return jsonRes(res, 409, { ok: false, error: 'update_in_flight' });
         updateInFlight = true;
+        lastSuccessfulSourceUpdate = undefined;
         let acquired = false;
         try {
           const completed: { value?: Awaited<ReturnType<typeof runSourceUpdate>> } = {};
@@ -2983,6 +2992,7 @@ const server = createServer(async (req, res) => {
           }, { maxWaitMs: 2_000 });
           if (!acquired) return jsonRes(res, 409, { ok: false, error: 'update_in_flight' });
           if (!completed.value) return jsonRes(res, 409, { ok: false, error: 'restart_in_flight' });
+          lastSuccessfulSourceUpdate = completed.value.changed ? completed.value : undefined;
           return jsonRes(res, 200, { ok: true, ...completed.value, manager: 'git' });
         } catch (error) {
           if (!acquired) return jsonRes(res, 409, { ok: false, error: 'update_in_flight' });
@@ -3234,7 +3244,19 @@ const server = createServer(async (req, res) => {
           leaseId = claimed;
           try {
             if (upd && typeof upd.oldVersion === 'string' && typeof upd.newVersion === 'string' && upd.oldVersion !== upd.newVersion) {
-              writeRestartIntent({ kind: 'update', oldVersion: upd.oldVersion, newVersion: upd.newVersion, at: new Date().toISOString() });
+              const sourceDeployment = sourceDeploymentForRestart(
+                lastSuccessfulSourceUpdate,
+                upd.oldVersion,
+                upd.newVersion,
+              );
+              writeRestartIntent({
+                kind: 'update',
+                oldVersion: upd.oldVersion,
+                newVersion: upd.newVersion,
+                sourceDeployment,
+                at: new Date().toISOString(),
+              });
+              lastSuccessfulSourceUpdate = undefined;
             } else {
               writeManualIntentIfAbsent(Date.now(), undefined, 'dashboard');
             }

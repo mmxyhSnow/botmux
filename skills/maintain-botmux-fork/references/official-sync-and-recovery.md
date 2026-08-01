@@ -82,7 +82,15 @@ pnpm daemon:restart
 botmux status
 ```
 
-再核对 PM2 执行路径、近期日志与一条真实飞书交互。
+再核对 PM2 执行路径、近期日志与一条真实飞书交互。确认运行 HEAD、远端生产 HEAD 与同步结果中的
+`releaseTag` / `productionHead` 一致后，显式记录部署快照：
+
+```bash
+pnpm release:record-deploy -- --tag release/vX.Y.Z-custom.N
+```
+
+Dashboard 路径会把这两个字段写入 restart intent，由新 daemon 自动执行同一验收和留痕；失败时不创建
+deploy 标签，并在维护通知中告警。
 
 ## 自动同步器的真实行为
 
@@ -97,7 +105,9 @@ botmux status
    `custom/prod` 快进到同一 merge commit。
 7. canonical checkout `--ff-only` 跟进远端，安装依赖，并用同文件系统 rename 原子替换 `dist`；
    旧 `dist` 备份到生产目录同级的 `.botmux-dist-backups/source-update-*`。
-8. 创建并 push 同号 `deploy/vX.Y.Z-custom.1`，输出结构化结果。
+8. 输出包含 `releaseTag`、`productionHead` 且 `deployTag=null` 的结构化结果；Dashboard 发起重启后，
+   新 daemon 验证真实运行 checkout、本地/远端 HEAD 与候选标签，最后复用 `release:record-deploy`
+   创建并回读同号 `deploy/vX.Y.Z-custom.1`。
 
 脚本不会自行处理 merge conflict，也不会替冲突升级选择新的部署标签编号。
 
@@ -161,7 +171,9 @@ live 验证通过后，列出已有 `deploy/vX.Y.Z-custom.*`，创建下一个�
 - upgrade 分支已 push、生产分支未 push：核对 merge commit 后只补生产 push。
 - `origin/custom/prod` 已推进、canonical 未快进：fetch 后 `merge --ff-only`。
 - 源码已快进、`dist` 切换失败：在 canonical checkout 重新安装、`pnpm switch:here`，再重启。
-- 更新成功、重启失败：只重启并检查运行态。
+- 更新成功、重启失败：只重启并检查运行态；确认三方 HEAD 后补 `release:record-deploy`。
+- 重启成功、部署留痕失败：不要重跑同步。按维护通知核对运行 HEAD、远端生产 HEAD 与候选标签，
+  修复后只补 `release:record-deploy`。
 - 标签冲突：列出远端已有标签，使用下一个 `custom.N`；不要删除或覆盖旧标签。
 
 每次恢复前先回读远端 SHA、当前分支、worktree 状态和进程执行路径。

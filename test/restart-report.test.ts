@@ -157,6 +157,30 @@ describe('buildRestartReportText', () => {
     expect(md).toContain('2.65.0');
   });
 
+  it('shows post-restart source deployment success or failure explicitly', () => {
+    const succeeded = buildRestartReportText({
+      kind: 'update',
+      version: '3.8.0-custom.1',
+      sessionCount: 0,
+      sourceDeployment: {
+        releaseTag: 'release/v3.8.0-custom.1',
+        deployTag: 'deploy/v3.8.0-custom.1',
+      },
+    });
+    const failed = buildRestartReportText({
+      kind: 'update',
+      version: '3.8.0-custom.1',
+      sessionCount: 0,
+      sourceDeployment: {
+        releaseTag: 'release/v3.8.0-custom.1',
+        error: '运行 HEAD 不一致',
+      },
+    });
+    expect(succeeded).toContain('部署留痕：deploy/v3.8.0-custom.1');
+    expect(failed).toContain('未创建 deploy 标签');
+    expect(failed).toContain('运行 HEAD 不一致');
+  });
+
   it('rollback restart reports the old→new delta without a changelog', () => {
     const md = buildRestartReportText({
       kind: 'rollback',
@@ -217,6 +241,48 @@ describe('sendRestartReportIfPending', () => {
     expect(sent[0].card).toContain('部署维护通知卡片增强');
     expect(sent[0].card).toContain('2'); // two active sessions
     expect(existsSync(restartIntentPathIn(dir))).toBe(false); // consumed
+  });
+
+  it('finalizes a source deployment before sending the restart report', async () => {
+    const sourceDeployment = {
+      releaseTag: 'release/v3.8.0-custom.1',
+      expectedHead: 'a'.repeat(40),
+    };
+    writeRestartIntentTo(dir, {
+      kind: 'update',
+      oldVersion: '3.7.1',
+      newVersion: '3.8.0',
+      sourceDeployment,
+      at: new Date(T0).toISOString(),
+    });
+    const finalizeSourceDeployment = vi.fn(async () => ({ deployTag: 'deploy/v3.8.0-custom.1' }));
+    const { w, sent } = fakeWiring({ finalizeSourceDeployment });
+
+    await sendRestartReportIfPending(w);
+
+    expect(finalizeSourceDeployment).toHaveBeenCalledWith(sourceDeployment);
+    expect(sent[0].card).toContain('deploy/v3.8.0-custom.1');
+  });
+
+  it('alerts the owner and leaves deploy absent when source deployment validation fails', async () => {
+    writeRestartIntentTo(dir, {
+      kind: 'update',
+      oldVersion: '3.7.1',
+      newVersion: '3.8.0',
+      sourceDeployment: {
+        releaseTag: 'release/v3.8.0-custom.1',
+        expectedHead: 'a'.repeat(40),
+      },
+      at: new Date(T0).toISOString(),
+    });
+    const { w, sent } = fakeWiring({
+      finalizeSourceDeployment: async () => { throw new Error('运行 HEAD 不一致'); },
+    });
+
+    await sendRestartReportIfPending(w);
+
+    expect(sent[0].card).toContain('未创建 deploy 标签');
+    expect(sent[0].card).toContain('运行 HEAD 不一致');
   });
 
   it('stays silent when there is no intent (crash / pm2 auto-restart)', async () => {

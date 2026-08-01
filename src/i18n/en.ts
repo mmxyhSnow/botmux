@@ -1122,6 +1122,8 @@ export const messages: Record<string, string> = {
   'restart.unfinished_sessions': 'Unfinished sessions: {count}',
   'restart.dashboard': 'Dashboard: {url}',
   'restart.dashboard_local': 'Local direct (if the platform is down): {url}',
+  'restart.source_deploy_succeeded': 'Deployment record: {tag}',
+  'restart.source_deploy_failed': '⚠️ Deployment record failed; no deploy tag was created: {error}',
   'restart.changelog_label': 'What’s new:',
   'restart.changelog_link_fallback': 'Details: {url}',
   'restart.card_title': 'botmux maintenance notice',

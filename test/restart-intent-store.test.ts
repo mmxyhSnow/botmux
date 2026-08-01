@@ -12,6 +12,7 @@ import {
   hasActiveRestartLeaseTo,
   writeManualIntentIfAbsentTo,
   normalizeRestartReason,
+  normalizeSourceDeployment,
   resolveRestartSource,
   restartIntentPathIn,
 } from '../src/services/restart-intent-store.js';
@@ -38,6 +39,31 @@ describe('restart-intent store', () => {
       oldVersion: '3.1.0',
       newVersion: '3.0.0',
     });
+  });
+
+  it('round-trips a validated source deployment candidate', () => {
+    const sourceDeployment = {
+      releaseTag: 'release/v3.8.0-custom.1',
+      expectedHead: 'a'.repeat(40),
+    };
+    writeRestartIntentTo(dir, {
+      kind: 'update',
+      oldVersion: '3.7.1',
+      newVersion: '3.8.0',
+      sourceDeployment,
+      at: iso(T0),
+    });
+    expect(consumeRestartIntentTo(dir, T0 + 5_000)).toMatchObject({ sourceDeployment });
+  });
+
+  it('drops malformed source deployment metadata', () => {
+    expect(normalizeSourceDeployment({ releaseTag: 'deploy/v3.8.0-custom.1', expectedHead: 'a'.repeat(40) }))
+      .toBeUndefined();
+    expect(normalizeSourceDeployment({
+      releaseTag: 'release/v3.8.0-custom.1',
+      expectedHead: 'a'.repeat(40),
+      command: 'git tag',
+    })).toBeUndefined();
   });
 
   it('clears a rollback intent when restart launch fails', () => {

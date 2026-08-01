@@ -201,6 +201,7 @@ async function main() {
 
   const currentTag = alignedStableTag(root);
   const latestTag = latestStableTag(root, config.upstreamRemote);
+  const currentHead = git(root, ['rev-parse', 'HEAD']);
   const baseResult = {
     oldVersion: currentTag.slice(1),
     newVersion: latestTag.slice(1),
@@ -213,6 +214,7 @@ async function main() {
       upgradeBranch: null,
       releaseTag: null,
       deployTag: null,
+      productionHead: currentHead,
     })}\n`);
     return;
   }
@@ -253,15 +255,17 @@ async function main() {
   await run(root, 'pnpm', ['install', '--frozen-lockfile']);
   replaceDist(root, join(upgradePath, 'dist'), latestTag.slice(1));
 
-  const deployTag = `deploy/${latestTag}-custom.1`;
-  git(upgradePath, ['tag', '-a', deployTag, '-m', `deploy: ${latestTag} custom.1`]);
-  git(upgradePath, ['push', config.originRemote, `refs/tags/${deployTag}`], { timeout: 180_000 });
+  // dist 替换只代表候选已安装，不能冒充真实运行验收。Dashboard 会把 releaseTag
+  // 与 productionHead 写进 restart intent；新 daemon 三方回读一致后再统一执行
+  // release:record-deploy。命令行同步也必须在重启和健康检查后显式记录。
+  const productionHead = git(root, ['rev-parse', 'HEAD']);
   process.stdout.write(`${RESULT_PREFIX}${JSON.stringify({
     ...baseResult,
     changed: true,
     upgradeBranch,
     releaseTag,
-    deployTag,
+    deployTag: null,
+    productionHead,
   })}\n`);
 }
 
