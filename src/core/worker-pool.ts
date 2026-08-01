@@ -294,11 +294,11 @@ export function recordAcceptedTurnDelivery(
   });
 }
 
-function codexAppProgressEnabled(ds: DaemonSession): boolean {
+/** 即时进度卡面向所有 CLI；历史配置字段名为兼容既有安装继续保留。 */
+function immediateProgressCardEnabled(ds: DaemonSession): boolean {
   try {
     const bot = getBot(ds.larkAppId).config;
-    return (ds.session.cliId ?? bot.cliId) === 'codex-app'
-      && bot.codexAppImmediateProgressCard !== false;
+    return bot.codexAppImmediateProgressCard !== false;
   } catch {
     return false;
   }
@@ -362,7 +362,7 @@ export async function setCodexAppProgressDetailsExpanded(
   ds: DaemonSession,
   expanded: boolean,
 ): Promise<boolean> {
-  if (!codexAppProgressEnabled(ds) || !ds.session.codexAppProgressCard) return false;
+  if (!immediateProgressCardEnabled(ds) || !ds.session.codexAppProgressCard) return false;
   await codexAppProgressCardFor(ds).setDetailsExpanded(expanded);
   return true;
 }
@@ -373,7 +373,7 @@ export async function beginCodexAppProgressTurn(
   turnId: string,
   prompt?: string,
 ): Promise<void> {
-  if (!turnId.startsWith('om_') || !codexAppProgressEnabled(ds)) return;
+  if (!turnId.startsWith('om_') || !immediateProgressCardEnabled(ds)) return;
   await codexAppProgressCardFor(ds).accept(
     turnId,
     codexAppProgressCardTitle(prompt ?? ds.lastUserPrompt ?? ds.session.title),
@@ -3898,12 +3898,12 @@ function setupWorkerHandlers(
       }
 
       case 'progress_output': {
-        if (ds.worker !== worker || !codexAppProgressEnabled(ds)) break;
+        if (ds.worker !== worker || !immediateProgressCardEnabled(ds)) break;
         try {
           await codexAppProgressCardFor(ds).append(msg.turnId, msg.content);
         } catch (error) {
           logger.warn(
-            `[${t}] Codex App 进度卡更新失败: `
+            `[${t}] 即时进度卡更新失败: `
             + `${error instanceof Error ? error.message : String(error)}`,
           );
         }
@@ -3919,12 +3919,12 @@ function setupWorkerHandlers(
             nativeTurnId: msg.nativeTurnId,
           });
         }
-        if (!codexAppProgressEnabled(ds)) break;
+        if (!immediateProgressCardEnabled(ds)) break;
         try {
           await codexAppProgressCardFor(ds).turnStarted(msg.turnId);
         } catch (error) {
           logger.warn(
-            `[${t}] Codex App 新回合状态卡创建失败: `
+            `[${t}] 即时进度卡新回合状态创建失败: `
             + `${error instanceof Error ? error.message : String(error)}`,
           );
         }
@@ -3940,12 +3940,12 @@ function setupWorkerHandlers(
           `[${t}] Codex App steer accepted `
           + `appTurn=${msg.appTurnId.slice(0, 12)} replyTurn=${msg.turnId.slice(0, 12)}`,
         );
-        if (codexAppProgressEnabled(ds)) {
+        if (immediateProgressCardEnabled(ds)) {
           try {
             await codexAppProgressCardFor(ds).steerAccepted(msg.turnId);
           } catch (error) {
             logger.warn(
-              `[${t}] Codex App steer 状态卡复用失败: `
+              `[${t}] 即时进度卡 steer 状态复用失败: `
               + `${error instanceof Error ? error.message : String(error)}`,
             );
           }
@@ -3976,7 +3976,7 @@ function setupWorkerHandlers(
           );
           break;
         }
-        if (codexAppProgressEnabled(ds)) {
+        if (immediateProgressCardEnabled(ds)) {
           const phase = msg.status === 'completed'
             ? 'completed'
             : msg.status === 'failed'
@@ -3986,7 +3986,7 @@ function setupWorkerHandlers(
             await codexAppProgressCardFor(ds).settle(msg.turnId, phase);
           } catch (error) {
             logger.warn(
-              `[${t}] Codex App 进度卡终态更新失败: `
+              `[${t}] 即时进度卡终态更新失败: `
               + `${error instanceof Error ? error.message : String(error)}`,
             );
           }
@@ -4100,12 +4100,12 @@ function setupWorkerHandlers(
           logger.debug(`[${t}] final_output captured/discarded for silent turn ${msg.turnId.substring(0, 8)}`);
           break;
         }
-        if (codexAppProgressEnabled(ds)) {
+        if (immediateProgressCardEnabled(ds)) {
           try {
             await codexAppProgressCardFor(ds).recordFinal(msg.turnId, msg.content);
           } catch (error) {
             logger.warn(
-              `[${t}] Codex App 最终结论归档失败: `
+              `[${t}] 即时进度卡最终结论归档失败: `
               + `${error instanceof Error ? error.message : String(error)}`,
             );
           }
@@ -4187,10 +4187,10 @@ function setupWorkerHandlers(
     // A stale takeover worker never clears the replacement — during takeover the
     // old worker's exit fires AFTER the new worker has been assigned.
     if (ds.worker === worker) {
-      if (codexAppProgressEnabled(ds)) {
+      if (immediateProgressCardEnabled(ds)) {
         void codexAppProgressCardFor(ds).interrupt().catch(error => {
           logger.warn(
-            `[${t}] Codex App 进度卡中断状态更新失败: `
+            `[${t}] 即时进度卡中断状态更新失败: `
             + `${error instanceof Error ? error.message : String(error)}`,
           );
         });
