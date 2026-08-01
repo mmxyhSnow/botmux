@@ -329,7 +329,13 @@ describe('worker-pool lifecycle hook integration', () => {
     }));
   });
 
-  it('routes accepted steer feedback to its exact turn without raising attention', async () => {
+  it('routes accepted steer feedback when progress cards are explicitly disabled', async () => {
+    botConfigState.value = {
+      larkAppId: 'app_test',
+      larkAppSecret: 'secret',
+      cliId: 'claude-code',
+      codexAppImmediateProgressCard: false,
+    };
     const sessionReply = vi.fn(async () => 'om_reply');
     initWorkerPool({
       sessionReply,
@@ -435,11 +441,44 @@ describe('worker-pool lifecycle hook integration', () => {
     });
   });
 
-  it('Codex App allows an explicit false to disable progress cards', async () => {
+  it('TraeX defaults progress cards on without switching the session CLI', async () => {
     botConfigState.value = {
       larkAppId: 'app_test',
       larkAppSecret: 'secret',
-      cliId: 'codex-app',
+      cliId: 'traex',
+    };
+    const sessionReply = vi.fn(async () => 'om_progress_card');
+    initWorkerPool({
+      sessionReply,
+      getSessionWorkingDir: () => '/repo',
+      getActiveCount: () => 1,
+      closeSession: vi.fn(),
+    });
+    const ds = makeDs({ worker: makeFakeWorker() });
+    ds.session.cliId = 'traex';
+
+    await beginCodexAppProgressTurn(ds, 'om_traex', '保留 TraeX 执行器');
+
+    expect(sessionReply).toHaveBeenCalledWith(
+      'om_root',
+      expect.stringContaining('处理中'),
+      'interactive',
+      'app_test',
+      'om_traex',
+    );
+    expect(ds.session.cliId).toBe('traex');
+    expect(ds.session.codexAppProgressCard).toMatchObject({
+      phase: 'running',
+      acceptedTurnIds: ['om_traex'],
+      messageId: 'om_progress_card',
+    });
+  });
+
+  it('allows an explicit false to disable progress cards for any CLI', async () => {
+    botConfigState.value = {
+      larkAppId: 'app_test',
+      larkAppSecret: 'secret',
+      cliId: 'traex',
       codexAppImmediateProgressCard: false,
     };
     const sessionReply = vi.fn(async () => 'om_progress_card');
@@ -450,7 +489,7 @@ describe('worker-pool lifecycle hook integration', () => {
       closeSession: vi.fn(),
     });
     const ds = makeDs({ worker: makeFakeWorker() });
-    ds.session.cliId = 'codex-app';
+    ds.session.cliId = 'traex';
 
     await beginCodexAppProgressTurn(ds, 'om_disabled', '无需进度卡');
 
