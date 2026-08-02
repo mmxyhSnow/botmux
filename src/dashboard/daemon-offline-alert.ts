@@ -2,8 +2,7 @@
  * Dashboard 侧 daemon 离线告警判定。
  * Registry 已用 90 秒心跳窗口过滤瞬时重启，本模块只对新的离线集合发一次聚合提醒。
  */
-import { createHash } from 'node:crypto';
-import { buildOwnerNoticeCard } from '../im/lark/owner-notice-card.js';
+import type { OwnerNoticeCardContent } from '../services/owner-notice.js';
 
 export interface DaemonAlertBot {
   larkAppId: string;
@@ -48,18 +47,15 @@ export function evaluateDaemonOfflineAlerts(
 
 /** 一轮离线只发一条聚合消息；UUID 按离线集合稳定，重启重试也不会重复投递。 */
 export function daemonOfflineAlertMessage(bots: readonly DaemonAlertBot[]): {
-  cardJson: string;
-  uuid: string;
+  card: OwnerNoticeCardContent;
 } {
   const sorted = [...bots].sort((a, b) => a.larkAppId.localeCompare(b.larkAppId));
   const names = sorted.map(bot => bot.botName || bot.larkAppId).join('、');
-  const digest = createHash('sha256').update(sorted.map(bot => bot.larkAppId).join('\0')).digest('hex').slice(0, 20);
   return {
-    cardJson: buildOwnerNoticeCard({
+    card: {
       title: 'Botmux daemon 离线告警',
       markdown: `⚠️ 已超过心跳容忍窗口：${names}\n\n请检查 PM2 status、OOM/系统日志和 daemon 日志。恢复在线后本告警会自动重新布防。`,
       template: 'red',
-    }),
-    uuid: `botmux_daemon_offline_${digest}`,
+    },
   };
 }

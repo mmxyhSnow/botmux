@@ -42,8 +42,7 @@ import { tryHandleGrantCommand } from './grant-command.js';
 import { tryHandleReplyModeCommand } from './reply-mode-command.js';
 import { tryHandleSubstituteCommand } from './substitute-command.js';
 import { buildGrantCard } from './card-builder.js';
-import { buildOwnerNoticeCard } from './owner-notice-card.js';
-import { upsertOwnerNoticeCard } from '../../services/owner-notice-card-store.js';
+import { deliverOwnerNotice } from '../../services/owner-notice.js';
 import { openPending, isThrottled, clearPending } from './grant-pending.js';
 import { localeForBot, t } from '../../i18n/index.js';
 import { chatQuotaKey, globalQuotaKey } from '../../services/grant-store.js';
@@ -217,17 +216,16 @@ function getAdminOpenId(bot: BotState): string | undefined {
 
 async function dmAdmin(larkAppId: string, adminOpenId: string, content: string, contextTag: string): Promise<void> {
   try {
-    const cardJson = buildOwnerNoticeCard({
-      title: 'Botmux 权限通知',
-      markdown: content,
-      template: 'orange',
-    });
-    await upsertOwnerNoticeCard({
+    await deliverOwnerNotice({
       dataDir: config.session.dataDir,
-      kind: `permission-health-${createHash('sha256').update(larkAppId).digest('hex').slice(0, 12)}`,
-      cardJson,
-      sendCard: (card, uuid) => sendUserMessage(larkAppId, adminOpenId, card, 'interactive', uuid),
-      updateCard: (messageId, card) => updateMessage(larkAppId, messageId, card),
+      larkAppId,
+      recipientOpenId: adminOpenId,
+      policy: 'permission-health',
+      scope: larkAppId,
+      card: {
+        mode: 'standard',
+        content: { title: 'Botmux 权限通知', markdown: content, template: 'orange' },
+      },
       log: message => logger.warn(`[${larkAppId}] permission card ${message}`),
     });
     logger.info(`[${larkAppId}] notified admin ${adminOpenId.substring(0, 12)} about ${contextTag}`);
@@ -2112,12 +2110,18 @@ async function processCommentEvent(
         `📄 \`${fileToken}\``,
         `💬 ${text.slice(0, 200)}${text.length > 200 ? '…' : ''}`,
       ].join('\n');
-      const notifyCard = buildOwnerNoticeCard({
-        title: 'Botmux 文档评论审计',
-        markdown: notifyText,
-        template: 'blue',
+      await deliverOwnerNotice({
+        dataDir: config.session.dataDir,
+        larkAppId,
+        recipientOpenId: ownerOpenId,
+        policy: 'doc-comment-audit',
+        scope: `${larkAppId}\0${fileToken}`,
+        card: {
+          mode: 'standard',
+          content: { title: 'Botmux 文档评论审计', markdown: notifyText, template: 'blue' },
+        },
+        log: message => logger.info(`[doc-comment] owner audit card ${message}`),
       });
-      await sendUserMessage(larkAppId, ownerOpenId, notifyCard, 'interactive');
     } catch (e) {
       logger.warn(`[doc-comment] non-owner @mention but owner notification failed — rejecting (audit gate) file=${fileToken.slice(0, 12)} requester=${requesterOpenId?.slice(0, 12) || '?'} err=${e instanceof Error ? e.message : String(e)}`);
       rollbackAutoSub();

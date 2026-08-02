@@ -33,12 +33,12 @@ describe('daemon offline alert', () => {
     expect(result.newlyOffline.map(item => item.larkAppId)).toEqual(['cli_b']);
   });
 
-  it('消息隐藏 App ID 并为同一离线集合生成稳定 UUID', () => {
+  it('消息隐藏 App ID，并以排序后的名称稳定聚合', () => {
     const first = daemonOfflineAlertMessage(bots);
     const second = daemonOfflineAlertMessage([...bots].reverse());
-    expect(first.cardJson).toContain('Botmux daemon 离线告警');
-    expect(first.cardJson).toContain('Youc、张三金');
-    expect(first.cardJson).not.toContain('cli_a');
-    expect(first.uuid).toBe(second.uuid);
+    expect(first.card.title).toBe('Botmux daemon 离线告警');
+    expect(first.card.markdown).toContain('Youc、张三金');
+    expect(first.card.markdown).not.toContain('cli_a');
+    expect(first.card).toEqual(second.card);
   });
 });

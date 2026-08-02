@@ -33,7 +33,6 @@ import {
   type OverloadThresholds,
 } from './core/host-overload-alert.js';
 import { registerOverloadNonce } from './im/lark/overload-nonce.js';
-import { buildOwnerNoticeCard } from './im/lark/owner-notice-card.js';
 import { countHostOverload } from './im/lark/card-handler.js';
 import { startMaintenance, stopMaintenance } from './core/maintenance.js';
 import {
@@ -50,10 +49,10 @@ import {
   runCustomReleaseDeployment,
 } from './core/custom-release-deploy.js';
 import {
-  buildProductionSkillSyncCard,
+  productionSkillSyncCardContent,
   reconcileProductionMaintenanceSkill,
 } from './core/production-skill-sync.js';
-import { upsertOwnerNoticeCard } from './services/owner-notice-card-store.js';
+import { createOwnerNoticeTransport, deliverOwnerNotice } from './services/owner-notice.js';
 import { finalizeSourceUpdateDeployment } from './core/source-update-deploy.js';
 import { reconcileOutstandingTurns } from './core/restart-turn-reconciler.js';
 import { statSync } from 'node:fs';
@@ -3152,25 +3151,21 @@ function notifyAllowedUsersResolveFailure(
   void (async () => {
     for (const openId of unique.slice(0, 5)) {
       try {
-        const cardJson = buildOwnerNoticeCard({
-          title: 'Botmux allowedUsers 解析告警',
-          markdown: `⚠️ ${notice}`,
-          template: 'orange',
-        });
-        const recipientKey = createHash('sha256').update(`${larkAppId}\0${openId}`).digest('hex').slice(0, 12);
-        await upsertOwnerNoticeCard({
+        await deliverOwnerNotice({
           dataDir: config.session.dataDir,
-          kind: `allowed-users-resolve-${recipientKey}`,
-          cardJson,
-          sendCard: (content, uuid) => sendUserMessage(
-            larkAppId,
-            openId,
-            content,
-            'interactive',
-            uuid,
-            { timeoutMs: 10_000 },
-          ),
-          updateCard: (messageId, content) => updateMessage(larkAppId, messageId, content),
+          larkAppId,
+          recipientOpenId: openId,
+          policy: 'allowed-users-resolve',
+          scope: `${larkAppId}\0${openId}`,
+          sendTimeoutMs: 10_000,
+          card: {
+            mode: 'standard',
+            content: {
+              title: 'Botmux allowedUsers 解析告警',
+              markdown: `⚠️ ${notice}`,
+              template: 'orange',
+            },
+          },
           log: message => logger.warn(`[${larkAppId}] allowedUsers card ${message}`),
         });
       } catch (err: any) {
@@ -4109,16 +4104,13 @@ async function deliverCodexNotifierEvent(
       const messageId = await runWithAbortDeadline(
         'codex_notifier_delivery',
         CODEX_NOTIFIER_DELIVERY_TIMEOUT_MS,
-        signal => sendUserMessage(
-          larkAppId,
+        signal => createOwnerNoticeTransport(larkAppId, {
+          timeoutMs: CODEX_NOTIFIER_DELIVERY_TIMEOUT_MS,
+          signal,
+        }).sendCard(
           ownerOpenId,
           buildCodexCompletionCard(deliveryEvent),
-          'interactive',
           codexNotifierMessageUuid(event.eventId),
-          {
-            timeoutMs: CODEX_NOTIFIER_DELIVERY_TIMEOUT_MS,
-            signal,
-          },
         ),
       );
       store.updateDelivery(event.eventId, { status: 'delivered', messageId, incrementAttempts: false });
@@ -15681,17 +15673,16 @@ async function warnGroupJoinScopeOnce(larkAppId: string, detail: string): Promis
   }
   const dm = tr('daemon.auto_start_member_read_failed', { detail }, localeForBot(larkAppId));
   try {
-    const cardJson = buildOwnerNoticeCard({
-      title: 'Botmux 权限通知',
-      markdown: dm,
-      template: 'orange',
-    });
-    await upsertOwnerNoticeCard({
+    await deliverOwnerNotice({
       dataDir: config.session.dataDir,
-      kind: `group-join-permission-${createHash('sha256').update(larkAppId).digest('hex').slice(0, 12)}`,
-      cardJson,
-      sendCard: (content, uuid) => sendUserMessage(larkAppId, adminOpenId, content, 'interactive', uuid),
-      updateCard: (messageId, content) => updateMessage(larkAppId, messageId, content),
+      larkAppId,
+      recipientOpenId: adminOpenId,
+      policy: 'group-join-permission',
+      scope: larkAppId,
+      card: {
+        mode: 'standard',
+        content: { title: 'Botmux 权限通知', markdown: dm, template: 'orange' },
+      },
       log: message => logger.warn(`[auto-start:入群] ${message}`),
     });
     logger.info(`[auto-start:入群] ${larkAppId} 已私信 admin 提示补权限`);
@@ -18318,18 +18309,13 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   // Auto-update / auto-restart and the restart-report DM run only on the
   // primary daemon (bot-0) — a restart is host-wide.
   if (idx === 0) {
+    const ownerNoticeTransport = createOwnerNoticeTransport(cfg.larkAppId);
     customReleaseNotifierAppId = cfg.larkAppId;
     customReleaseNotifier = new CustomReleaseNotifier({
       store: new CustomReleaseEventStore(config.session.dataDir),
       ownerOpenId: () => resolvePrimaryOwnerOpenId(cfg.larkAppId),
-      sendCard: (openId, card, uuid) => sendUserMessage(
-        cfg.larkAppId,
-        openId,
-        card,
-        'interactive',
-        uuid,
-      ),
-      updateCard: (messageId, card) => updateMessage(cfg.larkAppId, messageId, card),
+      sendCard: ownerNoticeTransport.sendCard,
+      updateCard: ownerNoticeTransport.updateCard,
       freeze: runCustomReleaseFreeze,
       deploy: runCustomReleaseDeployment,
       finalizeDeploy: finalizeCustomReleaseDeployment,
@@ -18344,17 +18330,15 @@ export async function startDaemon(botIndex?: number): Promise<void> {
         + `installed=${result.installedCommit?.slice(0, 8) ?? result.previousCommit?.slice(0, 8) ?? '-'} `
         + `reason=${result.reason ?? '-'}`,
       );
-      const card = buildProductionSkillSyncCard(result);
+      const card = productionSkillSyncCardContent(result);
       const ownerOpenId = resolvePrimaryOwnerOpenId(cfg.larkAppId);
       if (!card || !ownerOpenId) return;
-      void upsertOwnerNoticeCard({
+      void deliverOwnerNotice({
         dataDir: config.session.dataDir,
-        kind: 'production-skill-sync',
-        cardJson: card,
-        sendCard: (cardJson, uuid) => sendUserMessage(
-          cfg.larkAppId, ownerOpenId, cardJson, 'interactive', uuid,
-        ),
-        updateCard: (messageId, cardJson) => updateMessage(cfg.larkAppId, messageId, cardJson),
+        larkAppId: cfg.larkAppId,
+        recipientOpenId: ownerOpenId,
+        policy: 'production-skill-sync',
+        card: { mode: 'standard', content: card },
         log: message => logger.warn(`[production-skill] ${message}`),
       })
         .catch(error => logger.warn(
@@ -18370,7 +18354,15 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       ownerOpenId: () => resolvePrimaryOwnerOpenId(cfg.larkAppId),
       dashboardUrl: () => dashboardUrlForReport().url,
       targets: configuredCodexUpdateTargets,
-      sendCard: (openId, card) => sendUserMessage(cfg.larkAppId, openId, card, 'interactive').then(() => undefined),
+      sendCard: (openId, card) => deliverOwnerNotice({
+        dataDir: config.session.dataDir,
+        larkAppId: cfg.larkAppId,
+        recipientOpenId: openId,
+        policy: 'cli-runtime-update',
+        scope: `${cfg.larkAppId}\0codex`,
+        card: { mode: 'raw', cardJson: card },
+        log: message => logger.info(`[cli-update] ${message}`),
+      }).then(() => undefined),
       log: (m) => logger.info(`[cli-update] ${m}`),
     });
     // After an intentional restart, DM the owner a summary. Delayed a few
@@ -18386,15 +18378,13 @@ export async function startDaemon(botIndex?: number): Promise<void> {
           intent.releaseTag,
           intent.expectedHead,
         ),
-        sendCard: (openId, card) => sendUserMessage(cfg.larkAppId, openId, card, 'interactive').then(() => undefined),
-        upsertCard: (openId, card) => upsertOwnerNoticeCard({
+        sendCard: (openId, card) => ownerNoticeTransport.sendCard(openId, card).then(() => undefined),
+        upsertCard: (openId, card) => deliverOwnerNotice({
           dataDir: config.session.dataDir,
-          kind: 'restart',
-          cardJson: card,
-          sendCard: (cardJson, uuid) => sendUserMessage(
-            cfg.larkAppId, openId, cardJson, 'interactive', uuid,
-          ),
-          updateCard: (messageId, cardJson) => updateMessage(cfg.larkAppId, messageId, cardJson),
+          larkAppId: cfg.larkAppId,
+          recipientOpenId: openId,
+          policy: 'restart',
+          card: { mode: 'raw', cardJson: card },
           log: message => logger.warn(`[restart-report] ${message}`),
         }).then(() => undefined),
         log: (m) => logger.info(`[restart-report] ${m}`),
@@ -18462,14 +18452,12 @@ export async function startDaemon(botIndex?: number): Promise<void> {
         } else {
           cardJson = buildOverloadRecoveredCard(action);
         }
-        void upsertOwnerNoticeCard({
+        void deliverOwnerNotice({
           dataDir: config.session.dataDir,
-          kind: 'host-overload',
-          cardJson,
-          sendCard: (content, uuid) => sendUserMessage(
-            cfg.larkAppId, ownerOpenId, content, 'interactive', uuid,
-          ),
-          updateCard: (messageId, content) => updateMessage(cfg.larkAppId, messageId, content),
+          larkAppId: cfg.larkAppId,
+          recipientOpenId: ownerOpenId,
+          policy: 'host-overload',
+          card: { mode: 'raw', cardJson },
           log: message => logger.warn(`[overload] ${message}`),
         }).catch((err) => logger.warn(
           `[overload] card DM failed: ${err instanceof Error ? err.message : String(err)}`,

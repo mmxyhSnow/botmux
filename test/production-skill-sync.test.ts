@@ -1,7 +1,7 @@
 /** 生产维护 Skill 对齐测试：覆盖正常同版、旧 commit 修复与异源拒绝。 */
 import { describe, expect, it, vi } from 'vitest';
 import {
-  buildProductionSkillSyncCard,
+  productionSkillSyncCardContent,
   productionSkillSyncNotice,
   reconcileProductionMaintenanceSkill,
   type ProductionSkillSyncDeps,
@@ -64,8 +64,11 @@ describe('reconcileProductionMaintenanceSkill', () => {
       sourceOverride: expect.objectContaining({ ref: 'custom/prod' }),
     }));
     expect(productionSkillSyncNotice(result)).toContain('已自动对齐生产版本');
-    expect(buildProductionSkillSyncCard(result)).toContain('Botmux Skill 维护通知');
-    expect(buildProductionSkillSyncCard(result)).toContain('已自动对齐生产版本');
+    expect(productionSkillSyncCardContent(result)).toMatchObject({
+      title: 'Botmux Skill 维护通知',
+      markdown: expect.stringContaining('已自动对齐生产版本'),
+      template: 'green',
+    });
   });
 
   it('detached 版本化运行目录按 manifest commit 对齐 Skill', async () => {
@@ -102,6 +105,6 @@ describe('reconcileProductionMaintenanceSkill', () => {
     expect(result).toEqual({ status: 'failed', reason: 'source_mismatch' });
     expect(wiring.install).not.toHaveBeenCalled();
     expect(productionSkillSyncNotice(result)).toContain('对齐失败');
-    expect(buildProductionSkillSyncCard(result)).toContain('orange');
+    expect(productionSkillSyncCardContent(result)).toMatchObject({ template: 'orange' });
   });
 });

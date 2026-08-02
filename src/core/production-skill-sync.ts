@@ -10,7 +10,7 @@ import {
   installGitSkillAsync,
   readSkillRegistry,
 } from '../services/skill-registry-store.js';
-import { buildOwnerNoticeCard } from '../im/lark/owner-notice-card.js';
+import type { OwnerNoticeCardContent } from '../services/owner-notice.js';
 import type { SkillPackage, SkillSource } from './skills/types.js';
 import { readRuntimeRelease, type RuntimeReleaseRecord } from './runtime-release.js';
 
@@ -168,13 +168,13 @@ export function productionSkillSyncNotice(result: ProductionSkillSyncResult): st
   return null;
 }
 
-/** Skill 对齐结果统一包装为维护卡片；aligned/skipped 不产生主动通知。 */
-export function buildProductionSkillSyncCard(result: ProductionSkillSyncResult): string | null {
+/** Skill 对齐结果转换为统一维护卡内容；aligned/skipped 不产生主动通知。 */
+export function productionSkillSyncCardContent(result: ProductionSkillSyncResult): OwnerNoticeCardContent | null {
   const notice = productionSkillSyncNotice(result);
   if (!notice) return null;
-  return buildOwnerNoticeCard({
+  return {
     title: 'Botmux Skill 维护通知',
     markdown: notice,
     template: result.status === 'repaired' ? 'green' : 'orange',
-  });
+  };
 }

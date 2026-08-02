@@ -148,7 +148,7 @@ import {
 import { redactGitUrlCredentials } from './core/skills/sources.js';
 import { effectiveDefaultWorkingDir, getBot, loadBotConfigs, parseBotConfigsFromText, registerBot, type BotConfig, type VcMeetingAgentConfig } from './bot-registry.js';
 import { sendUserMessage, updateMessage } from './im/lark/client.js';
-import { upsertOwnerNoticeCard } from './services/owner-notice-card-store.js';
+import { deliverOwnerNotice } from './services/owner-notice.js';
 import { findEntryIndex, readRawConfig, requireConfigPath, writeRawConfigAtomic } from './services/config-store.js';
 import {
   emitCodexNotifierOutboxItem,
@@ -1386,22 +1386,12 @@ function auditDaemonOfflineAlerts(online: ReturnType<typeof registry.list>): voi
   if (result.newlyOffline.length === 0 || !lastDaemonAlertTarget) return;
   const notice = daemonOfflineAlertMessage(result.newlyOffline);
   registerBot(lastDaemonAlertTarget.config);
-  void upsertOwnerNoticeCard({
+  void deliverOwnerNotice({
     dataDir: config.session.dataDir,
-    kind: 'daemon-offline',
-    cardJson: notice.cardJson,
-    sendCard: (cardJson) => sendUserMessage(
-      lastDaemonAlertTarget!.config.larkAppId,
-      lastDaemonAlertTarget!.ownerOpenId,
-      cardJson,
-      'interactive',
-      notice.uuid,
-    ),
-    updateCard: (messageId, cardJson) => updateMessage(
-      lastDaemonAlertTarget!.config.larkAppId,
-      messageId,
-      cardJson,
-    ),
+    larkAppId: lastDaemonAlertTarget.config.larkAppId,
+    recipientOpenId: lastDaemonAlertTarget.ownerOpenId,
+    policy: 'daemon-offline',
+    card: { mode: 'standard', content: notice.card },
     log: message => logger.warn(`[daemon-offline-alert] ${message}`),
   }).catch(error => {
     // 失败不吞掉这一轮：解除对应去重，下一次 registry tick 以同一稳定 UUID 重试。
