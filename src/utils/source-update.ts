@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { SourceDeploymentIntent } from '../services/restart-intent-store.js';
 
 export const SOURCE_UPDATE_CONFIG = '.botmux-source-update.json';
 
@@ -32,6 +33,23 @@ export interface SourceUpdateResult {
   upgradeBranch: string | null;
   releaseTag: string | null;
   deployTag: string | null;
+  /** 官方同步完成后 custom/prod 的精确 HEAD，供新 daemon 做运行态验收。 */
+  productionHead: string;
+}
+
+/**
+ * 只把当前 Dashboard 进程刚完成且版本完全匹配的源码同步结果交给 restart intent；
+ * 浏览器只能回传版本对，不能自行指定候选 tag 或 commit。
+ */
+export function sourceDeploymentForRestart(
+  result: SourceUpdateResult | undefined,
+  oldVersion: string,
+  newVersion: string,
+): SourceDeploymentIntent | undefined {
+  if (!result?.changed || result.oldVersion !== oldVersion || result.newVersion !== newVersion) return undefined;
+  if (!result.releaseTag || !/^release\/v\d+\.\d+\.\d+-custom\.\d+$/.test(result.releaseTag)) return undefined;
+  if (!/^[0-9a-f]{40}$/.test(result.productionHead)) return undefined;
+  return { releaseTag: result.releaseTag, expectedHead: result.productionHead };
 }
 
 interface SourceUpdateProbe {

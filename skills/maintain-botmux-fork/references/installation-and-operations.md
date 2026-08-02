@@ -36,6 +36,12 @@ botmux skills remove maintain-botmux-fork
 
 `update` 会沿安装时记录的 `custom/prod` ref 更新。不要通过复制到多个 CLI 的全局目录维护多份副本。
 
+生产源码部署的 primary daemon 启动后还会校验已安装 Skill：只有 registry 中已存在、来源确认为
+`mmxyhSnow/botmux/skills/maintain-botmux-fork` 时，才把内容自动对齐到当前真实运行的
+`custom/prod` commit，并继续把 `custom/prod` 保存为跟踪 ref。若同名 Skill 来自其它位置或更新失败，
+daemon 不覆盖、不阻塞启动，只向 owner 告警。这样远端生产分支即使先推进，也不会把未来手册提前注入
+仍运行旧代码的 daemon。
+
 ## 全新安装自定义源码版
 
 ### 1. 准备环境
