@@ -11,6 +11,7 @@ import {
   readSkillRegistry,
 } from '../services/skill-registry-store.js';
 import type { SkillPackage, SkillSource } from './skills/types.js';
+import { readRuntimeRelease, type RuntimeReleaseRecord } from './runtime-release.js';
 
 const execFileAsync = promisify(execFile);
 const SKILL_NAME = 'maintain-botmux-fork';
@@ -31,6 +32,7 @@ export interface ProductionSkillSyncResult {
 
 export interface ProductionSkillSyncDeps {
   activePackageRoot: () => string;
+  runtimeRelease: (root: string) => RuntimeReleaseRecord | null;
   readRegistry: () => { skills: Record<string, SkillPackage> };
   runGit: (root: string, args: string[]) => Promise<string>;
   install: (opts: {
@@ -52,6 +54,7 @@ async function runGit(root: string, args: string[]): Promise<string> {
 
 const PRODUCTION_DEPS: ProductionSkillSyncDeps = {
   activePackageRoot: botmuxInstallRoot,
+  runtimeRelease: readRuntimeRelease,
   readRegistry: readSkillRegistry,
   runGit,
   install: installGitSkillAsync,
@@ -74,7 +77,8 @@ function isTrustedSource(source: SkillSource): boolean {
  * 对齐已安装维护 Skill。只有当前运行 checkout 经分支和 origin 身份双重证明为
  * custom/prod 时才写 registry；缺少 Skill 时保持不安装，尊重机器原有策略。
  */
-export async function reconcileProductionMaintenanceSkill(
+export async function reconcileProductionMaintenanceSkillAt(
+  root: string,
   deps: ProductionSkillSyncDeps = PRODUCTION_DEPS,
 ): Promise<ProductionSkillSyncResult> {
   const current = deps.readRegistry().skills[SKILL_NAME];
@@ -82,13 +86,20 @@ export async function reconcileProductionMaintenanceSkill(
   if (!isTrustedSource(current.source)) return { status: 'failed', reason: 'source_mismatch' };
 
   try {
-    const root = deps.activePackageRoot();
-    const [branch, originUrl, runtimeCommit] = await Promise.all([
-      deps.runGit(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']),
+    const runtimeRelease = deps.runtimeRelease(root);
+    const [originUrl, runtimeCommit] = await Promise.all([
       deps.runGit(root, ['remote', 'get-url', 'origin']),
       deps.runGit(root, ['rev-parse', 'HEAD']),
     ]);
-    if (branch !== PRODUCTION_REF) return { status: 'skipped', reason: 'not_production_branch' };
+    let branch = '';
+    try { branch = await deps.runGit(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']); }
+    catch { /* detached 版本化运行 worktree 没有 symbolic branch。 */ }
+    if (branch !== PRODUCTION_REF && !runtimeRelease) {
+      return { status: 'skipped', reason: 'not_production_branch' };
+    }
+    if (runtimeRelease && runtimeRelease.manifest.commit !== runtimeCommit) {
+      return { status: 'failed', runtimeCommit, reason: 'runtime_manifest_mismatch' };
+    }
     if (githubRepoFromRemote(originUrl)?.toLowerCase() !== REPOSITORY.toLowerCase()) {
       return { status: 'failed', runtimeCommit, reason: 'runtime_origin_mismatch' };
     }
@@ -136,6 +147,13 @@ export async function reconcileProductionMaintenanceSkill(
       reason: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/** daemon 启动入口：兼容旧 canonical live，并支持 current 指向的 detached 版本目录。 */
+export async function reconcileProductionMaintenanceSkill(
+  deps: ProductionSkillSyncDeps = PRODUCTION_DEPS,
+): Promise<ProductionSkillSyncResult> {
+  return reconcileProductionMaintenanceSkillAt(deps.activePackageRoot(), deps);
 }
 
 /** 生成不包含仓库凭据和本机路径的 owner 通知。 */

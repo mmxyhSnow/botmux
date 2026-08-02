@@ -35,6 +35,9 @@ export interface SourceUpdateResult {
   deployTag: string | null;
   /** 官方同步完成后 custom/prod 的精确 HEAD，供新 daemon 做运行态验收。 */
   productionHead: string;
+  /** 版本化同步完成后已激活的新旧运行目录，只由本机脚本生成并供重启驱动消费。 */
+  runtimeRoot?: string;
+  rollbackRoot?: string;
 }
 
 /**
@@ -111,18 +114,52 @@ function git(root: string, args: string[]): string {
   }).trim();
 }
 
+/** 从 Git 登记中找出唯一 canonical 生产 worktree，版本化 detached runtime 不参与猜测。 */
+export function productionWorktreeFromPorcelain(output: string, productionBranch: string): string | null {
+  const roots = output.split(/\n\s*\n/).flatMap(block => {
+    const lines = block.split(/\r?\n/);
+    const worktree = lines.find(line => line.startsWith('worktree '))?.slice('worktree '.length);
+    const branch = lines.find(line => line.startsWith('branch '))?.slice('branch '.length);
+    return worktree && branch === `refs/heads/${productionBranch}` ? [worktree] : [];
+  });
+  return roots.length === 1 ? roots[0] : null;
+}
+
+function configAt(root: string): SourceUpdateConfig | null {
+  try {
+    return parseSourceUpdateConfig(JSON.parse(readFileSync(join(root, SOURCE_UPDATE_CONFIG), 'utf8')));
+  } catch {
+    return null;
+  }
+}
+
+function planAt(root: string, config: SourceUpdateConfig): SourceUpdatePlan | null {
+  return sourceUpdatePlanFromProbe(root, config, {
+    branch: git(root, ['symbolic-ref', '--short', 'HEAD']),
+    originUrl: git(root, ['remote', 'get-url', config.originRemote]),
+    upstreamUrl: git(root, ['remote', 'get-url', config.upstreamRemote]),
+  });
+}
+
 /** 探测当前源码 checkout 是否是受信任的 fork/upstream 生产部署。 */
 export function tryResolveSourceUpdatePlan(root: string): SourceUpdatePlan | null {
-  const configPath = join(root, SOURCE_UPDATE_CONFIG);
-  if (!existsSync(configPath)) return null;
+  const config = configAt(root);
+  if (!config) return null;
   try {
-    const config = parseSourceUpdateConfig(JSON.parse(readFileSync(configPath, 'utf8')));
-    if (!config) return null;
-    return sourceUpdatePlanFromProbe(root, config, {
-      branch: git(root, ['symbolic-ref', '--short', 'HEAD']),
-      originUrl: git(root, ['remote', 'get-url', config.originRemote]),
-      upstreamUrl: git(root, ['remote', 'get-url', config.upstreamRemote]),
-    });
+    const direct = planAt(root, config);
+    if (direct) return direct;
+  } catch {
+    // detached runtime 的 symbolic-ref 会失败，继续按 Git worktree 登记找 canonical root。
+  }
+  try {
+    const productionRoot = productionWorktreeFromPorcelain(
+      git(root, ['worktree', 'list', '--porcelain']),
+      config.productionBranch,
+    );
+    if (!productionRoot || productionRoot === root) return null;
+    const productionConfig = configAt(productionRoot);
+    if (!productionConfig || JSON.stringify(productionConfig) !== JSON.stringify(config)) return null;
+    return planAt(productionRoot, productionConfig);
   } catch {
     return null;
   }

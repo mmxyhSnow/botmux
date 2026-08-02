@@ -83,6 +83,7 @@ import {
 } from './core/update-check.js';
 import { GITHUB_REPO } from './core/restart-report.js';
 import { spawnDetachedRestart, globalInstallUpdateLockTarget, globalInstallUpdateCwd } from './core/maintenance.js';
+import { spawnRuntimeRestartDriver } from './core/runtime-release-restart.js';
 import {
   detectGlobalInstallManager,
   formatGlobalInstallCommand,
@@ -3232,6 +3233,7 @@ const server = createServer(async (req, res) => {
       let acquired = false;
       let leaseId: string | null = null;
       let activePackageRoot: string | undefined;
+      let sourceRuntimeRestart: { targetRoot: string; rollbackRoot: string } | undefined;
       let shouldLaunch = false;
       try {
         await withFileLock(globalInstallUpdateLockTarget(), async () => {
@@ -3249,6 +3251,18 @@ const server = createServer(async (req, res) => {
                 upd.oldVersion,
                 upd.newVersion,
               );
+              if (
+                sourceDeployment
+                && typeof lastSuccessfulSourceUpdate?.runtimeRoot === 'string'
+                && typeof lastSuccessfulSourceUpdate.rollbackRoot === 'string'
+                && isAbsolute(lastSuccessfulSourceUpdate.runtimeRoot)
+                && isAbsolute(lastSuccessfulSourceUpdate.rollbackRoot)
+              ) {
+                sourceRuntimeRestart = {
+                  targetRoot: lastSuccessfulSourceUpdate.runtimeRoot,
+                  rollbackRoot: lastSuccessfulSourceUpdate.rollbackRoot,
+                };
+              }
               writeRestartIntent({
                 kind: 'update',
                 oldVersion: upd.oldVersion,
@@ -3287,7 +3301,13 @@ const server = createServer(async (req, res) => {
       if (shouldLaunch && leaseId) {
         const launch = () => {
           try {
-            const child = spawnDetachedRestart('dashboard', activePackageRoot, leaseId!);
+            const child = sourceRuntimeRestart
+              ? spawnRuntimeRestartDriver(
+                  sourceRuntimeRestart.targetRoot,
+                  sourceRuntimeRestart.rollbackRoot,
+                  leaseId!,
+                )
+              : spawnDetachedRestart('dashboard', activePackageRoot, leaseId!);
             if (!child.pid) throw new Error('restart driver did not start');
           } catch (error) {
             clearRestartLease(leaseId!);

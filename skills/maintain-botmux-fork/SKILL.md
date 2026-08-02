@@ -54,12 +54,15 @@ description: Maintain the mmxyhSnow/botmux custom/dev integration and custom/pro
   `custom/prod`。
 - `release/vX.Y.Z-custom.N` 固定候选版本，`deploy/vX.Y.Z-custom.N` 记录同版本真实部署快照；
   两类 annotated tag 都不可移动、覆盖或删除。
+- 生产运行目录固定为 `~/.botmux/releases/<版本>/`，`~/.botmux/runtime/current` 是唯一 live 指针；
+  wrapper 普通命令跟随 `current`，`rollback` 通过稳定 `controller` 执行，禁止直接改写 live `dist`。
 - 只从官方 `vX.Y.Z` 正式标签升级；不要把 canary、PR 分支或未经验证的 `upstream/master`
   直接合入生产。
 - 源码部署不要用 `npm update -g botmux` 升级，否则会切回不含自定义功能的官方包。
 - 不覆盖 `~/.botmux` 中的机器人配置、凭据和会话数据，不输出 secret。
 - 不在 live 生产 checkout 中开发功能；使用隔离分支/worktree，验证后由用户决定是否加入待发集成线。
-- 不强推、重写或回退 `custom/prod` 历史。回滚优先新增 `revert` 提交。
+- 不强推、重写或回退 `custom/prod` 历史。运行态应急回滚使用 `botmux rollback` 原子切换已有
+  deploy 版本；永久源码修复仍优先新增 `revert` 提交并正常发新版。
 - 同步官方、切换全局 wrapper、重启 daemon 和创建部署标签都会改变生产状态；仅在用户明确要求
   升级、部署、重启或回滚时执行。
 - owner 点击 HEAD 绑定私聊发版卡上的“推进并部署候选版本”按钮，就是对该卡候选 Tag 的完整显式授权；
@@ -105,7 +108,7 @@ pnpm --version
 - Git：开发分支、最终 commit、`custom/dev` / `custom/prod` 状态、待发版本；正式发布时再给
   `release/vX.Y.Z-custom.N` 和 `deploy/vX.Y.Z-custom.N`。
 - 验证：实际运行的定向测试、`pnpm build`，公共层变更再给 `pnpm test` 或明确说明未执行原因。
-- 部署：全局 wrapper 实际指向、daemon/dashboard 状态、关键日志和真实飞书交互结果。
+- 部署：wrapper、`runtime/current`、运行清单、daemon/dashboard 的 `pm_exec_path`、关键日志和真实交互结果。
 - 风险：未执行的 e2e、未完成的 live 验证、遗留冲突或临时回退状态。
 
 不得把“代码已修改”“构建启动”“正在升级”当成完成。只有目标 commit 已进入准确远端、

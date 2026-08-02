@@ -89,8 +89,8 @@ command -v botmux
 sed -n '1,5p' "$HOME/.botmux/bin/botmux"
 ```
 
-`pnpm build` 只构建，不会悄悄改全局 wrapper；`pnpm use:here` 才会让全局 `botmux`
-指向当前 checkout。`pnpm switch:here` 等价于 `build + use:here`。
+首次安装时，`pnpm build` 只构建，`pnpm use:here` 才认领全局 `botmux`。完成首个版本化部署后，
+wrapper 会动态跟随 `~/.botmux/runtime/current`，普通更新不得再用 `switch:here` 绕过版本化门禁。
 
 ### 4. 首次配置并启动
 
@@ -113,19 +113,16 @@ botmux status
 
 ## 接收 `custom/prod` 的日常更新
 
-这是接收 fork 自定义提交，不是“同步官方版本”。只在生产 checkout clean 且本地没有独有提交时执行：
+这是接收 fork 自定义提交，不是“同步官方版本”。只读检查仍从 canonical checkout 执行：
 
 ```bash
 git fetch origin --prune
 git rev-list --left-right --count HEAD...origin/custom/prod
-git merge --ff-only origin/custom/prod
-pnpm install --frozen-lockfile
-pnpm build
-pnpm use:here
-pnpm daemon:restart
 ```
 
-如果 `rev-list` 显示本地领先或双方分叉，停止自动更新并查明提交归属；不要 reset 或强推。
+生产更新统一由 HEAD 绑定发版卡完成：隔离构建版本目录、备份、原子切换、重启验收后才写 deploy tag。
+不要把 canonical checkout 的手工 `merge/build/use:here/restart` 当作日常上线入口。如果 `rev-list`
+显示本地领先或双方分叉，停止并查明提交归属；不要 reset 或强推。
 
 ## 日常启停与健康检查
 
@@ -143,20 +140,23 @@ pnpm daemon:logs
 
 ```bash
 sed -n '1,5p' "$HOME/.botmux/bin/botmux"
+readlink -f "$HOME/.botmux/runtime/current"
+readlink -f "$HOME/.botmux/runtime/controller"
 botmux status
 botmux bots
 pm2 jlist | jq -r '.[] | [.name,.pm2_env.status,.pm2_env.pm_exec_path] | @tsv'
 ```
 
-确认 `botmux-*` 和 `botmux-dashboard` 为 online，执行路径落在预期生产 checkout。再检查近期日志，
+确认 `botmux-*` 和 `botmux-dashboard` 为 online，执行路径全部落在 `runtime/current` 指向版本的
+`dist`。再检查运行清单 `.botmux-runtime-release.json`、近期日志，
 并按变更类型做一次真实飞书消息、卡片交互、Dashboard 或 CLI 会话验证。
 
 ## 常见安装问题
 
 - `package.json` 显示 `0.0.0`：源码部署的正常状态。官方更新比较取 HEAD 可达的最新正式
   `vX.Y.Z` 标签；维护重启卡优先显示精确指向运行 HEAD 的最新 `release/*` / `deploy/*` 候选版本。
-- 修改后功能未生效：通常是只跑了 `pnpm build`，未 `pnpm use:here`/`switch:here`，
-  或 daemon 仍从另一个 checkout 启动。
+- 修改后功能未生效：先核对 `runtime/current`、运行清单和 PM2 `pm_exec_path`；不要在 live 上补跑
+  `use:here`，应修复发版链路或重新部署准确候选。
 - 出现多个 `botmux`：用 `type -a botmux`、wrapper 内容和 PM2 `pm_exec_path` 确认实际生效版本。
 - `pnpm install --frozen-lockfile` 失败：不要改 lockfile 绕过。先确认 Node/pnpm 版本及当前分支的
   `package.json`、`pnpm-lock.yaml` 是否配套。

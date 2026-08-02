@@ -12,7 +12,8 @@
 
 ## 同步前门禁
 
-同步官方会 push `upgrade/vX.Y.Z`、快进 `origin/custom/prod`、替换生产 `dist` 并创建部署标签，
+同步官方会 push `upgrade/vX.Y.Z`、快进 `origin/custom/prod`、构建并切换版本化运行目录，
+重启验收后创建部署标签，
 属于生产写入。只在用户明确要求升级时执行。
 
 在 canonical 生产 checkout 检查：
@@ -56,8 +57,8 @@ git ls-remote --tags upstream
 2. 成功后请求维护重启。
 3. 把旧版 → 新版和重启结果反馈到界面。
 
-不要在 Dashboard 请求仍在运行时并行启动命令行同步。界面显示更新成功但重启失败时，代码和
-`dist` 已更新；只需从 canonical checkout 运行 `pnpm daemon:restart` 并做健康检查，不要重复同步。
+不要在 Dashboard 请求仍在运行时并行启动命令行同步。目标版本重启失败时独立驱动会把
+`runtime/current` 自动切回旧 deploy 版本并恢复服务；不要重复同步，先读维护日志和当前指针。
 
 ## 命令行同步
 
@@ -73,13 +74,16 @@ node scripts/sync-official-source.mjs --root "$(pwd)"
 BOTMUX_SOURCE_UPDATE_RESULT={"oldVersion":"...","newVersion":"...","changed":...}
 ```
 
-`changed:false` 表示已对齐，无需制造新 merge/tag。`changed:true` 后，命令行路径还需显式认领
-生产 checkout 并重启：
+`changed:false` 表示已对齐，无需制造新 merge/tag。`changed:true` 会返回 `runtimeRoot` 和
+`rollbackRoot`，且已经原子切换 `runtime/current`。直接命令行只用于受控诊断；常规上线必须走
+Dashboard，让其写入精确 restart intent 并使用失败自动恢复驱动。不要再手敲旧的 `use:here` 旁路。
+
+运行态验收至少回读：
 
 ```bash
-pnpm use:here
-pnpm daemon:restart
+readlink -f "$HOME/.botmux/runtime/current"
 botmux status
+pm2 jlist | jq -r '.[] | [.name,.pm2_env.status,.pm2_env.pm_exec_path] | @tsv'
 ```
 
 再核对 PM2 执行路径、近期日志与一条真实飞书交互。确认运行 HEAD、远端生产 HEAD 与同步结果中的
@@ -98,16 +102,16 @@ deploy 标签，并在维护通知中告警。
 
 1. 校验生产分支、clean 状态、双远端身份、本地/远端 HEAD，并拒绝覆盖 `custom/dev` 待发改动。
 2. 找出 HEAD 已对齐的最新官方正式标签和 upstream 最新正式标签。
-3. 在仓库公共根的 `.worktrees/upgrade-X.Y.Z` 创建或复用 `upgrade/vX.Y.Z`。
+3. 在 `~/.botmux/releases/vX.Y.Z-custom.1` 创建或复用精确候选的 detached worktree。
 4. 用 `--no-ff` 把官方 `vX.Y.Z` 合入自定义生产基线。
 5. `pnpm install --frozen-lockfile`，运行兼容宿主的 unit 全量，再执行 `pnpm build`。
 6. 创建 `release/vX.Y.Z-custom.1` 候选标签，push upgrade 分支，再依次把 `custom/dev` 和
    `custom/prod` 快进到同一 merge commit。
-7. canonical checkout `--ff-only` 跟进远端，安装依赖，并用同文件系统 rename 原子替换 `dist`；
-   旧 `dist` 备份到生产目录同级的 `.botmux-dist-backups/source-update-*`。
-8. 输出包含 `releaseTag`、`productionHead` 且 `deployTag=null` 的结构化结果；Dashboard 发起重启后，
-   新 daemon 验证真实运行 checkout、本地/远端 HEAD 与候选标签，最后复用 `release:record-deploy`
-   创建并回读同号 `deploy/vX.Y.Z-custom.1`。
+7. 写入运行清单，准备当前 deploy 版本为回滚点；canonical checkout `--ff-only` 跟进远端，
+   在切换前备份真实 live `dist`，再原子更新 `runtime/current`。
+8. 输出 `releaseTag`、`productionHead`、`runtimeRoot`、`rollbackRoot` 且 `deployTag=null`；Dashboard
+   用独立驱动重启。目标失败则自动恢复旧版本；成功后新 daemon 校验运行清单、PM2 路径、远端 HEAD
+   与候选标签，最后复用 `release:record-deploy` 创建同号 deploy tag 并更新 `controller`。
 
 脚本不会自行处理 merge conflict，也不会替冲突升级选择新的部署标签编号。
 
@@ -170,8 +174,8 @@ live 验证通过后，列出已有 `deploy/vX.Y.Z-custom.*`，创建下一个�
 - 候选标签或 `custom/dev` 已 push、生产分支未 push：核对 merge commit 与远端分支后只补缺失步骤。
 - upgrade 分支已 push、生产分支未 push：核对 merge commit 后只补生产 push。
 - `origin/custom/prod` 已推进、canonical 未快进：fetch 后 `merge --ff-only`。
-- 源码已快进、`dist` 切换失败：在 canonical checkout 重新安装、`pnpm switch:here`，再重启。
-- 更新成功、重启失败：只重启并检查运行态；确认三方 HEAD 后补 `release:record-deploy`。
+- 源码已快进、运行目录准备失败：保留旧 `current`，修复版本目录后从同一候选重试，禁止改写 live `dist`。
+- 更新成功、目标重启失败：驱动应已恢复旧 `current`；先核对恢复日志与 PM2 路径，不创建 deploy tag。
 - 重启成功、部署留痕失败：不要重跑同步。按维护通知核对运行 HEAD、远端生产 HEAD 与候选标签，
   修复后只补 `release:record-deploy`。
 - 标签冲突：列出远端已有标签，使用下一个 `custom.N`；不要删除或覆盖旧标签。
@@ -180,14 +184,26 @@ live 验证通过后，列出已有 `deploy/vX.Y.Z-custom.*`，创建下一个�
 
 ## 回滚
 
-首选 Git 历史可审计回滚：
+服务需要立即恢复时，首选版本化运行态回滚：
+
+```bash
+botmux rollback --list
+botmux rollback --last
+# 或显式指定已经验收过的不可变标签
+botmux rollback --to deploy/vX.Y.Z-custom.N
+```
+
+该命令只接受本机完整运行清单和远端 deploy tag 指向同一 commit 的版本，在维护锁内原子切换
+`runtime/current` 并重启；目标失败会切回原版本。回滚完成后必须核对 current、PM2 执行路径和健康状态。
+
+运行态恢复不改写 `custom/prod` 历史。永久修复仍使用 Git 历史可审计流程：
 
 1. 定位导致问题的自定义 commit 或官方 merge commit。
 2. 在隔离修复分支创建 `git revert`；回退官方 merge时使用 `git revert -m 1 <merge-commit>`。
 3. 运行受影响测试、`pnpm test`、`pnpm build`。
-4. review 后合入 `custom/prod`，canonical checkout 快进、切换 wrapper、重启并 live 验证。
+4. review 后按正常版本化发版链路加入 `custom/dev`、冻结候选并部署，完成 live 验证。
 5. 创建新的 `deploy/vX.Y.Z-custom.N`，不要移动旧标签。
 
-只有服务完全不可用且用户明确授权应急恢复时，才临时使用
-`.botmux-dist-backups/source-update-*` 的旧 `dist`。该动作只回退运行产物，不回退源码，必须记录
-备份路径，恢复服务后立即补 Git revert/修复提交，使源码、dist 和远端重新一致。
+只有版本化 deploy 回滚也不可用且用户明确授权应急恢复时，才临时使用
+`~/.botmux/backups/<时间>-<版本>/dist` 的快照。快照只是灾备，不是版本真源；必须记录路径，
+恢复服务后立即补 Git revert/修复提交并走正常发版，使源码、运行目录和远端重新一致。

@@ -31,6 +31,7 @@ function skill(ref = 'custom/prod', commit = runtimeCommit): SkillPackage {
 function deps(current: SkillPackage, installed = skill()): ProductionSkillSyncDeps {
   return {
     activePackageRoot: () => '/runtime',
+    runtimeRelease: () => null,
     readRegistry: () => ({ skills: { 'maintain-botmux-fork': current } }),
     runGit: async (_root, args) => {
       if (args[0] === 'symbolic-ref') return 'custom/prod';
@@ -62,6 +63,31 @@ describe('reconcileProductionMaintenanceSkill', () => {
       sourceOverride: expect.objectContaining({ ref: 'custom/prod' }),
     }));
     expect(productionSkillSyncNotice(result)).toContain('已自动对齐生产版本');
+  });
+
+  it('detached 版本化运行目录按 manifest commit 对齐 Skill', async () => {
+    const wiring = deps(skill(oldCommit, oldCommit));
+    wiring.runtimeRelease = root => ({
+      root,
+      manifest: {
+        schemaVersion: 1,
+        releaseTag: 'release/v3.7.1-custom.11',
+        deployTag: 'deploy/v3.7.1-custom.11',
+        commit: runtimeCommit,
+        runtimeBuildId: '3'.repeat(64),
+        createdAt: '2026-08-02T01:00:00.000Z',
+      },
+    });
+    wiring.runGit = async (_root, args) => {
+      if (args[0] === 'symbolic-ref') throw new Error('detached');
+      if (args[0] === 'remote') return 'git@github.com:mmxyhSnow/botmux.git';
+      return runtimeCommit;
+    };
+
+    await expect(reconcileProductionMaintenanceSkill(wiring)).resolves.toMatchObject({
+      status: 'repaired',
+      installedCommit: runtimeCommit,
+    });
   });
 
   it('拒绝覆盖同名异源 Skill，并生成告警', async () => {

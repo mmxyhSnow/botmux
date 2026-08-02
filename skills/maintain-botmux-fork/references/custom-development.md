@@ -117,9 +117,12 @@ owner 收到 HEAD 绑定的私聊汇总卡后，点击“推进并部署 X.Y.Z-c
 完整显式授权，不再要求回到任务对话补发“授权”。卡片回调按顺序完成：
 
 1. 再次核对卡片 messageId、owner、候选 Tag 与远端 HEAD。
-2. 快进 `custom/prod`，更新 canonical 生产 checkout，安装依赖并构建。
-3. 切换全局 wrapper，写入包含候选版本的维护原因并用脱离式驱动重启。
-4. 新 daemon 验证实际执行路径、本地/远端生产 HEAD 后，创建同号 `deploy/*` 标签并回写原卡。
+2. 在 `~/.botmux/releases/<版本>/` 创建精确候选 tag 的 detached worktree，独立安装、构建和 smoke；
+   同时把当前 deploy tag 准备为 O(1) 回滚点，活跃 `dist` 不被改写。
+3. 快进 `custom/prod` 与 canonical checkout；在切换前备份真实 live `dist`，再原子更新
+   `~/.botmux/runtime/current`，用脱离式驱动重启。
+4. 目标启动失败时驱动自动切回旧 `current` 并恢复服务；成功时新 daemon 校验运行清单、PM2 执行路径、
+   本地/远端生产 HEAD，创建同号 `deploy/*` 标签，更新稳定 `controller` 并回写原卡。
 
 任一步失败都保留可重试状态，运行态未验收通过时不得创建 deploy 标签。命令行人工路径仍可拆分执行，
 先用准确候选标签推进远端生产分支：
@@ -128,21 +131,11 @@ owner 收到 HEAD 绑定的私聊汇总卡后，点击“推进并部署 X.Y.Z-c
 pnpm release:promote -- --tag release/vX.Y.Z-custom.N
 ```
 
-脚本只允许 `custom/prod` fast-forward 到该候选 commit，不切换本机 wrapper、不重启。命令行另行收到
-部署授权后，回 canonical `custom/prod` checkout：
+脚本只允许 `custom/prod` fast-forward 到该候选 commit，不切换 live、不重启。版本化运行目录准备、
+备份、原子切换、失败恢复和部署留痕是一条整体门禁；不要再手敲旧的
+`build → use:here → daemon:restart` 旁路。卡片不可用时先修复卡片或执行器，不要跳过门禁上线。
 
-```bash
-git fetch origin --prune --tags
-git merge --ff-only origin/custom/prod
-pnpm install --frozen-lockfile
-pnpm build
-pnpm use:here
-pnpm daemon:restart
-botmux status
-```
-
-核对 wrapper、PM2 执行路径、近期日志和与变更相符的真实飞书/Dashboard/CLI 交互。全部验收通过后才
-记录同号部署快照；私聊卡自动路径由新 daemon 执行同一门禁：
+全部验收通过后才记录同号部署快照；私聊卡自动路径由新 daemon 执行同一门禁：
 
 ```bash
 pnpm release:record-deploy -- --tag release/vX.Y.Z-custom.N
@@ -159,4 +152,5 @@ pnpm release:record-deploy -- --tag release/vX.Y.Z-custom.N
 - `pendingVersion`、候选 `release/*`、生产 `custom/prod` 和部署 `deploy/*` 的准确状态。
 - 实际运行的定向测试、全量测试/构建及退出结果。
 - 是否部署；若部署，给 wrapper 路径、PM2/daemon 状态和 live 验证。
+- 若发生失败恢复，给目标/恢复 deploy tag、`current` 回读和恢复后的进程路径。
 - 未覆盖的 CLI、平台、e2e 或待观察风险。
