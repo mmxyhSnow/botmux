@@ -41,10 +41,7 @@ import {
   startCliRuntimeUpdateMonitor,
   stopCliRuntimeUpdateMonitor,
 } from './core/cli-runtime-update.js';
-import {
-  buildRestartTurnProgressText,
-  sendRestartReportIfPending,
-} from './core/restart-report.js';
+import { sendRestartReportIfPending } from './core/restart-report.js';
 import { CustomReleaseEventStore } from './services/custom-release-event.js';
 import { CustomReleaseNotifier } from './core/custom-release-notifier.js';
 import { runCustomReleaseFreeze } from './core/custom-release-freeze.js';
@@ -18087,23 +18084,14 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   // Restore active sessions from previous run
   await restoreActiveSessions(activeSessions);
 
-  const runRestartTurnReconcile = async (reportUnconfirmed: boolean): Promise<void> => {
+  const runRestartTurnReconcile = async (settleUnconfirmed: boolean): Promise<void> => {
     const summary = await reconcileOutstandingTurns({
       dataDir: config.session.dataDir,
       larkAppId: cfg.larkAppId,
       ledger: turnDeliveryLedger,
       sessions: activeSessions.values(),
-      reportUnconfirmed,
+      settleUnconfirmed,
       lookupSessionStatus: sessionId => sessionStore.getSession(sessionId)?.status,
-      formatUnconfirmed: (record, progress) => {
-        const locale = localeForBot(cfg.larkAppId);
-        return tr('restart.turn_unconfirmed', {
-          progress: progress
-            ? buildRestartTurnProgressText(progress, locale)
-            : record.promptSummary
-              || tr('restart.turn_received', undefined, locale),
-        }, locale);
-      },
       send: (record, content, uuid) => sessionReply(
         record.anchor,
         content,
@@ -18118,7 +18106,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       logger.info(
         `[turn-reconcile:${cfg.larkAppId}] scanned=${summary.scanned} `
         + `delivered=${summary.delivered} following=${summary.following} `
-        + `unconfirmed=${summary.unconfirmed} deferred=${summary.deferred} `
+        + `suppressed=${summary.suppressed} deferred=${summary.deferred} `
         + `skipped=${summary.skipped} failed=${summary.failed}`,
       );
     }

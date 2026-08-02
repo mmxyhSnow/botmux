@@ -89,6 +89,7 @@ interface CliRuntimeUpdateStatus {
 }
 interface UpdateStatus {
   current: string;
+  liveIdentity?: string;
   latest: string | null;
   behind: boolean;
   cliBehind: boolean;
@@ -1329,6 +1330,7 @@ function UpdateCard(props: {
           <span>{tr('update.current')}: <strong>v{s.current}</strong></span>{' '}
           <UpdateBadge status={s} />
         </p>
+        {s.liveIdentity ? <p><code>{s.liveIdentity}</code></p> : null}
         {!s.node.ok ? <p className="hint-warn">{tr('update.nodeWarn', { version: s.node.version, required: s.node.required })}</p> : null}
         {!s.updateSupported ? <p className="hint-warn">{tr(s.localDevInstall ? 'update.localDev' : 'update.unsupportedInstall')}</p> : null}
         {s.installs.multiple ? <MultiInstallWarning entries={s.installs.entries} /> : null}

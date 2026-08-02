@@ -16,10 +16,21 @@ import { botmuxInstallRoot } from '../utils/install-info.js';
 import { withFileLockSync } from '../utils/file-lock.js';
 import {
   globalInstallUpdateLockTarget,
-  spawnDetachedRestart,
 } from './maintenance.js';
 import { runCustomReleasePromote } from './custom-release-promote.js';
 import type { CustomReleaseDeployResult } from './custom-release-notifier-types.js';
+import {
+  activateCustomReleaseController,
+  activateCustomReleaseRuntime,
+  backupCustomReleaseRuntime,
+  cleanupCustomReleaseRuntimes,
+  currentCustomReleaseRuntimeRoot,
+  prepareCustomReleaseRuntime,
+  type PreparedRuntimeRelease,
+} from './custom-release-runtime.js';
+import { readRuntimeRelease, type RuntimeReleaseRecord } from './runtime-release.js';
+import { spawnRuntimeRestartDriver } from './runtime-release-restart.js';
+import { waitForRuntimeActivation } from './runtime-release-verification.js';
 
 const RESULT_PREFIX = 'BOTMUX_CUSTOM_RELEASE_RESULT=';
 const RELEASE_TAG = /^release\/v\d+\.\d+\.\d+-custom\.\d+$/;
@@ -36,7 +47,20 @@ export interface CustomReleaseDeployDeps {
   exists: (path: string) => boolean;
   realpath: (path: string) => string;
   activePackageRoot: () => string;
-  startRestart: (productionRoot: string, releaseTag: string) => void;
+  currentRuntimeRoot: () => string;
+  runtimeRelease: (root: string) => RuntimeReleaseRecord | null;
+  verifyActivation: (runtime: RuntimeReleaseRecord) => Promise<void>;
+  prepareRuntime: (
+    productionRoot: string,
+    releaseTag: string,
+    expectedHead: string,
+    activeRoot: string,
+  ) => Promise<PreparedRuntimeRelease>;
+  backupRuntime: (activeRoot: string, deployTag: string) => Promise<string>;
+  activateRuntime: (releaseRoot: string) => Promise<void>;
+  activateController: (releaseRoot: string) => void;
+  cleanupRuntimes: (gitRoot: string) => Promise<unknown>;
+  startRestart: (releaseRoot: string, releaseTag: string, rollbackRoot: string) => void;
 }
 
 function appendTail(current: string, chunk: Buffer | string): string {
@@ -105,8 +129,7 @@ function candidateTag(record: CustomReleaseEventRecord): string {
   return tag;
 }
 
-/** 写入维护原因并用现有 setsid 驱动脱离当前 daemon 发起重启。 */
-function startDetachedRestart(productionRoot: string, releaseTag: string): void {
+function startDetachedRestart(releaseRoot: string, releaseTag: string, rollbackRoot: string): void {
   let leaseId: string | undefined;
   try {
     withFileLockSync(globalInstallUpdateLockTarget(), () => {
@@ -118,7 +141,7 @@ function startDetachedRestart(productionRoot: string, releaseTag: string): void 
         source: 'ai',
         at: new Date().toISOString(),
       });
-      const child = spawnDetachedRestart('custom-release-card', productionRoot, leaseId);
+      const child = spawnRuntimeRestartDriver(releaseRoot, rollbackRoot, leaseId);
       if (!child.pid) throw new Error('重启驱动没有成功启动');
     }, { maxWaitMs: 500 });
   } catch (error) {
@@ -134,6 +157,14 @@ const PRODUCTION_DEPS: CustomReleaseDeployDeps = {
   exists: existsSync,
   realpath: realpathSync,
   activePackageRoot: botmuxInstallRoot,
+  currentRuntimeRoot: () => currentCustomReleaseRuntimeRoot(botmuxInstallRoot),
+  runtimeRelease: readRuntimeRelease,
+  verifyActivation: waitForRuntimeActivation,
+  prepareRuntime: prepareCustomReleaseRuntime,
+  backupRuntime: backupCustomReleaseRuntime,
+  activateRuntime: activateCustomReleaseRuntime,
+  activateController: activateCustomReleaseController,
+  cleanupRuntimes: cleanupCustomReleaseRuntimes,
   startRestart: startDetachedRestart,
 };
 
@@ -151,6 +182,10 @@ export async function runCustomReleaseDeployment(
   const dirty = await checkedRun(deps, '无法检查生产 checkout', 'git', ['status', '--porcelain'], root);
   if (dirty) throw new Error('canonical custom/prod checkout 存在未提交改动，拒绝自动部署');
 
+  // 构建与 smoke 必须先在候选 tag 的独立目录完成；否则 canonical dist 会在
+  // current 切换前被 pnpm build 提前改写，破坏旧版本继续服务的原子性。
+  const activeRoot = deps.realpath(deps.activePackageRoot());
+  const prepared = await deps.prepareRuntime(root, releaseTag, expectedHead, activeRoot);
   const promoted = await deps.promote(record);
   if (promoted.productionHead !== expectedHead) throw new Error('推进结果与卡片绑定 HEAD 不一致');
   await checkedRun(deps, '生产 checkout fetch 失败', 'git', ['fetch', 'origin', '--prune', '--tags'], root);
@@ -158,11 +193,10 @@ export async function runCustomReleaseDeployment(
   const localHead = await checkedRun(deps, '无法回读生产 checkout HEAD', 'git', ['rev-parse', 'HEAD'], root);
   if (localHead !== expectedHead) throw new Error('生产 checkout HEAD 与候选版本不一致');
 
-  const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-  await checkedRun(deps, '生产依赖安装失败', pnpm, ['install', '--frozen-lockfile'], root);
-  await checkedRun(deps, '生产构建失败', pnpm, ['build'], root);
-  await checkedRun(deps, '全局 wrapper 切换失败', pnpm, ['use:here'], root);
-  deps.startRestart(root, releaseTag);
+  // 直到这一刻 activeRoot 仍运行旧产物；先保存实际被换下的 dist，再原子 flip current。
+  await deps.backupRuntime(activeRoot, prepared.rollbackDeployTag);
+  await deps.activateRuntime(prepared.releaseRoot);
+  deps.startRestart(prepared.releaseRoot, releaseTag, prepared.rollbackRoot);
 }
 
 function parseDeployResult(output: string): Record<string, unknown> {
@@ -182,26 +216,35 @@ export async function finalizeCustomReleaseDeployment(
 ): Promise<CustomReleaseDeployResult> {
   const releaseTag = candidateTag(record);
   const expectedHead = record.event.integration.head;
-  const root = await productionWorktree(record, deps);
-  if (deps.realpath(deps.activePackageRoot()) !== root) {
-    throw new Error('新 daemon 实际执行路径不是 canonical custom/prod checkout');
+  const productionRoot = await productionWorktree(record, deps);
+  const activeRoot = deps.realpath(deps.activePackageRoot());
+  if (activeRoot !== deps.realpath(deps.currentRuntimeRoot())) {
+    throw new Error('新 daemon 实际执行路径不是 current 指向的版本化运行目录');
   }
-  const localHead = await checkedRun(deps, '无法回读运行 checkout HEAD', 'git', ['rev-parse', 'HEAD'], root);
+  const runtime = deps.runtimeRelease(activeRoot);
+  const deployTag = `deploy/${releaseTag.slice('release/'.length)}`;
+  if (
+    !runtime
+    || runtime.manifest.releaseTag !== releaseTag
+    || runtime.manifest.deployTag !== deployTag
+    || runtime.manifest.commit !== expectedHead
+  ) throw new Error('current 运行身份与候选版本不一致');
+  await deps.verifyActivation(runtime);
+  const localHead = await checkedRun(deps, '无法回读运行 checkout HEAD', 'git', ['rev-parse', 'HEAD'], activeRoot);
   if (localHead !== expectedHead) throw new Error('新 daemon 运行 HEAD 与候选版本不一致');
   const remote = await checkedRun(
     deps,
     '无法回读远端 custom/prod',
     'git',
     ['ls-remote', 'origin', 'refs/heads/custom/prod'],
-    root,
+    productionRoot,
   );
   if (remote.split(/\s+/)[0] !== expectedHead) throw new Error('远端 custom/prod 与运行 HEAD 不一致');
 
   const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-  const result = await deps.run(pnpm, ['release:record-deploy', '--', '--tag', releaseTag], root);
+  const result = await deps.run(pnpm, ['release:record-deploy', '--', '--tag', releaseTag], productionRoot);
   if (result.code !== 0) commandError('部署留痕失败', result);
   const payload = parseDeployResult(result.output);
-  const deployTag = `deploy/${releaseTag.slice('release/'.length)}`;
   if (
     payload.ok !== true
     || payload.action !== 'record-deploy'
@@ -209,5 +252,7 @@ export async function finalizeCustomReleaseDeployment(
     || payload.deployTag !== deployTag
     || payload.commit !== expectedHead
   ) throw new Error('部署留痕结果与卡片绑定的候选版本或 HEAD 不一致');
+  deps.activateController(activeRoot);
+  await deps.cleanupRuntimes(activeRoot);
   return { productionHead: expectedHead, deployTag };
 }

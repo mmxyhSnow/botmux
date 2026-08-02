@@ -18,6 +18,11 @@ import {
   loadPersistedToken, persistToken, loadDashboardSecret, loadOrCreateDashboardSecret,
 } from './dashboard/auth.js';
 import { DaemonRegistry, botsRosterSignature } from './dashboard/registry.js';
+import {
+  daemonOfflineAlertMessage,
+  evaluateDaemonOfflineAlerts,
+  initialDaemonOfflineAlertState,
+} from './dashboard/daemon-offline-alert.js';
 import { Aggregator, subscribeDaemon } from './dashboard/aggregator.js';
 import { createSessionPresentationCoordinator } from './dashboard/session-presentation.js';
 import {
@@ -71,6 +76,7 @@ import { deleteWhiteboard, listWhiteboards, readWhiteboard, whiteboardEnabled } 
 import { resolveCodexAppProgressReportRequest } from './services/codex-app-progress-report.js';
 import { isLocalDevInstall, botmuxVersion, botmuxVersionAt, botmuxCliEntry, botmuxInstallRoot } from './utils/install-info.js';
 import { checkNode, detectBotmuxInstalls, resolveCurrentVersion } from './utils/install-diagnostics.js';
+import { resolveLiveIdentity } from './utils/live-identity.js';
 import {
   fetchLatestVersion,
   fetchReleasesSince,
@@ -83,6 +89,7 @@ import {
 } from './core/update-check.js';
 import { GITHUB_REPO } from './core/restart-report.js';
 import { spawnDetachedRestart, globalInstallUpdateLockTarget, globalInstallUpdateCwd } from './core/maintenance.js';
+import { spawnRuntimeRestartDriver } from './core/runtime-release-restart.js';
 import {
   detectGlobalInstallManager,
   formatGlobalInstallCommand,
@@ -139,7 +146,8 @@ import {
   updateInstalledSkillAsync,
 } from './services/skill-registry-store.js';
 import { redactGitUrlCredentials } from './core/skills/sources.js';
-import { effectiveDefaultWorkingDir, getBot, loadBotConfigs, parseBotConfigsFromText, type BotConfig, type VcMeetingAgentConfig } from './bot-registry.js';
+import { effectiveDefaultWorkingDir, getBot, loadBotConfigs, parseBotConfigsFromText, registerBot, type BotConfig, type VcMeetingAgentConfig } from './bot-registry.js';
+import { sendUserMessage } from './im/lark/client.js';
 import { findEntryIndex, readRawConfig, requireConfigPath, writeRawConfigAtomic } from './services/config-store.js';
 import {
   emitCodexNotifierOutboxItem,
@@ -1339,6 +1347,61 @@ function syncSubscriptions(): void {
 
 await registry.start();
 registry.on(syncSubscriptions);
+let daemonOfflineAlertState = initialDaemonOfflineAlertState(Date.now());
+let lastDaemonAlertTarget: { config: BotConfig; ownerOpenId: string } | undefined;
+
+/**
+ * Dashboard 独立于 bot daemon 存活，因此可在 PM2 打满重启、OOM 或 daemon 长时间离线时告警。
+ * 每次先保存最近可用的 primary bot/owner；全体 daemon 都离线后仍可用同一 App 的 HTTP 凭据私信。
+ */
+function auditDaemonOfflineAlerts(online: ReturnType<typeof registry.list>): void {
+  let configured: BotConfig[];
+  try { configured = loadBotConfigs(); } catch { return; }
+  const primary = [...online].sort((a, b) => a.botIndex - b.botIndex)[0];
+  if (primary) {
+    const cfg = configured.find(item => item.larkAppId === primary.larkAppId);
+    const ownerOpenId = primary.resolvedAllowedUsers?.find(item => item.startsWith('ou_'));
+    if (cfg?.larkAppSecret && ownerOpenId) lastDaemonAlertTarget = { config: cfg, ownerOpenId };
+  }
+  // Dashboard 若在 daemon 已全部离线后才启动，descriptor 中没有 resolved owner；
+  // 仍可使用 primary 配置里本来就是 open_id 的 owner。邮箱/union_id 不在此猜测转换。
+  if (!lastDaemonAlertTarget) {
+    const cfg = configured.find(item => (
+      !!item.larkAppSecret && item.allowedUsers?.some(user => user.startsWith('ou_'))
+    ));
+    const ownerOpenId = cfg?.allowedUsers?.find(user => user.startsWith('ou_'));
+    if (cfg && ownerOpenId) lastDaemonAlertTarget = { config: cfg, ownerOpenId };
+  }
+  const result = evaluateDaemonOfflineAlerts(
+    daemonOfflineAlertState,
+    configured.map(item => ({
+      larkAppId: item.larkAppId,
+      botName: item.displayName ?? item.name ?? item.larkAppId,
+    })),
+    new Set(online.map(item => item.larkAppId)),
+    Date.now(),
+  );
+  daemonOfflineAlertState = result.state;
+  if (result.newlyOffline.length === 0 || !lastDaemonAlertTarget) return;
+  const notice = daemonOfflineAlertMessage(result.newlyOffline);
+  registerBot(lastDaemonAlertTarget.config);
+  void sendUserMessage(
+    lastDaemonAlertTarget.config.larkAppId,
+    lastDaemonAlertTarget.ownerOpenId,
+    notice.text,
+    'text',
+    notice.uuid,
+  ).catch(error => {
+    // 失败不吞掉这一轮：解除对应去重，下一次 registry tick 以同一稳定 UUID 重试。
+    for (const bot of result.newlyOffline) daemonOfflineAlertState.notified.delete(bot.larkAppId);
+    logger.warn(
+      `[daemon-offline-alert] owner notice failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
+}
+
+registry.on(auditDaemonOfflineAlerts);
+auditDaemonOfflineAlerts(registry.list());
 // Initial attach for every daemon already known. Run in parallel so a slow
 // daemon doesn't block the others.
 await Promise.all(registry.list().map(attachDaemon));
@@ -2940,6 +3003,7 @@ const server = createServer(async (req, res) => {
       }));
       return jsonRes(res, 200, {
         current,
+        liveIdentity: resolveLiveIdentity().display,
         latest,
         versionLookupOk: latestResult.lookupOk,
         behind: !!latest && isNewerVersion(latest, current),
@@ -3232,6 +3296,7 @@ const server = createServer(async (req, res) => {
       let acquired = false;
       let leaseId: string | null = null;
       let activePackageRoot: string | undefined;
+      let sourceRuntimeRestart: { targetRoot: string; rollbackRoot: string } | undefined;
       let shouldLaunch = false;
       try {
         await withFileLock(globalInstallUpdateLockTarget(), async () => {
@@ -3249,6 +3314,18 @@ const server = createServer(async (req, res) => {
                 upd.oldVersion,
                 upd.newVersion,
               );
+              if (
+                sourceDeployment
+                && typeof lastSuccessfulSourceUpdate?.runtimeRoot === 'string'
+                && typeof lastSuccessfulSourceUpdate.rollbackRoot === 'string'
+                && isAbsolute(lastSuccessfulSourceUpdate.runtimeRoot)
+                && isAbsolute(lastSuccessfulSourceUpdate.rollbackRoot)
+              ) {
+                sourceRuntimeRestart = {
+                  targetRoot: lastSuccessfulSourceUpdate.runtimeRoot,
+                  rollbackRoot: lastSuccessfulSourceUpdate.rollbackRoot,
+                };
+              }
               writeRestartIntent({
                 kind: 'update',
                 oldVersion: upd.oldVersion,
@@ -3287,7 +3364,13 @@ const server = createServer(async (req, res) => {
       if (shouldLaunch && leaseId) {
         const launch = () => {
           try {
-            const child = spawnDetachedRestart('dashboard', activePackageRoot, leaseId!);
+            const child = sourceRuntimeRestart
+              ? spawnRuntimeRestartDriver(
+                  sourceRuntimeRestart.targetRoot,
+                  sourceRuntimeRestart.rollbackRoot,
+                  leaseId!,
+                )
+              : spawnDetachedRestart('dashboard', activePackageRoot, leaseId!);
             if (!child.pid) throw new Error('restart driver did not start');
           } catch (error) {
             clearRestartLease(leaseId!);

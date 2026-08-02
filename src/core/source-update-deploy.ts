@@ -4,6 +4,13 @@
  */
 import { spawn } from 'node:child_process';
 import { botmuxInstallRoot } from '../utils/install-info.js';
+import { productionWorktreeFromPorcelain } from '../utils/source-update.js';
+import {
+  activateCustomReleaseController,
+  cleanupCustomReleaseRuntimes,
+} from './custom-release-runtime.js';
+import { readRuntimeRelease, type RuntimeReleaseRecord } from './runtime-release.js';
+import { waitForRuntimeActivation } from './runtime-release-verification.js';
 
 const RESULT_PREFIX = 'BOTMUX_CUSTOM_RELEASE_RESULT=';
 const RELEASE_TAG = /^release\/v\d+\.\d+\.\d+-custom\.\d+$/;
@@ -22,6 +29,10 @@ export interface SourceUpdateDeployResult {
 
 export interface SourceUpdateDeployDeps {
   activePackageRoot: () => string;
+  runtimeRelease: (root: string) => RuntimeReleaseRecord | null;
+  verifyActivation: (runtime: RuntimeReleaseRecord) => Promise<void>;
+  activateController: (root: string) => void;
+  cleanupRuntimes: (gitRoot: string) => Promise<unknown>;
   run: (command: string, args: string[], cwd: string) => Promise<CommandResult>;
 }
 
@@ -45,6 +56,10 @@ function runCommand(command: string, args: string[], cwd: string): Promise<Comma
 
 const PRODUCTION_DEPS: SourceUpdateDeployDeps = {
   activePackageRoot: botmuxInstallRoot,
+  runtimeRelease: readRuntimeRelease,
+  verifyActivation: waitForRuntimeActivation,
+  activateController: activateCustomReleaseController,
+  cleanupRuntimes: cleanupCustomReleaseRuntimes,
   run: runCommand,
 };
 
@@ -72,7 +87,7 @@ function parseResult(output: string): Record<string, unknown> {
   }
 }
 
-/** 仅在重启后的运行态三方 HEAD 一致时记录官方同步对应的 deploy 标签。 */
+/** 仅在版本化运行态、canonical 生产分支与候选标签一致时记录 deploy 标签。 */
 export async function finalizeSourceUpdateDeployment(
   releaseTag: string,
   expectedHead: string,
@@ -80,29 +95,51 @@ export async function finalizeSourceUpdateDeployment(
 ): Promise<SourceUpdateDeployResult> {
   if (!RELEASE_TAG.test(releaseTag)) throw new Error('官方同步候选标签无效');
   if (!COMMIT.test(expectedHead)) throw new Error('官方同步候选 HEAD 无效');
-  const root = deps.activePackageRoot();
-  const branch = await checkedRun(deps, '无法回读运行分支', 'git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], root);
-  if (branch !== 'custom/prod') throw new Error('新 daemon 未运行在 custom/prod');
-  const localHead = await checkedRun(deps, '无法回读运行 HEAD', 'git', ['rev-parse', 'HEAD'], root);
+  const activeRoot = deps.activePackageRoot();
+  const deployTag = `deploy/${releaseTag.slice('release/'.length)}`;
+  const runtime = deps.runtimeRelease(activeRoot);
+  if (
+    !runtime
+    || runtime.manifest.releaseTag !== releaseTag
+    || runtime.manifest.deployTag !== deployTag
+    || runtime.manifest.commit !== expectedHead
+  ) throw new Error('新 daemon 的版本化运行身份与官方同步候选不一致');
+  await deps.verifyActivation(runtime);
+
+  const worktrees = await checkedRun(
+    deps,
+    '无法读取 worktree 登记',
+    'git',
+    ['worktree', 'list', '--porcelain'],
+    activeRoot,
+  );
+  const productionRoot = productionWorktreeFromPorcelain(worktrees, 'custom/prod');
+  if (!productionRoot) throw new Error('必须且只能登记一个 canonical custom/prod worktree');
+  const localHead = await checkedRun(deps, '无法回读运行 HEAD', 'git', ['rev-parse', 'HEAD'], activeRoot);
   if (localHead !== expectedHead) throw new Error('新 daemon 运行 HEAD 与官方同步候选不一致');
-  const tagHead = await checkedRun(deps, '无法回读候选标签', 'git', ['rev-list', '-n', '1', releaseTag], root);
+  const tagHead = await checkedRun(
+    deps,
+    '无法回读候选标签',
+    'git',
+    ['rev-list', '-n', '1', releaseTag],
+    productionRoot,
+  );
   if (tagHead !== expectedHead) throw new Error('官方同步候选标签与预期 HEAD 不一致');
   const remote = await checkedRun(
     deps,
     '无法回读远端 custom/prod',
     'git',
     ['ls-remote', 'origin', 'refs/heads/custom/prod'],
-    root,
+    productionRoot,
   );
   if (remote.split(/\s+/)[0] !== expectedHead) throw new Error('远端 custom/prod 与官方同步候选不一致');
 
   const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-  const recorded = await deps.run(pnpm, ['release:record-deploy', '--', '--tag', releaseTag], root);
+  const recorded = await deps.run(pnpm, ['release:record-deploy', '--', '--tag', releaseTag], productionRoot);
   if (recorded.code !== 0) {
     throw new Error(`部署留痕失败：${recorded.output.trim().slice(-1000) || `exit ${recorded.code}`}`);
   }
   const payload = parseResult(recorded.output);
-  const deployTag = `deploy/${releaseTag.slice('release/'.length)}`;
   if (
     payload.ok !== true
     || payload.action !== 'record-deploy'
@@ -110,5 +147,7 @@ export async function finalizeSourceUpdateDeployment(
     || payload.deployTag !== deployTag
     || payload.commit !== expectedHead
   ) throw new Error('部署留痕结果与官方同步候选不一致');
+  deps.activateController(activeRoot);
+  await deps.cleanupRuntimes(activeRoot);
   return { productionHead: expectedHead, deployTag };
 }

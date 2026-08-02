@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   githubRepoFromRemote,
   parseSourceUpdateConfig,
+  productionWorktreeFromPorcelain,
   sourceDeploymentForRestart,
   sourceUpdatePlanFromProbe,
 } from '../src/utils/source-update.js';
@@ -34,6 +35,20 @@ describe('source checkout update plan', () => {
       originUrl: 'git@github.com:mmxyhSnow/botmux.git',
       upstreamUrl: 'https://github.com/deepcoldy/botmux.git',
     })).toBeNull();
+  });
+
+  it('版本化 detached 运行目录仍能精确解析唯一 custom/prod worktree', () => {
+    const output = [
+      'worktree /runtime/releases/v3.7.1-custom.11',
+      `HEAD ${'1'.repeat(40)}`,
+      'detached',
+      '',
+      'worktree /repo/custom-prod',
+      `HEAD ${'1'.repeat(40)}`,
+      'branch refs/heads/custom/prod',
+    ].join('\n');
+    expect(productionWorktreeFromPorcelain(output, 'custom/prod')).toBe('/repo/custom-prod');
+    expect(productionWorktreeFromPorcelain(`${output}\n\n${output}`, 'custom/prod')).toBeNull();
   });
 
   it('拒绝远端冒充和配置中的命令注入', () => {
@@ -69,5 +84,12 @@ describe('source checkout update plan', () => {
     expect(script).not.toContain("['tag', '-a', deployTag");
     expect(script).not.toContain('refs/tags/${deployTag}');
     expect(script).toContain('deployTag: null');
+  });
+
+  it('官方合并冲突会报告保留的 upgrade worktree 且明确生产未推进', () => {
+    const script = readFileSync(join(process.cwd(), 'scripts', 'sync-official-source.mjs'), 'utf8');
+    expect(script).toContain('官方同步发生合并冲突');
+    expect(script).toContain('已停在 ${upgradePath}');
+    expect(script).toContain('生产分支尚未推进');
   });
 });

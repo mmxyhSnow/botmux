@@ -92,6 +92,24 @@ describe('custom release event store', () => {
     expect(customReleaseMessageUuid(event().eventId)).toBe(customReleaseMessageUuid(event().eventId));
     expect(customReleaseMessageUuid(event().eventId).length).toBeLessThanOrEqual(50);
   });
+
+  it('状态变化会追加持久时间线，同状态字段更新不会重复节点', () => {
+    const { store, record } = storeWithEvent();
+    store.updateState(record.event.eventId, {
+      status: 'delivering',
+      updatedAt: '2026-07-31T08:00:01.000Z',
+    });
+    store.updateState(record.event.eventId, { attempts: 1 });
+    const current = store.updateState(record.event.eventId, {
+      status: 'delivered',
+      updatedAt: '2026-07-31T08:00:03.000Z',
+    });
+    expect(current.state.timeline?.map(entry => entry.status)).toEqual([
+      'queued', 'delivering', 'delivered',
+    ]);
+    expect(buildCustomReleaseSummaryCard(current)).toContain('发布时');
+    expect(buildCustomReleaseSummaryCard(current)).toContain('2s');
+  });
 });
 
 describe('custom release summary card', () => {

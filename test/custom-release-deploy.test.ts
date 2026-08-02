@@ -11,6 +11,8 @@ const candidateHead = '1'.repeat(40);
 const productionHead = '2'.repeat(40);
 const devRoot = '/workspace/botmux-custom-dev';
 const prodRoot = '/workspace/botmux-custom-prod';
+const releaseRoot = '/home/botmux/releases/v3.7.1-custom.3';
+const rollbackRoot = '/home/botmux/releases/v3.7.1-custom.2';
 const releaseTag = 'release/v3.7.1-custom.3';
 
 function record(): CustomReleaseEventRecord {
@@ -65,14 +67,36 @@ function deps(overrides: Partial<CustomReleaseDeployDeps> = {}): CustomReleaseDe
     promote: async () => ({ productionHead: candidateHead }),
     exists: () => true,
     realpath: path => path,
-    activePackageRoot: () => prodRoot,
+    activePackageRoot: () => rollbackRoot,
+    currentRuntimeRoot: () => releaseRoot,
+    runtimeRelease: root => ({
+      root,
+      manifest: {
+        schemaVersion: 1,
+        releaseTag,
+        deployTag: 'deploy/v3.7.1-custom.3',
+        commit: candidateHead,
+        runtimeBuildId: '4'.repeat(64),
+        createdAt: '2026-08-02T01:00:00.000Z',
+      },
+    }),
+    verifyActivation: async () => undefined,
+    prepareRuntime: async () => ({
+      releaseRoot,
+      rollbackRoot,
+      rollbackDeployTag: 'deploy/v3.7.1-custom.2',
+    }),
+    backupRuntime: async () => '/home/botmux/backups/runtime-v3.7.1-custom.2',
+    activateRuntime: async () => undefined,
+    activateController: () => undefined,
+    cleanupRuntimes: async () => undefined,
     startRestart: () => undefined,
     ...overrides,
   };
 }
 
 describe('runCustomReleaseDeployment', () => {
-  it('按钮回调按固定顺序推进、构建、切换 wrapper 并启动脱离式重启', async () => {
+  it('按钮回调先隔离构建，再推进源码，并在备份后原子切换运行目录', async () => {
     const calls: string[] = [];
     const run = vi.fn<CustomReleaseDeployDeps['run']>(async (command, args, cwd) => {
       calls.push(`${cwd}:${command} ${args.join(' ')}`);
@@ -80,23 +104,69 @@ describe('runCustomReleaseDeployment', () => {
       if (command === 'git' && args[0] === 'rev-parse') return { code: 0, output: `${candidateHead}\n` };
       return { code: 0, output: '' };
     });
-    const promote = vi.fn(async () => ({ productionHead: candidateHead }));
+    const prepareRuntime = vi.fn(async () => {
+      calls.push('prepare-runtime');
+      return {
+        releaseRoot,
+        rollbackRoot,
+        rollbackDeployTag: 'deploy/v3.7.1-custom.2',
+      };
+    });
+    const promote = vi.fn(async () => {
+      calls.push('promote');
+      return { productionHead: candidateHead };
+    });
+    const backupRuntime = vi.fn(async () => {
+      calls.push('backup-runtime');
+      return '/home/botmux/backups/runtime-v3.7.1-custom.2';
+    });
+    const activateRuntime = vi.fn(async () => { calls.push('activate-runtime'); });
     const startRestart = vi.fn();
 
-    await runCustomReleaseDeployment(record(), deps({ run, promote, startRestart }));
+    await runCustomReleaseDeployment(record(), deps({
+      run,
+      prepareRuntime,
+      promote,
+      backupRuntime,
+      activateRuntime,
+      startRestart,
+    }));
 
     expect(promote).toHaveBeenCalledOnce();
+    expect(prepareRuntime).toHaveBeenCalledWith(prodRoot, releaseTag, candidateHead, rollbackRoot);
+    expect(backupRuntime).toHaveBeenCalledWith(rollbackRoot, 'deploy/v3.7.1-custom.2');
+    expect(activateRuntime).toHaveBeenCalledWith(releaseRoot);
     expect(calls).toEqual([
       `${devRoot}:git worktree list --porcelain`,
       `${prodRoot}:git status --porcelain`,
+      'prepare-runtime',
+      'promote',
       `${prodRoot}:git fetch origin --prune --tags`,
       `${prodRoot}:git merge --ff-only origin/custom/prod`,
       `${prodRoot}:git rev-parse HEAD`,
-      `${prodRoot}:pnpm install --frozen-lockfile`,
-      `${prodRoot}:pnpm build`,
-      `${prodRoot}:pnpm use:here`,
+      'backup-runtime',
+      'activate-runtime',
     ]);
-    expect(startRestart).toHaveBeenCalledWith(prodRoot, releaseTag);
+    expect(startRestart).toHaveBeenCalledWith(releaseRoot, releaseTag, rollbackRoot);
+  });
+
+  it('隔离构建失败时不推进生产分支，也不触碰 current', async () => {
+    const promote = vi.fn(async () => ({ productionHead: candidateHead }));
+    const activateRuntime = vi.fn(async () => undefined);
+    const run = vi.fn<CustomReleaseDeployDeps['run']>(async (_command, args) => (
+      args[0] === 'worktree'
+        ? { code: 0, output: worktrees() }
+        : { code: 0, output: '' }
+    ));
+
+    await expect(runCustomReleaseDeployment(record(), deps({
+      run,
+      promote,
+      activateRuntime,
+      prepareRuntime: async () => { throw new Error('smoke failed'); },
+    }))).rejects.toThrow(/smoke failed/);
+    expect(promote).not.toHaveBeenCalled();
+    expect(activateRuntime).not.toHaveBeenCalled();
   });
 
   it('生产 checkout 脏时在远端推进前停止', async () => {
@@ -133,10 +203,22 @@ describe('finalizeCustomReleaseDeployment', () => {
       };
     });
 
-    await expect(finalizeCustomReleaseDeployment(record(), deps({ run }))).resolves.toEqual({
+    const activateController = vi.fn();
+    const cleanupRuntimes = vi.fn(async () => undefined);
+    const verifyActivation = vi.fn(async () => undefined);
+    await expect(finalizeCustomReleaseDeployment(record(), deps({
+      run,
+      activePackageRoot: () => releaseRoot,
+      activateController,
+      cleanupRuntimes,
+      verifyActivation,
+    }))).resolves.toEqual({
       productionHead: candidateHead,
       deployTag: 'deploy/v3.7.1-custom.3',
     });
+    expect(verifyActivation).toHaveBeenCalledOnce();
+    expect(activateController).toHaveBeenCalledWith(releaseRoot);
+    expect(cleanupRuntimes).toHaveBeenCalledWith(releaseRoot);
   });
 
   it('实际执行路径不是生产 checkout 时不创建部署标签', async () => {

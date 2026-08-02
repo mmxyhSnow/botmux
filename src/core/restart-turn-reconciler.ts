@@ -15,7 +15,6 @@ import {
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { DaemonSession } from './types.js';
-import type { CodexAppProgressOverview } from '../types.js';
 import {
   stableTurnDeliveryUuid,
   type TurnDeliveryLedger,
@@ -30,7 +29,7 @@ export type RestartTurnAction =
   | { kind: 'skip'; reason: string }
   | { kind: 'deliver-final'; content: string; outcome: 'completed' | 'failed' | 'cancelled' }
   | { kind: 'keep-following' }
-  | { kind: 'report-unconfirmed' };
+  | { kind: 'settle-silently'; reason: string };
 
 export interface RestartTurnDecisionInput {
   record: TurnDeliveryRecord;
@@ -45,7 +44,7 @@ export interface RestartTurnReconcileSummary {
   scanned: number;
   delivered: number;
   following: number;
-  unconfirmed: number;
+  suppressed: number;
   deferred: number;
   skipped: number;
   failed: number;
@@ -74,11 +73,7 @@ export interface RestartTurnReconcileInput {
     uuid: string,
   ): Promise<string>;
   now?: () => number;
-  reportUnconfirmed?: boolean;
-  formatUnconfirmed?: (
-    record: TurnDeliveryRecord,
-    progress?: CodexAppProgressOverview,
-  ) => string;
+  settleUnconfirmed?: boolean;
   lookupSessionStatus?: (sessionId: string) => 'active' | 'closed' | undefined;
   log?: (message: string) => void;
 }
@@ -94,18 +89,28 @@ export function decideRestartTurnAction(input: RestartTurnDecisionInput): Restar
     };
   }
   if (input.session?.working) return { kind: 'keep-following' };
-  return { kind: 'report-unconfirmed' };
+  return { kind: 'settle-silently', reason: 'not_in_flight' };
 }
 
-function sessionState(ds: DaemonSession | undefined): RestartTurnDecisionInput['session'] {
+/** 只有精确属于当前执行任务的 turn 才能解除重启静默，不能复用 session 级 working。 */
+function sessionState(
+  ds: DaemonSession | undefined,
+  record: TurnDeliveryRecord,
+): RestartTurnDecisionInput['session'] {
   if (!ds) return undefined;
   const status = ds.session.status === 'closed' ? 'closed' : 'active';
   const workerAlive = !!ds.worker && !ds.worker.killed;
-  const progressRunning = ds.session.codexAppProgressCard?.phase === 'running';
+  const progress = ds.session.codexAppProgressCard;
+  const progressRunning = progress?.phase === 'running'
+    && progress.acceptedTurnIds?.includes(record.id.turnId) === true;
+  const currentTurnId = (ds.currentReplyTarget ?? ds.session.currentReplyTarget)?.turnId
+    ?? ds.session.quoteTargetId;
+  const exactCurrentTurn = progressRunning || currentTurnId === record.id.turnId;
   const screenWorking = ds.lastScreenStatus === 'working'
     || ds.lastScreenStatus === 'analyzing'
     || ds.lastScreenStatus === 'starting';
   const working = workerAlive
+    && exactCurrentTurn
     && (screenWorking || (progressRunning && ds.lastScreenStatus !== 'idle'));
   return { status, working: status === 'active' && working };
 }
@@ -201,43 +206,12 @@ function releaseLease(lease: { path: string; token: string }): void {
   try { unlinkSync(lease.path); } catch { /* 后续扫描可由过期机制接管。 */ }
 }
 
-/** 只读取当前待恢复轮次自己的结构化进度，旧卡或其它排队轮次一律不借用。 */
-function matchingProgress(
-  ds: DaemonSession | undefined,
-  record: TurnDeliveryRecord,
-): CodexAppProgressOverview | undefined {
-  const state = ds?.session.codexAppProgressCard;
-  return state?.activeTurnId === record.id.turnId ? state.overview : undefined;
-}
-
-function defaultUnconfirmed(
-  record: TurnDeliveryRecord,
-  progress?: CodexAppProgressOverview,
-): string {
-  const confirmed = progress
-    ? [
-        `阶段：${progress.stage}`,
-        `当前：${progress.current}`,
-        ...(progress.completed.length
-          ? [`已完成：${progress.completed.join('；')}`]
-          : []),
-        `下一步：${progress.next}`,
-      ].join('\n')
-    : record.promptSummary || '任务已被接收';
-  return [
-    'Botmux 重启后已追溯此任务，但没有找到可靠的最终结论。',
-    `已确认进度：${confirmed}`,
-    '当前结论：任务状态未确认，未自动重放任何操作。',
-    '请继续在本线程补充要求，我会从现有状态继续处理。',
-  ].join('\n');
-}
-
 function emptySummary(scanned: number): RestartTurnReconcileSummary {
   return {
     scanned,
     delivered: 0,
     following: 0,
-    unconfirmed: 0,
+    suppressed: 0,
     deferred: 0,
     skipped: 0,
     failed: 0,
@@ -271,7 +245,7 @@ export async function reconcileOutstandingTurns(
         : input.lookupSessionStatus?.(record.id.sessionId);
       const action = decideRestartTurnAction({
         record,
-        session: sessionState(ds) ?? (persistedStatus
+        session: sessionState(ds, record) ?? (persistedStatus
           ? { status: persistedStatus, working: false }
           : undefined),
         reliableFinal: foundFinal,
@@ -286,19 +260,23 @@ export async function reconcileOutstandingTurns(
         summary.following++;
         continue;
       }
-      if (action.kind === 'report-unconfirmed' && input.reportUnconfirmed === false) {
+      if (action.kind === 'settle-silently' && input.settleUnconfirmed === false) {
         input.ledger.recordRecoveryRequired(record.id, now());
         summary.deferred++;
         continue;
       }
 
-      const content = action.kind === 'deliver-final'
-        ? action.content
-        : (input.formatUnconfirmed ?? defaultUnconfirmed)(
-            record,
-            matchingProgress(ds, record),
-          );
-      const outcome = action.kind === 'deliver-final' ? action.outcome : 'failed';
+      if (action.kind === 'settle-silently') {
+        input.ledger.recordRecoverySuppressed(record.id, {
+          atMs: now(),
+          reason: action.reason,
+        });
+        summary.suppressed++;
+        continue;
+      }
+
+      const content = action.content;
+      const outcome = action.outcome;
       input.ledger.recordFinal(record.id, { content, outcome, observedAtMs: now() });
       input.ledger.recordDeliveryPending(record.id, { uuid, atMs: now() });
       const current = input.ledger.get(record.id) ?? record;
@@ -311,8 +289,7 @@ export async function reconcileOutstandingTurns(
           foundFinal.appTurnId,
         );
       }
-      if (action.kind === 'deliver-final') summary.delivered++;
-      else summary.unconfirmed++;
+      summary.delivered++;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       input.ledger.recordRecoveryFailed(record.id, { atMs: now(), reason });

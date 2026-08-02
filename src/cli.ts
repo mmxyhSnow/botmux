@@ -12,6 +12,7 @@
  *   botmux logs [--lines] — view daemon logs
  *   botmux status         — show daemon status
  *   botmux upgrade|update — upgrade to latest version
+ *   botmux rollback --list|--last|--to <deploy-tag> — inspect or switch retained runtime releases
  *   botmux device enroll|status|logout — manage the host desktop device credential
  *   botmux list           — interactive session picker (TUI), attach to tmux
  *   botmux list --plain   — plain table output (for piping / scripts)
@@ -90,6 +91,7 @@ import { callDashboard, type DashboardEndpoint, type DashboardResult } from './c
 import { globalInstallUpdateLockTargetIn, installLatestBotmuxSync } from './core/maintenance.js';
 import { withFileLockSync } from './utils/file-lock.js';
 import { resolveCurrentVersion } from './utils/install-diagnostics.js';
+import { resolveLiveIdentity } from './utils/live-identity.js';
 import {
   formatGlobalInstallCommand,
   resolveGlobalInstallPlan,
@@ -2950,6 +2952,7 @@ function cmdLogs(): void {
 function cmdStatus(): void {
   killDuplicatePm2GodDaemons();
   warnIfLegacyBotmuxAlive();
+  console.log(`Live: ${resolveLiveIdentity().display}\n`);
   runPm2(['status']);
 }
 
@@ -4810,7 +4813,9 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
               --with-plugin 显式重启 auto service；--include-pm2 同时重启 PM2 God
   logs        查看 daemon 日志（--lines N, --bot <0-based-index|pm2-name|appId>）
   status      查看 daemon 状态
+  worktree    检查版本化运行目录（doctor；clean --unused 默认 dry-run，--apply 才清理）
   upgrade     升级到最新版本（别名：update）
+  rollback    管理已验收版本化运行目录（--list 只读；--last / --to <deploy-tag> 原子回滚并重启验收）
   dashboard   打印新的 Web Dashboard 一次性登录 URL（旧 token 同时失效）
   device enroll|status|logout
               在宿主终端注册、查看或清除 desktop device 凭证（AI CLI 会话内拒绝）
@@ -9933,6 +9938,26 @@ switch (command) {
   case 'restart': await cmdRestart(); break;
   case 'logs':    cmdLogs(); break;
   case 'status':  cmdStatus(); break;
+  case 'worktree': {
+    const { runRuntimeWorktreeCommand } = await import('./cli/runtime-worktree.js');
+    try {
+      process.exitCode = await runRuntimeWorktreeCommand(process.argv.slice(3));
+    } catch (error) {
+      console.error(`运行 worktree 操作失败：${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
+    break;
+  }
+  case 'rollback': {
+    const { runRuntimeRollback } = await import('./cli/runtime-rollback.js');
+    try {
+      console.log(JSON.stringify(await runRuntimeRollback(process.argv.slice(3)), null, 2));
+    } catch (error) {
+      console.error(`回滚失败：${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
+    break;
+  }
   case 'upgrade':
   case 'update':  cmdUpgrade(); break;
   case 'dashboard': await cmdDashboard(); break;

@@ -34,7 +34,7 @@ describe('restart turn reconciler', () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  it('可靠 final 优先补发，仍在工作则继续跟踪，空闲且无结论则明确未确认', () => {
+  it('可靠 final 优先补发，仍在工作则继续跟踪，空闲且无结论则静默结算', () => {
     const record = ledger.get(id)!;
     expect(decideRestartTurnAction({
       record,
@@ -50,7 +50,7 @@ describe('restart turn reconciler', () => {
     expect(decideRestartTurnAction({
       record,
       session: sessionState('idle'),
-    })).toEqual({ kind: 'report-unconfirmed' });
+    })).toEqual({ kind: 'settle-silently', reason: 'not_in_flight' });
   });
 
   it('已关闭会话跳过，不会把旧任务重新打开', () => {
@@ -92,6 +92,7 @@ describe('restart turn reconciler', () => {
 
   it('活跃任务恢复进度跟踪，不发送未确认消息', async () => {
     const ds = makeSession('working');
+    ds.session.quoteTargetId = id.turnId;
     ds.suppressRecoveryCard = true;
     const send = vi.fn(async () => 'om_unexpected');
 
@@ -109,28 +110,46 @@ describe('restart turn reconciler', () => {
     expect(ledger.get(id)?.recovery?.state).toBe('required');
   });
 
-  it('无可靠终态时发送明确的状态未确认结论，且不重放任务', async () => {
-    const send = vi.fn(async () => 'om_unconfirmed');
+  it('无可靠终态且没有执行中证据时静默持久结算，不向群里刷屏', async () => {
+    const send = vi.fn(async () => 'om_unexpected');
 
-    await reconcileOutstandingTurns({
+    const summary = await reconcileOutstandingTurns({
       dataDir,
       larkAppId: 'app_a',
       ledger,
       sessions: [makeSession('idle')],
       send,
-      formatUnconfirmed: record => `状态未确认：${record.promptSummary}`,
     });
 
-    expect(send).toHaveBeenCalledWith(
-      expect.anything(),
-      '状态未确认：原始任务',
-      stableTurnDeliveryUuid(id),
-    );
+    expect(send).not.toHaveBeenCalled();
+    expect(summary.suppressed).toBe(1);
+    expect(ledger.get(id)?.recovery).toEqual(expect.objectContaining({
+      state: 'suppressed',
+      reason: 'not_in_flight',
+    }));
     expect(ledger.listOutstanding('app_a')).toEqual([]);
   });
 
-  it('无可靠终态时优先使用与当前 turn 精确匹配的结构化进度', async () => {
-    const ds = makeSession('idle');
+  it('首轮扫描只延期静默结算，为恢复 worker 留出精确识别当前 turn 的窗口', async () => {
+    const send = vi.fn(async () => 'om_unexpected');
+
+    const summary = await reconcileOutstandingTurns({
+      dataDir,
+      larkAppId: 'app_a',
+      ledger,
+      sessions: [makeSession('idle')],
+      send,
+      settleUnconfirmed: false,
+    });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(summary.deferred).toBe(1);
+    expect(ledger.get(id)?.recovery?.state).toBe('required');
+    expect(ledger.listOutstanding('app_a')).toHaveLength(1);
+  });
+
+  it('只有进度卡精确绑定的当前 turn 可以解除恢复静默', async () => {
+    const ds = makeSession('working');
     ds.session.codexAppProgressCard = {
       phase: 'running',
       activeTurnId: id.turnId,
@@ -147,34 +166,24 @@ describe('restart turn reconciler', () => {
         delivery: ['origin/custom/prod'],
       },
     };
-    const send = vi.fn(async () => 'om_structured_progress');
+    ds.suppressRecoveryCard = true;
+    const send = vi.fn(async () => 'om_unexpected');
 
-    await reconcileOutstandingTurns({
+    const summary = await reconcileOutstandingTurns({
       dataDir,
       larkAppId: 'app_a',
       ledger,
       sessions: [ds],
       send,
-      formatUnconfirmed: (record, progress) => [
-        record.promptSummary,
-        progress?.stage,
-        progress?.current,
-        progress?.completed.join('；'),
-        progress?.evidence?.join('；'),
-      ].filter(Boolean).join('\n'),
     });
 
-    expect(send).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.stringContaining('运行态切换'),
-      stableTurnDeliveryUuid(id),
-    );
-    expect(send.mock.calls[0]?.[1]).toContain('完成合入；完成构建与推送');
-    expect(send.mock.calls[0]?.[1]).toContain('commit abc123；build id build-1');
+    expect(send).not.toHaveBeenCalled();
+    expect(summary.following).toBe(1);
+    expect(ds.suppressRecoveryCard).toBe(false);
   });
 
-  it('结构化进度属于其它 turn 时回退到原始任务，避免串用旧任务状态', async () => {
-    const ds = makeSession('idle');
+  it('同一 working session 的历史 turn 不得借用当前 turn 状态解除静默', async () => {
+    const ds = makeSession('working');
     ds.session.codexAppProgressCard = {
       phase: 'running',
       activeTurnId: 'om_other_turn',
@@ -189,22 +198,36 @@ describe('restart turn reconciler', () => {
         next: '其它任务下一步',
       },
     };
-    const send = vi.fn(async () => 'om_prompt_fallback');
+    ds.session.quoteTargetId = 'om_other_turn';
+    ds.suppressRecoveryCard = true;
+    const send = vi.fn(async () => 'om_unexpected');
 
-    await reconcileOutstandingTurns({
+    const summary = await reconcileOutstandingTurns({
       dataDir,
       larkAppId: 'app_a',
       ledger,
       sessions: [ds],
       send,
-      formatUnconfirmed: (record, progress) => progress?.current ?? record.promptSummary,
     });
 
-    expect(send).toHaveBeenCalledWith(
-      expect.anything(),
-      '原始任务',
-      stableTurnDeliveryUuid(id),
-    );
+    expect(send).not.toHaveBeenCalled();
+    expect(summary.suppressed).toBe(1);
+    expect(summary.following).toBe(0);
+    expect(ds.suppressRecoveryCard).toBe(true);
+  });
+
+  it('静默结算后出现晚到 final 会重新进入待投递集合', () => {
+    ledger.recordRecoverySuppressed(id, { atMs: 1_500, reason: 'not_in_flight' });
+    expect(ledger.listOutstanding('app_a')).toEqual([]);
+
+    ledger.recordFinal(id, {
+      content: '晚到但可靠的最终结论',
+      outcome: 'completed',
+      observedAtMs: 1_800,
+    });
+
+    expect(ledger.listOutstanding('app_a')).toHaveLength(1);
+    expect(ledger.get(id)?.recovery).toBeUndefined();
   });
 
   it('并发扫描通过恢复租约只执行一次外部发送', async () => {

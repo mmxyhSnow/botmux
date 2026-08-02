@@ -15,7 +15,7 @@ import type {
 } from '../services/restart-intent-store.js';
 import { consumeRestartIntent } from '../services/restart-intent-store.js';
 import { countActiveSessionsOnDisk } from '../services/session-store.js';
-import { resolveCurrentDeploymentVersion } from '../utils/install-diagnostics.js';
+import { resolveLiveIdentity } from '../utils/live-identity.js';
 import { t, localeForBot, type Locale } from '../i18n/index.js';
 
 export const GITHUB_REPO = 'deepcoldy/botmux';
@@ -177,7 +177,7 @@ export async function sendRestartReportIfPending(w: RestartReportWiring): Promis
 
   const locale = localeForBot(w.primaryLarkAppId);
   const sessionCount = countActiveSessionsOnDisk();
-  const version = resolveCurrentDeploymentVersion();
+  const version = resolveLiveIdentity().display;
   let changelog: string | undefined;
   if (intent.kind === 'update' && intent.newVersion) {
     changelog = (await fetchChangelog(intent.newVersion, { auth: w.githubAuth }))

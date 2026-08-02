@@ -139,8 +139,8 @@ vi.mock('../src/core/session-activity.js', () => ({
   markSessionActivity: vi.fn(),
 }));
 
-import { restoreActiveSessions, resumeSession } from '../src/core/session-manager.js';
-import { restoreUsageLimitRuntimeState, closeSession, forkAdoptWorker } from '../src/core/worker-pool.js';
+import { restoredWorkerTurnId, restoreActiveSessions, resumeSession } from '../src/core/session-manager.js';
+import { restoreUsageLimitRuntimeState, closeSession, forkAdoptWorker, forkWorker } from '../src/core/worker-pool.js';
 import { TmuxBackend } from '../src/adapters/backend/tmux-backend.js';
 import * as sessionStore from '../src/services/session-store.js';
 import { sessionKey } from '../src/core/types.js';
@@ -153,6 +153,7 @@ beforeEach(() => {
   sessionStore.init();
   wp.registry = null;
   vi.mocked(closeSession).mockClear();
+  vi.mocked(forkWorker).mockClear();
 });
 
 afterEach(() => {
@@ -178,6 +179,46 @@ function makeClosedSession(overrides: Partial<Parameters<typeof sessionStore.cre
 }
 
 describe('resumeSession', () => {
+    it('只为自洽的重启会话恢复精确 turn 绑定', () => {
+      expect(restoredWorkerTurnId({
+        scope: 'chat',
+        quoteTargetId: 'om_current',
+        currentReplyTarget: { rootMessageId: 'om_root', turnId: 'om_current', updatedAt: new Date().toISOString() },
+      })).toBe('om_current');
+      expect(restoredWorkerTurnId({
+        scope: 'chat',
+        quoteTargetId: 'om_current',
+        currentReplyTarget: { rootMessageId: 'om_root', turnId: 'om_stale', updatedAt: new Date().toISOString() },
+      })).toBeUndefined();
+      expect(restoredWorkerTurnId({ scope: 'chat', quoteTargetId: 'om_current' })).toBeUndefined();
+      expect(restoredWorkerTurnId({ scope: 'thread', quoteTargetId: 'om_current' })).toBe('om_current');
+    });
+
+    it('重启重挂存活 tmux 会话时把自洽 turn 传给新 worker', async () => {
+      daemonConfig.backendType = 'tmux';
+      vi.mocked(TmuxBackend.probeSession).mockReturnValue('alive');
+      const s = sessionStore.createSession('oc_restore_turn', 'om_restore_root', 'Restored turn', 'group');
+      s.larkAppId = 'app_test';
+      s.scope = 'chat';
+      s.cliId = 'claude-code';
+      s.workingDir = '/tmp/proj';
+      s.quoteTargetId = 'om_turn_current';
+      s.currentReplyTarget = {
+        rootMessageId: 'om_restore_root',
+        turnId: 'om_turn_current',
+        updatedAt: new Date().toISOString(),
+      };
+      sessionStore.updateSession(s);
+
+      await restoreActiveSessions(new Map<string, DaemonSession>());
+
+      expect(forkWorker).toHaveBeenCalledWith(
+        expect.objectContaining({ session: expect.objectContaining({ sessionId: s.sessionId }) }),
+        '',
+        { resume: true, turnId: 'om_turn_current' },
+      );
+    });
+
   describe('error branches', () => {
     it('returns not_found for an unknown session id', async () => {
       const r = await resumeSession('no-such-id', new Map());

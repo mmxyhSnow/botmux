@@ -1,5 +1,6 @@
 /** 自定义待发版私聊汇总卡：展示本次合入、版本累计和 HEAD 绑定冻结入口。 */
 import type { CustomReleaseEventRecord } from '../../services/custom-release-event.js';
+import { releaseTimelineDurations } from '../../core/custom-release-timeline.js';
 
 function code(value: string, length = value.length): string {
   return `\`${value.slice(0, length).replace(/`/g, '')}\``;
@@ -78,6 +79,26 @@ function cumulativeLines(record: CustomReleaseEventRecord): string[] {
   return items.length > 0 ? items : ['当前窗口没有可识别的 merge 项。'];
 }
 
+const STATUS_LABELS: Record<string, string> = {
+  queued: '排队', delivering: '投递', delivered: '待冻结', freezing: '冻结验证',
+  frozen: '候选已冻结', deploying: '推进与部署', deployed: '运行态验收完成',
+  delivery_failed: '投递失败', freeze_failed: '冻结失败', promote_failed: '推进失败',
+  deploy_failed: '部署失败', stale: '候选过期', promoted: '已推进', promoting: '推进中',
+};
+
+function timelineLines(record: CustomReleaseEventRecord): string[] {
+  const entries = releaseTimelineDurations(record.state.timeline, record.state.updatedAt).slice(-8);
+  if (entries.length === 0) return [];
+  return [
+    '',
+    '**发布时间线**',
+    ...entries.map(entry => {
+      const seconds = Math.round(entry.durationMs / 100) / 10;
+      return `- ${text(STATUS_LABELS[entry.status] ?? entry.status)} · ${seconds}s`;
+    }),
+  ];
+}
+
 function actionButton(record: CustomReleaseEventRecord): Record<string, unknown> | undefined {
   const canFreeze = record.state.status === 'delivered' || record.state.status === 'freeze_failed';
   const canPromote = record.state.status === 'frozen'
@@ -140,6 +161,7 @@ export function buildCustomReleaseSummaryCard(record: CustomReleaseEventRecord):
     `- 待发：${code(event.integration.branch)} @ ${code(event.integration.head, 8)}`,
     `- 累计：${totals.commits} commits，${totals.files} files，${signed(totals.insertions)}/${signed(-totals.deletions)}`,
     ...statusLines(record),
+    ...timelineLines(record),
     `[查看完整差异](${compareUrl})`,
   ].join('\n');
   const elements: Record<string, unknown>[] = [{ tag: 'markdown', content: body }];

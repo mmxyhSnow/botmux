@@ -80,6 +80,7 @@ export function createLarkAskCardDispatcher(
       const canReplyToRoot = typeof ask.rootMessageId === 'string'
         && ask.rootMessageId.startsWith('om_');
       let messageId: string;
+      const reusedFlowCard = !!ask.flow?.cardMessageId;
       if (ask.flow?.cardMessageId) {
         await update(ask.larkAppId, ask.flow.cardMessageId, cardJson);
         messageId = ask.flow.cardMessageId;
@@ -89,7 +90,8 @@ export function createLarkAskCardDispatcher(
           : await send(ask.larkAppId, ask.chatId, cardJson, 'interactive');
       }
       // 普通 ASK 没有锁定对象，保持原有发卡时序，不引入无意义的异步等待。
-      if (ask.approvers?.length) {
+      // 连续提问复用同一张卡时不重复发送独立 @ 文本；卡内问题已原地更新。
+      if (ask.approvers?.length && !reusedFlowCard) {
         await notifyAskApprovers(ask, { canReplyToRoot, reply, send });
       }
       return { messageId };
