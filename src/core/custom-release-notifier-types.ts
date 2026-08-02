@@ -28,7 +28,6 @@ export interface CustomReleaseNotifierDeps {
   ownerOpenId: () => string | undefined;
   sendCard: (ownerOpenId: string, cardJson: string, uuid: string) => Promise<string>;
   updateCard: (messageId: string, cardJson: string) => Promise<void>;
-  notifyText: (ownerOpenId: string, content: string, uuid: string) => Promise<void>;
   freeze: (record: CustomReleaseEventRecord) => Promise<CustomReleaseFreezeResult>;
   /** 完成推进、构建、wrapper 切换并发起脱离当前 daemon 的重启。 */
   deploy: (record: CustomReleaseEventRecord) => Promise<void>;

@@ -175,7 +175,7 @@ describe('custom release summary card', () => {
 });
 
 describe('custom release notifier', () => {
-  it('投递新卡后幂等，并把上一张待冻结卡标为过期', async () => {
+  it('同类待冻结事件复用原卡，并把上一事件标为过期', async () => {
     const { store } = storeWithEvent('1');
     const sent: string[] = [];
     const patched: Array<{ messageId: string; card: string }> = [];
@@ -187,7 +187,6 @@ describe('custom release notifier', () => {
         return `om_${sent.length}`;
       },
       updateCard: async (messageId, card) => { patched.push({ messageId, card }); },
-      notifyText: async () => undefined,
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
       deploy: async () => undefined,
       finalizeDeploy: async () => ({
@@ -207,21 +206,21 @@ describe('custom release notifier', () => {
       },
     }));
     await notifier.flush();
-    expect(sent).toHaveLength(2);
+    expect(sent).toHaveLength(1);
     expect(store.get(event('1').eventId)?.state.status).toBe('stale');
-    expect(patched.some(item => item.messageId === 'om_1' && item.card.includes('已有更新'))).toBe(true);
+    expect(store.get(event('2').eventId)?.state.messageId).toBe('om_1');
+    expect(patched.some(item => item.messageId === 'om_1' && item.card.includes('22222222'))).toBe(true);
+    expect(patched.some(item => item.card.includes('已有更新'))).toBe(false);
   });
 
   it('只允许收件 owner 冻结，成功后只更新原卡片', async () => {
     const { store } = storeWithEvent();
     const patched: string[] = [];
-    const notices: string[] = [];
     const notifier = new CustomReleaseNotifier({
       store,
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_release',
       updateCard: async (_messageId, card) => { patched.push(card); },
-      notifyText: async (_owner, content) => { notices.push(content); },
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
       deploy: async () => undefined,
       finalizeDeploy: async () => ({
@@ -251,7 +250,6 @@ describe('custom release notifier', () => {
     });
     expect(patched.at(-1)).toContain('已冻结');
     expect(patched.at(-1)).toContain('custom_release_promote');
-    expect(notices).toHaveLength(0);
   });
 
   it('冻结期间远端 HEAD 改变时只让旧卡过期，不创建候选结果', async () => {
@@ -261,7 +259,6 @@ describe('custom release notifier', () => {
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_release',
       updateCard: async () => undefined,
-      notifyText: async () => undefined,
       freeze: async () => { throw new StaleCustomReleaseHeadError('远端 custom/dev 已变化'); },
       deploy: async () => undefined,
       finalizeDeploy: async () => ({
@@ -289,13 +286,11 @@ describe('custom release notifier', () => {
     const next = store.enqueue(event('2'));
     store.updateState(next.event.eventId, { status: 'delivered', messageId: 'om_next' });
     const patched: string[] = [];
-    const notices: string[] = [];
     const notifier = new CustomReleaseNotifier({
       store,
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_unused',
       updateCard: async (_messageId, card) => { patched.push(card); },
-      notifyText: async (_owner, content) => { notices.push(content); },
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.4' }),
       deploy: async () => undefined,
       finalizeDeploy: async () => ({
@@ -307,8 +302,7 @@ describe('custom release notifier', () => {
     await notifier.refreshLatestSettledCard();
     await notifier.refreshLatestSettledCard();
     expect(patched.at(-1)).toContain('custom_release_promote');
-    expect(notices).toHaveLength(0);
-    expect(store.get(event('1').eventId)?.state.notifiedStatus).toBeUndefined();
+    expect(store.get(event('1').eventId)?.state.notifiedStatus).toBe('frozen');
   });
 
   it('daemon 重启后把中断中的冻结恢复为可重试状态', async () => {
@@ -320,7 +314,6 @@ describe('custom release notifier', () => {
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_release',
       updateCard: async (_messageId, card) => { patched.push(card); },
-      notifyText: async () => undefined,
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
       deploy: async () => undefined,
       finalizeDeploy: async () => ({

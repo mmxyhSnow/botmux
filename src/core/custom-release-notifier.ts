@@ -34,9 +34,7 @@ export class CustomReleaseNotifier {
     this.log = deps.log ?? (() => undefined);
     this.resultNotifier = new CustomReleaseResultNotifier({
       store: deps.store,
-      ownerOpenId: deps.ownerOpenId,
       updateCard: deps.updateCard,
-      notifyText: deps.notifyText,
       log: this.log,
     });
   }
@@ -84,18 +82,36 @@ export class CustomReleaseNotifier {
         state: { ...attempt.state, status: 'delivered' as const },
       };
       try {
-        const messageId = await this.deps.sendCard(
-          owner,
-          buildCustomReleaseSummaryCard(visible),
-          customReleaseMessageUuid(attempt.event.eventId),
-        );
+        const previous = this.deps.store.previousDelivered(attempt);
+        let messageId: string;
+        let reused = false;
+        if (previous?.state.messageId) {
+          try {
+            await this.deps.updateCard(previous.state.messageId, buildCustomReleaseSummaryCard(visible));
+            messageId = previous.state.messageId;
+            reused = true;
+          } catch (error) {
+            this.log(`previous card reuse failed ${previous.event.eventId.slice(0, 12)}: ${errorText(error)}`);
+            messageId = await this.deps.sendCard(
+              owner,
+              buildCustomReleaseSummaryCard(visible),
+              customReleaseMessageUuid(attempt.event.eventId),
+            );
+          }
+        } else {
+          messageId = await this.deps.sendCard(
+            owner,
+            buildCustomReleaseSummaryCard(visible),
+            customReleaseMessageUuid(attempt.event.eventId),
+          );
+        }
         const delivered = this.deps.store.updateState(attempt.event.eventId, {
           status: 'delivered',
           messageId,
           lastError: undefined,
         });
-        await this.expirePreviousCard(delivered);
-        this.log(`delivered ${attempt.event.eventId.slice(0, 12)} message=${messageId}`);
+        await this.expirePreviousCard(delivered, previous, reused);
+        this.log(`${reused ? 'reused' : 'delivered'} ${attempt.event.eventId.slice(0, 12)} message=${messageId}`);
       } catch (error) {
         this.deps.store.updateState(attempt.event.eventId, {
           status: 'delivery_failed',
@@ -106,13 +122,18 @@ export class CustomReleaseNotifier {
     }
   }
 
-  private async expirePreviousCard(current: CustomReleaseEventRecord): Promise<void> {
-    const previous = this.deps.store.previousDelivered(current);
+  private async expirePreviousCard(
+    current: CustomReleaseEventRecord,
+    previous: CustomReleaseEventRecord | undefined,
+    reused: boolean,
+  ): Promise<void> {
     if (!previous?.state.messageId) return;
     const stale = this.deps.store.updateState(previous.event.eventId, {
       status: 'stale',
       supersededBy: current.event.eventId,
     });
+    // 同一 messageId 已显示新事件，不能再用旧事件内容覆盖；服务端旧事件仍标记为 stale。
+    if (reused) return;
     try {
       await this.deps.updateCard(previous.state.messageId, buildCustomReleaseSummaryCard(stale));
     } catch (error) {
@@ -216,13 +237,6 @@ export class CustomReleaseNotifier {
         lastError: errorText(error),
       });
     }
-    if (settled.state.messageId) {
-      try {
-        await this.deps.updateCard(settled.state.messageId, buildCustomReleaseSummaryCard(settled));
-      } catch (error) {
-        this.log(`freeze result patch failed ${record.event.eventId.slice(0, 12)}: ${errorText(error)}`);
-      }
-    }
     await this.resultNotifier.notifySettled(settled);
   }
 
@@ -240,13 +254,6 @@ export class CustomReleaseNotifier {
         status: 'deploy_failed',
         lastError: errorText(error),
       });
-      if (settled.state.messageId) {
-        try {
-          await this.deps.updateCard(settled.state.messageId, buildCustomReleaseSummaryCard(settled));
-        } catch (patchError) {
-          this.log(`deploy result patch failed ${record.event.eventId.slice(0, 12)}: ${errorText(patchError)}`);
-        }
-      }
       await this.resultNotifier.notifySettled(settled);
     }
   }
@@ -260,13 +267,6 @@ export class CustomReleaseNotifier {
       lastError: '重启驱动未在预期时间内接管，请重新点击推进并部署',
       notifiedStatus: undefined,
     });
-    if (settled.state.messageId) {
-      try {
-        await this.deps.updateCard(settled.state.messageId, buildCustomReleaseSummaryCard(settled));
-      } catch (error) {
-        this.log(`restart handoff patch failed ${eventId.slice(0, 12)}: ${errorText(error)}`);
-      }
-    }
     await this.resultNotifier.notifySettled(settled);
   }
 
@@ -277,12 +277,7 @@ export class CustomReleaseNotifier {
         status: 'freeze_failed',
         lastError: 'daemon 重启中断了冻结任务，请重新点击冻结',
       });
-      if (!recovered.state.messageId) continue;
-      try {
-        await this.deps.updateCard(recovered.state.messageId, buildCustomReleaseSummaryCard(recovered));
-      } catch (error) {
-        this.log(`interrupted freeze patch failed ${recovered.event.eventId.slice(0, 12)}: ${errorText(error)}`);
-      }
+      await this.resultNotifier.notifySettled(recovered);
     }
     for (const interrupted of this.deps.store.list().filter(record => record.state.status === 'promoting')) {
       const recovered = this.deps.store.updateState(interrupted.event.eventId, {
@@ -290,12 +285,7 @@ export class CustomReleaseNotifier {
         lastError: 'daemon 重启中断了推进任务，请重新点击推进 custom/prod',
         notifiedStatus: undefined,
       });
-      if (!recovered.state.messageId) continue;
-      try {
-        await this.deps.updateCard(recovered.state.messageId, buildCustomReleaseSummaryCard(recovered));
-      } catch (error) {
-        this.log(`interrupted promote patch failed ${recovered.event.eventId.slice(0, 12)}: ${errorText(error)}`);
-      }
+      await this.resultNotifier.notifySettled(recovered);
     }
     for (const interrupted of this.deps.store.list().filter(record => record.state.status === 'deploying')) {
       let recovered: CustomReleaseEventRecord;
@@ -314,13 +304,6 @@ export class CustomReleaseNotifier {
           lastError: errorText(error),
           notifiedStatus: undefined,
         });
-      }
-      if (recovered.state.messageId) {
-        try {
-          await this.deps.updateCard(recovered.state.messageId, buildCustomReleaseSummaryCard(recovered));
-        } catch (error) {
-          this.log(`interrupted deploy patch failed ${recovered.event.eventId.slice(0, 12)}: ${errorText(error)}`);
-        }
       }
       await this.resultNotifier.notifySettled(recovered);
     }

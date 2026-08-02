@@ -65,7 +65,6 @@ describe('custom release post-freeze actions', () => {
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_release',
       updateCard: async () => undefined,
-      notifyText: async () => undefined,
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
       deploy,
       finalizeDeploy: async () => ({
@@ -92,13 +91,11 @@ describe('custom release post-freeze actions', () => {
     const store = frozenStore();
     store.updateState(event().eventId, { status: 'deploying' });
     const patched: string[] = [];
-    const notices: string[] = [];
     const notifier = new CustomReleaseNotifier({
       store,
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_release',
       updateCard: async (_messageId, card) => { patched.push(card); },
-      notifyText: async (_owner, content) => { notices.push(content); },
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
       deploy: async () => undefined,
       finalizeDeploy: async () => ({
@@ -115,7 +112,6 @@ describe('custom release post-freeze actions', () => {
     });
     expect(patched.at(-1)).toContain('已部署');
     expect(patched.at(-1)).not.toContain('custom_release_promote');
-    expect(notices.at(-1)).toContain('已完成推进、部署和重启');
   });
 
   it('新 daemon 运行态验收失败时恢复为可重试部署', async () => {
@@ -126,7 +122,6 @@ describe('custom release post-freeze actions', () => {
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_release',
       updateCard: async () => undefined,
-      notifyText: async () => undefined,
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
       deploy: async () => undefined,
       finalizeDeploy: async () => { throw new Error('运行路径不一致'); },
@@ -147,7 +142,6 @@ describe('custom release post-freeze actions', () => {
       ownerOpenId: () => 'ou_owner',
       sendCard: async () => 'om_release',
       updateCard: async () => undefined,
-      notifyText: async () => undefined,
       freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
       deploy: async () => undefined,
       finalizeDeploy: async () => ({

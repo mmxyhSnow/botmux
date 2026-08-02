@@ -36,8 +36,9 @@ describe('daemon offline alert', () => {
   it('消息隐藏 App ID 并为同一离线集合生成稳定 UUID', () => {
     const first = daemonOfflineAlertMessage(bots);
     const second = daemonOfflineAlertMessage([...bots].reverse());
-    expect(first.text).toContain('Youc、张三金');
-    expect(first.text).not.toContain('cli_a');
+    expect(first.cardJson).toContain('Botmux daemon 离线告警');
+    expect(first.cardJson).toContain('Youc、张三金');
+    expect(first.cardJson).not.toContain('cli_a');
     expect(first.uuid).toBe(second.uuid);
   });
 });

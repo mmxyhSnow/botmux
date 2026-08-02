@@ -10,6 +10,7 @@ import {
   installGitSkillAsync,
   readSkillRegistry,
 } from '../services/skill-registry-store.js';
+import { buildOwnerNoticeCard } from '../im/lark/owner-notice-card.js';
 import type { SkillPackage, SkillSource } from './skills/types.js';
 import { readRuntimeRelease, type RuntimeReleaseRecord } from './runtime-release.js';
 
@@ -165,4 +166,15 @@ export function productionSkillSyncNotice(result: ProductionSkillSyncResult): st
     return `⚠️ Botmux 维护 Skill 与生产版本对齐失败\n\n原因：${result.reason ?? '未知错误'}\n已保持现有 Skill，不影响 daemon 启动；请运行 botmux skills doctor 后人工核对。`;
   }
   return null;
+}
+
+/** Skill 对齐结果统一包装为维护卡片；aligned/skipped 不产生主动通知。 */
+export function buildProductionSkillSyncCard(result: ProductionSkillSyncResult): string | null {
+  const notice = productionSkillSyncNotice(result);
+  if (!notice) return null;
+  return buildOwnerNoticeCard({
+    title: 'Botmux Skill 维护通知',
+    markdown: notice,
+    template: result.status === 'repaired' ? 'green' : 'orange',
+  });
 }
