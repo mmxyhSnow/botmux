@@ -65,6 +65,14 @@ function pushWasRaced(result) {
   return result.code !== 0 && /non-fast-forward|fetch first|rejected/i.test(result.output);
 }
 
+/** 一次性 clone 继承规范 checkout 的 SSH 传输配置，避免私钥只配置在仓库本地时认证丢失。 */
+export function inheritReleaseJoinTransportConfig(repoRoot, staging) {
+  const sshCommand = git(repoRoot, ['config', '--get', 'core.sshCommand'], true);
+  if (sshCommand.code === 0 && sshCommand.output) {
+    git(staging, ['config', 'core.sshCommand', sshCommand.output]);
+  }
+}
+
 /** 仓库与 integration HEAD 共同构成通知幂等键。 */
 export function customReleaseEventId(repository, integrationHead) {
   return createHash('sha256').update(`${repository}\0${integrationHead}`).digest('hex');
@@ -121,6 +129,7 @@ export function joinCustomRelease({ repoRoot, remote, sourceRef, expectedHead, t
     const staging = mkdtempSync(join(tmpdir(), 'botmux-release-join-'));
     try {
       git(staging, ['clone', '--quiet', '--shared', '--no-checkout', repoRoot, staging]);
+      inheritReleaseJoinTransportConfig(repoRoot, staging);
       git(staging, ['remote', 'set-url', remote, originUrl]);
       git(staging, [
         'fetch', '--prune', remote,

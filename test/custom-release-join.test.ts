@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   customReleaseEventId,
   executeCustomReleaseJoin,
+  inheritReleaseJoinTransportConfig,
   joinCustomRelease,
   queueCustomReleaseEvent,
   selectCustomReleaseBase,
@@ -85,6 +86,18 @@ describe('custom release join helpers', () => {
     expect(first).toBe(customReleaseEventId('mmxyhSnow/botmux', 'a'.repeat(40)));
     expect(first).not.toBe(customReleaseEventId('mmxyhSnow/botmux', 'b'.repeat(40)));
     expect(first).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('一次性 clone 继承规范 checkout 的 SSH 传输配置', () => {
+    const fixture = releaseRepo();
+    const staging = join(fixture.root, 'staging');
+    git(fixture.root, 'init', staging);
+    git(fixture.repo, 'config', 'core.sshCommand', 'ssh -i /safe/release-key -o IdentitiesOnly=yes');
+
+    inheritReleaseJoinTransportConfig(fixture.repo, staging);
+
+    expect(git(staging, 'config', '--get', 'core.sshCommand'))
+      .toBe('ssh -i /safe/release-key -o IdentitiesOnly=yes');
   });
 
   it('在临时 clone 中正常合入、回读远端并生成可消费事件', () => {
