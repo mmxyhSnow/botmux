@@ -157,6 +157,10 @@ pm2 jlist | jq -r '.[] | [.name,.pm2_env.status,.pm2_env.pm_exec_path] | @tsv'
 - 主动发给 owner/admin 的维护、告警和权限消息统一使用卡片，不发送文本气泡兜底。同一通知类型持久化
   一个 messageId，后续状态优先 patch 原卡；只有原卡被撤回或不可更新时才发送替代卡。并发首次通知
   必须通过跨进程锁收敛为一张。
+- 新增主动通知必须先登记 `OwnerNoticePolicy`，再通过 `deliverOwnerNotice` 发送；业务模块禁止直接导入
+  底层卡片构造器或 messageId store。`pnpm audit:owner-notices` 是构建前置门禁，发现 owner/admin 文本
+  私信或底层旁路会直接失败。发版卡、任务完成卡等逐事件通知可保留专用账本，但飞书传输仍必须复用
+  `createOwnerNoticeTransport`，不得自行调用底层发送接口。
 - 重启、Skill 对齐、daemon 离线、主机过载和权限健康各自使用独立卡片槽位；发版生命周期继续复用
   HEAD 绑定的发版卡，不能把不同授权边界混到一张卡里。
 - 重启后只追溯“精确 turn 在重启时仍运行”的任务；历史、空闲或无法确认归属的 ledger 记录二次扫描后

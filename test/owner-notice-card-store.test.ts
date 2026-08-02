@@ -3,20 +3,35 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildOwnerNoticeCard } from '../src/im/lark/owner-notice-card.js';
-import { upsertOwnerNoticeCard } from '../src/services/owner-notice-card-store.js';
+import { deliverOwnerNotice, type OwnerNoticeTransport } from '../src/services/owner-notice.js';
+
+function raw(version: number): string {
+  return JSON.stringify({ elements: [{ tag: 'markdown', content: `v${version}` }] });
+}
 
 describe('owner notice card slot', () => {
   let dataDir: string;
   beforeEach(() => { dataDir = mkdtempSync(join(tmpdir(), 'botmux-owner-notice-')); });
   afterEach(() => { rmSync(dataDir, { recursive: true, force: true }); });
 
-  it('统一输出 interactive card 结构', () => {
-    const card = JSON.parse(buildOwnerNoticeCard({
-      title: 'Botmux 权限通知',
-      markdown: '缺少权限',
-      template: 'orange',
-    }));
+  it('统一输出 interactive card 结构', async () => {
+    let sent = '';
+    const transport: OwnerNoticeTransport = {
+      sendCard: async (_openId, card) => { sent = card; return 'om_notice'; },
+      updateCard: async () => undefined,
+    };
+    await deliverOwnerNotice({
+      dataDir,
+      larkAppId: 'cli_a',
+      recipientOpenId: 'ou_owner',
+      policy: 'production-skill-sync',
+      card: {
+        mode: 'standard',
+        content: { title: 'Botmux 权限通知', markdown: '缺少权限', template: 'orange' },
+      },
+      transport,
+    });
+    const card = JSON.parse(sent);
     expect(card.header).toEqual(expect.objectContaining({ template: 'orange' }));
     expect(card.elements).toEqual([{ tag: 'markdown', content: '缺少权限' }]);
   });
@@ -24,14 +39,20 @@ describe('owner notice card slot', () => {
   it('同类型第二次只更新原卡，不新增消息', async () => {
     const sendCard = vi.fn(async () => 'om_notice');
     const updateCard = vi.fn(async () => undefined);
-    const base = { dataDir, kind: 'restart', sendCard, updateCard };
+    const base = {
+      dataDir,
+      larkAppId: 'cli_a',
+      recipientOpenId: 'ou_owner',
+      policy: 'restart' as const,
+      transport: { sendCard, updateCard },
+    };
 
-    await upsertOwnerNoticeCard({ ...base, cardJson: '{"v":1}' });
-    const result = await upsertOwnerNoticeCard({ ...base, cardJson: '{"v":2}' });
+    await deliverOwnerNotice({ ...base, card: { mode: 'raw', cardJson: raw(1) } });
+    const result = await deliverOwnerNotice({ ...base, card: { mode: 'raw', cardJson: raw(2) } });
 
     expect(sendCard).toHaveBeenCalledTimes(1);
-    expect(updateCard).toHaveBeenCalledWith('om_notice', '{"v":2}');
-    expect(result).toEqual({ action: 'updated', messageId: 'om_notice' });
+    expect(updateCard).toHaveBeenCalledWith('om_notice', raw(2));
+    expect(result).toEqual(expect.objectContaining({ action: 'updated', messageId: 'om_notice', policy: 'restart' }));
   });
 
   it('原卡不可更新时新发并替换槽位，之后继续复用新卡', async () => {
@@ -41,15 +62,21 @@ describe('owner notice card slot', () => {
     const updateCard = vi.fn()
       .mockRejectedValueOnce(new Error('withdrawn'))
       .mockResolvedValue(undefined);
-    const base = { dataDir, kind: 'skill-sync', sendCard, updateCard };
+    const base = {
+      dataDir,
+      larkAppId: 'cli_a',
+      recipientOpenId: 'ou_owner',
+      policy: 'restart' as const,
+      transport: { sendCard, updateCard },
+    };
 
-    await upsertOwnerNoticeCard({ ...base, cardJson: '{"v":1}' });
-    expect(await upsertOwnerNoticeCard({ ...base, cardJson: '{"v":2}' }))
-      .toEqual({ action: 'sent', messageId: 'om_new' });
-    await upsertOwnerNoticeCard({ ...base, cardJson: '{"v":3}' });
+    await deliverOwnerNotice({ ...base, card: { mode: 'raw', cardJson: raw(1) } });
+    expect(await deliverOwnerNotice({ ...base, card: { mode: 'raw', cardJson: raw(2) } }))
+      .toEqual(expect.objectContaining({ action: 'sent', messageId: 'om_new' }));
+    await deliverOwnerNotice({ ...base, card: { mode: 'raw', cardJson: raw(3) } });
 
     expect(sendCard).toHaveBeenCalledTimes(2);
-    expect(updateCard).toHaveBeenLastCalledWith('om_new', '{"v":3}');
+    expect(updateCard).toHaveBeenLastCalledWith('om_new', raw(3));
   });
 
   it('同类型并发首次通知也只发送一张卡', async () => {
@@ -60,14 +87,65 @@ describe('owner notice card slot', () => {
       return 'om_one';
     });
     const updateCard = vi.fn(async () => undefined);
-    const input = { dataDir, kind: 'concurrent', cardJson: '{"v":1}', sendCard, updateCard };
+    const input = {
+      dataDir,
+      larkAppId: 'cli_a',
+      recipientOpenId: 'ou_owner',
+      policy: 'cli-runtime-update' as const,
+      scope: 'codex',
+      card: { mode: 'raw' as const, cardJson: raw(1) },
+      transport: { sendCard, updateCard },
+    };
 
-    const first = upsertOwnerNoticeCard(input);
-    const second = upsertOwnerNoticeCard(input);
+    const first = deliverOwnerNotice(input);
+    const second = deliverOwnerNotice(input);
     release();
     await Promise.all([first, second]);
 
     expect(sendCard).toHaveBeenCalledTimes(1);
-    expect(updateCard).toHaveBeenCalledWith('om_one', '{"v":1}');
+    expect(updateCard).toHaveBeenCalledWith('om_one', raw(1));
+  });
+
+  it('未登记策略形态和 scoped 身份均 fail closed', async () => {
+    const transport: OwnerNoticeTransport = {
+      sendCard: vi.fn(async () => 'om_unused'),
+      updateCard: vi.fn(async () => undefined),
+    };
+    await expect(deliverOwnerNotice({
+      dataDir,
+      larkAppId: 'cli_a',
+      recipientOpenId: 'ou_owner',
+      policy: 'permission-health',
+      card: { mode: 'standard', content: { title: '权限', markdown: '缺少 scope' } },
+      transport,
+    })).rejects.toThrow('必须提供 scope');
+    await expect(deliverOwnerNotice({
+      dataDir,
+      larkAppId: 'cli_a',
+      recipientOpenId: 'ou_owner',
+      policy: 'restart',
+      card: { mode: 'standard', content: { title: '重启', markdown: '错误形态' } },
+      transport,
+    })).rejects.toThrow('必须使用 raw 卡片模式');
+  });
+
+  it('callback 按钮缺少 action 时 fail closed', async () => {
+    const transport: OwnerNoticeTransport = {
+      sendCard: vi.fn(async () => 'om_unused'),
+      updateCard: vi.fn(async () => undefined),
+    };
+    await expect(deliverOwnerNotice({
+      dataDir,
+      larkAppId: 'cli_a',
+      recipientOpenId: 'ou_owner',
+      policy: 'restart',
+      card: {
+        mode: 'raw',
+        cardJson: JSON.stringify({
+          elements: [{ tag: 'button', text: { tag: 'plain_text', content: '执行' }, value: { id: 'x' } }],
+        }),
+      },
+      transport,
+    })).rejects.toThrow('callback 按钮必须提供非空 action');
   });
 });

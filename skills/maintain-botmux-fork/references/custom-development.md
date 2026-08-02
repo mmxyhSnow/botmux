@@ -43,10 +43,12 @@ pnpm install --frozen-lockfile
 
 ```bash
 pnpm exec vitest run --project unit test/<target>.test.ts
+pnpm audit:owner-notices
 pnpm build
 ```
 
-改公共层、生命周期、持久化或消息投递时，再运行 `pnpm test`。提交前检查：
+改公共层、生命周期、持久化或消息投递时，再运行 `pnpm test`。主动通知架构审计同时是 `pnpm build`
+的 fail-closed 前置步骤，不能通过跳过定向测试绕过。提交前检查：
 
 ```bash
 git status --short
