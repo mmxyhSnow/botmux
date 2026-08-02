@@ -86,8 +86,10 @@ export async function upsertOwnerNoticeCard(
         input.log?.(`update ${input.kind} failed, replacing card: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    const digest = createHash('sha256').update(`${input.kind}\0${input.cardJson}`).digest('hex').slice(0, 24);
-    const messageId = await input.sendCard(input.cardJson, `owner-notice-${input.kind}-${digest}`);
+    // 飞书 uuid 最长 50 字符。摘要已包含完整 kind 与卡片内容，因此不再把可变长度
+    // kind 拼进传输字段，避免 production-skill-sync 等长类型在真实发送时被 400 拒绝。
+    const digest = createHash('sha256').update(`${input.kind}\0${input.cardJson}`).digest('hex').slice(0, 32);
+    const messageId = await input.sendCard(input.cardJson, `owner-notice-${digest}`);
     writeSlot(input.dataDir, {
       schemaVersion: 1,
       kind: input.kind,

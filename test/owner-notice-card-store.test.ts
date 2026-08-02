@@ -16,8 +16,13 @@ describe('owner notice card slot', () => {
 
   it('统一输出 interactive card 结构', async () => {
     let sent = '';
+    let uuid = '';
     const transport: OwnerNoticeTransport = {
-      sendCard: async (_openId, card) => { sent = card; return 'om_notice'; },
+      sendCard: async (_openId, card, dedupeUuid) => {
+        sent = card;
+        uuid = dedupeUuid ?? '';
+        return 'om_notice';
+      },
       updateCard: async () => undefined,
     };
     await deliverOwnerNotice({
@@ -34,6 +39,8 @@ describe('owner notice card slot', () => {
     const card = JSON.parse(sent);
     expect(card.header).toEqual(expect.objectContaining({ template: 'orange' }));
     expect(card.elements).toEqual([{ tag: 'markdown', content: '缺少权限' }]);
+    expect(uuid).toMatch(/^owner-notice-[a-f0-9]{32}$/);
+    expect(uuid.length).toBeLessThanOrEqual(50);
   });
 
   it('同类型第二次只更新原卡，不新增消息', async () => {
