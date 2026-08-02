@@ -44,7 +44,7 @@ export interface TurnDeliveryRecord {
     atMs: number;
   };
   recovery?: {
-    state: 'required' | 'failed';
+    state: 'required' | 'failed' | 'suppressed';
     atMs: number;
     reason?: string;
   };
@@ -60,6 +60,7 @@ type LedgerEvent =
   | { type: 'delivery_pending'; id: TurnDeliveryId; uuid: string; atMs: number; writtenAtMs: number }
   | { type: 'delivered'; id: TurnDeliveryId; messageId: string; deliveredAtMs: number; writtenAtMs: number }
   | { type: 'recovery_required'; id: TurnDeliveryId; atMs: number; writtenAtMs: number }
+  | { type: 'recovery_suppressed'; id: TurnDeliveryId; atMs: number; reason: string; writtenAtMs: number }
   | { type: 'recovery_failed'; id: TurnDeliveryId; atMs: number; reason: string; writtenAtMs: number };
 
 function turnKey(id: TurnDeliveryId): string {
@@ -98,6 +99,7 @@ function parseEvent(line: string): LedgerEvent | undefined {
     if (event.type === 'delivery_pending' && typeof event.uuid === 'string') return event as LedgerEvent;
     if (event.type === 'delivered' && typeof event.messageId === 'string') return event as LedgerEvent;
     if (event.type === 'recovery_required') return event as LedgerEvent;
+    if (event.type === 'recovery_suppressed' && typeof event.reason === 'string') return event as LedgerEvent;
     if (event.type === 'recovery_failed' && typeof event.reason === 'string') return event as LedgerEvent;
   } catch {
     // 崩溃可能留下半行，恢复时忽略损坏尾部并保留此前完整事件。
@@ -118,9 +120,11 @@ function applyEvent(records: Map<string, TurnDeliveryRecord>, event: LedgerEvent
   switch (event.type) {
     case 'running':
       if (!record.nativeTurnId && event.nativeTurnId) record.nativeTurnId = event.nativeTurnId;
+      if (record.recovery?.state === 'suppressed') record.recovery = undefined;
       break;
     case 'final':
       if (!record.final) record.final = { ...event.final };
+      if (record.recovery?.state === 'suppressed') record.recovery = undefined;
       break;
     case 'delivery_pending':
       record.delivery = { state: 'pending', uuid: event.uuid, atMs: event.atMs };
@@ -135,6 +139,9 @@ function applyEvent(records: Map<string, TurnDeliveryRecord>, event: LedgerEvent
       break;
     case 'recovery_required':
       record.recovery = { state: 'required', atMs: event.atMs };
+      break;
+    case 'recovery_suppressed':
+      record.recovery = { state: 'suppressed', atMs: event.atMs, reason: event.reason };
       break;
     case 'recovery_failed':
       record.recovery = { state: 'failed', atMs: event.atMs, reason: event.reason };
@@ -181,6 +188,11 @@ export class TurnDeliveryLedger {
     this.append(id.larkAppId, { type: 'recovery_required', id, atMs, writtenAtMs: this.now() });
   }
 
+  /** 将没有执行中证据的历史轮次静默结算，避免每次 daemon 重启再次扫到并刷屏。 */
+  recordRecoverySuppressed(id: TurnDeliveryId, input: { atMs: number; reason: string }): void {
+    this.append(id.larkAppId, { type: 'recovery_suppressed', id, ...input, writtenAtMs: this.now() });
+  }
+
   recordRecoveryFailed(id: TurnDeliveryId, input: { atMs: number; reason: string }): void {
     this.append(id.larkAppId, { type: 'recovery_failed', id, ...input, writtenAtMs: this.now() });
   }
@@ -191,7 +203,8 @@ export class TurnDeliveryLedger {
 
   listOutstanding(larkAppId: string): TurnDeliveryRecord[] {
     return [...this.readApp(larkAppId).values()]
-      .filter(record => record.delivery?.state !== 'delivered')
+      .filter(record => record.delivery?.state !== 'delivered'
+        && record.recovery?.state !== 'suppressed')
       .sort((left, right) => left.acceptedAtMs - right.acceptedAtMs);
   }
 
@@ -202,7 +215,10 @@ export class TurnDeliveryLedger {
       const path = join(this.ledgerDir, name);
       const records = this.readPath(path);
       const kept = [...records.values()].filter(record =>
-        record.delivery?.state !== 'delivered' || record.delivery.atMs >= input.deliveredBeforeMs);
+        (record.delivery?.state !== 'delivered' && record.recovery?.state !== 'suppressed')
+        || (record.delivery?.state === 'delivered'
+          ? record.delivery.atMs >= input.deliveredBeforeMs
+          : (record.recovery?.atMs ?? Number.POSITIVE_INFINITY) >= input.deliveredBeforeMs));
       const body = kept.flatMap(record => this.snapshotEvents(record))
         .map(event => JSON.stringify(event))
         .join('\n');
@@ -254,6 +270,8 @@ export class TurnDeliveryLedger {
     }
     if (recovery?.state === 'required') {
       events.push({ type: 'recovery_required', id: record.id, atMs: recovery.atMs, writtenAtMs });
+    } else if (recovery?.state === 'suppressed') {
+      events.push({ type: 'recovery_suppressed', id: record.id, atMs: recovery.atMs, reason: recovery.reason ?? 'not_in_flight', writtenAtMs });
     } else if (recovery?.state === 'failed') {
       events.push({ type: 'recovery_failed', id: record.id, atMs: recovery.atMs, reason: recovery.reason ?? '', writtenAtMs });
     }

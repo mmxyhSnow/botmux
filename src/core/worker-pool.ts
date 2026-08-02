@@ -3790,7 +3790,7 @@ function setupWorkerHandlers(
 
       case 'riff_access_url': {
         if (ds.worker !== worker) {
-          logger.warn(`[${t}] Ignored riff_access_url from stale worker: ${msg.accessUrl}`);
+          logger.warn(`[${t}] Ignored riff_access_url from stale worker (urlhash: ${hashUrlForLog(msg.accessUrl)})`);
           break;
         }
         if (ds.riffAccessUrl === msg.accessUrl) break;

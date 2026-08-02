@@ -23,6 +23,7 @@ import {
   activateCustomReleaseController,
   activateCustomReleaseRuntime,
   backupCustomReleaseRuntime,
+  cleanupCustomReleaseRuntimes,
   currentCustomReleaseRuntimeRoot,
   prepareCustomReleaseRuntime,
   type PreparedRuntimeRelease,
@@ -58,6 +59,7 @@ export interface CustomReleaseDeployDeps {
   backupRuntime: (activeRoot: string, deployTag: string) => Promise<string>;
   activateRuntime: (releaseRoot: string) => Promise<void>;
   activateController: (releaseRoot: string) => void;
+  cleanupRuntimes: (gitRoot: string) => Promise<unknown>;
   startRestart: (releaseRoot: string, releaseTag: string, rollbackRoot: string) => void;
 }
 
@@ -162,6 +164,7 @@ const PRODUCTION_DEPS: CustomReleaseDeployDeps = {
   backupRuntime: backupCustomReleaseRuntime,
   activateRuntime: activateCustomReleaseRuntime,
   activateController: activateCustomReleaseController,
+  cleanupRuntimes: cleanupCustomReleaseRuntimes,
   startRestart: startDetachedRestart,
 };
 
@@ -250,5 +253,6 @@ export async function finalizeCustomReleaseDeployment(
     || payload.commit !== expectedHead
   ) throw new Error('部署留痕结果与卡片绑定的候选版本或 HEAD 不一致');
   deps.activateController(activeRoot);
+  await deps.cleanupRuntimes(activeRoot);
   return { productionHead: expectedHead, deployTag };
 }

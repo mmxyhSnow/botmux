@@ -66,6 +66,10 @@ git diff --cached
 pnpm release:status
 ```
 
+`release:status` 默认只读本地 refs 与运行清单，不访问网络，适合日常秒级确认；只有确实要刷新
+origin/upstream 时才运行 `pnpm release:status -- --remote`。输出必须标明 `source=local|remote`，
+不要把离线机器上的本地状态误报成远端已确认。
+
 最终卡片末尾必须给出“加入待发版 `<pendingVersion>`”和“暂不加入”两个动作。加入动作的 prompt
 必须写明准确开发分支、commit、目标 `custom/dev` 和待发版本，并带显式授权；用户未选择前不得合入。
 
@@ -90,6 +94,7 @@ primary daemon 只向当前 Bot 的 primary owner 新发一张私聊卡：
   第一父链 merge 和 diff，不依赖 AI 临时记忆。
 - 新卡送达后，上一张仍待冻结的卡会标为过期；即使视觉更新失败，服务端事件状态也会拒绝旧卡。
 - 投递以仓库与 `custom/dev` HEAD 为幂等键；失败保留在持久化队列，由 daemon 重试。
+- 卡片状态变化会保留有界阶段时间线和每阶段耗时；重复写同一状态不新增节点，避免重启恢复时膨胀。
 
 ## 冻结候选版本
 
@@ -101,6 +106,14 @@ pnpm release:prepare -- \
   --expected-head <卡片绑定的-custom/dev-HEAD> \
   --expected-version <卡片绑定的-pendingVersion>
 ```
+
+冻结、官方同步和版本化运行构建都会先执行同一个 Node/pnpm 门禁；也可独立诊断：
+
+```bash
+node scripts/check-release-toolchain.mjs
+```
+
+Node 必须满足 `package.json.engines`，pnpm 必须与 `packageManager` 精确一致，失败时不得继续 install/build。
 
 脚本运行 unit 全量和 `pnpm build`，然后把当前 `custom/dev` HEAD 固定为
 `release/vX.Y.Z-custom.N` annotated tag 并回读远端。`X.Y.Z` 来自 HEAD 可达的最新 upstream

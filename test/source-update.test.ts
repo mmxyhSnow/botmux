@@ -85,4 +85,11 @@ describe('source checkout update plan', () => {
     expect(script).not.toContain('refs/tags/${deployTag}');
     expect(script).toContain('deployTag: null');
   });
+
+  it('官方合并冲突会报告保留的 upgrade worktree 且明确生产未推进', () => {
+    const script = readFileSync(join(process.cwd(), 'scripts', 'sync-official-source.mjs'), 'utf8');
+    expect(script).toContain('官方同步发生合并冲突');
+    expect(script).toContain('已停在 ${upgradePath}');
+    expect(script).toContain('生产分支尚未推进');
+  });
 });

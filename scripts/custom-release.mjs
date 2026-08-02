@@ -173,7 +173,8 @@ function prepare(config, expectedHead = '', expectedVersion = '') {
     return;
   }
 
-  // CLI 级测试依赖 dist/cli.js，冻结必须先构建当前 HEAD 再运行全量门禁。
+  // CLI 级测试依赖 dist/cli.js；先锁定 Node/pnpm，再构建当前 HEAD 并运行全量门禁。
+  run(process.execPath, ['scripts/check-release-toolchain.mjs'], { capture: false });
   run('pnpm', ['build'], { capture: false });
   run('pnpm', ['test'], { capture: false });
   assertClean();
@@ -256,8 +257,9 @@ function main() {
   const config = readConfig();
   assertRemoteIdentity(config);
   if (action === 'status') {
-    fetchState(config);
-    output('status', releaseState(config));
+    const refreshRemote = args.includes('--remote');
+    if (refreshRemote) fetchState(config);
+    output('status', { source: refreshRemote ? 'remote' : 'local', ...releaseState(config) });
   } else if (action === 'join') {
     output('join', executeCustomReleaseJoin({
       repoRoot,
@@ -271,7 +273,7 @@ function main() {
   } else if (action === 'prepare') prepare(config, expectedHead, expectedVersion);
   else if (action === 'promote') promote(config, releaseTag);
   else if (action === 'record-deploy') recordDeploy(config, releaseTag);
-  else throw new Error('Usage: pnpm release:status | release:join -- --source <branch> --expected-head <sha> --title <text> | release:prepare | release:promote -- --tag <release/...> | release:record-deploy -- --tag <release/...>');
+  else throw new Error('Usage: pnpm release:status [-- --remote] | release:join -- --source <branch> --expected-head <sha> --title <text> | release:prepare | release:promote -- --tag <release/...> | release:record-deploy -- --tag <release/...>');
 }
 
 try {

@@ -112,7 +112,7 @@ afterEach(() => {
 });
 
 describe('Codex 连续提问卡片', () => {
-  it('同一 flow 每新增一问都会另发一条 @ 提问对象的通知', async () => {
+  it('同一 flow 只在首次发卡时 @ 提问对象，后续原卡更新不重复刷通知', async () => {
     await selectCurrent(
       'turn-notify-each-question',
       '第一问：是否开始？',
@@ -133,7 +133,7 @@ describe('Codex 连续提问卡片', () => {
     });
     await flushDispatch();
 
-    expect(askNotices).toHaveLength(2);
+    expect(askNotices).toHaveLength(1);
     for (const notice of askNotices) {
       expect(notice).toContain('<at user_id="ou_owner"></at>');
       expect(notice).toContain('ASK');

@@ -229,8 +229,23 @@ async function main() {
   const runtimeVersion = `${latestTag}-custom.1`;
   const upgradePath = join(homedir(), '.botmux', 'releases', runtimeVersion);
   ensureUpgradeWorktree(root, upgradeBranch, upgradePath, remoteBase);
-  git(upgradePath, ['merge', '--no-ff', latestTag, '-m', `merge: 合入 Botmux ${latestTag}`], { timeout: 180_000 });
+  try {
+    git(upgradePath, ['merge', '--no-ff', latestTag, '-m', `merge: 合入 Botmux ${latestTag}`], { timeout: 180_000 });
+  } catch (error) {
+    // 只有存在未合并文件时才归类为冲突；凭据、网络或 Git 环境失败保留原始错误。
+    let conflicts = '';
+    try {
+      conflicts = git(upgradePath, ['diff', '--name-only', '--diff-filter=U']);
+    } catch {
+      // 二次诊断失败时不能覆盖最初的 merge 错误。
+    }
+    if (conflicts) {
+      fail(`官方同步发生合并冲突；已停在 ${upgradePath}，请人工处理冲突后再继续，生产分支尚未推进`);
+    }
+    throw error;
+  }
 
+  await run(upgradePath, process.execPath, ['scripts/check-release-toolchain.mjs']);
   await run(upgradePath, 'pnpm', ['install', '--frozen-lockfile']);
   // 本机 Git 2.20 不支持夹具使用的 `git init -b`，PID namespace 用例也依赖宿主内核；
   // 其余 unit 全量执行，更新链路自身的测试不在排除范围内。

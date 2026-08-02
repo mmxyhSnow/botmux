@@ -44,7 +44,7 @@ import {
 } from './session-create.js';
 import { validateZellijAdoptTarget } from './zellij-adopt-discovery.js';
 import type { BackendType } from '../adapters/backend/types.js';
-import type { CliTurnPayload, CodexAppAdditionalContextEntry, CodexAppTurnInput, LarkAttachment, LarkMention, ScheduledTask, SubstituteTrigger } from '../types.js';
+import type { CliTurnPayload, CodexAppAdditionalContextEntry, CodexAppTurnInput, LarkAttachment, LarkMention, ScheduledTask, Session, SubstituteTrigger } from '../types.js';
 import { addCodexAppContext } from '../utils/codex-app-context.js';
 import type { MessageResource } from '../im/lark/message-parser.js';
 import type { ResolvedSender } from '../im/lark/identity-cache.js';
@@ -74,6 +74,27 @@ function sessionCreatedAtMs(session: { createdAt?: string }): number {
 
 function sessionLastMessageAtMs(session: { createdAt?: string; lastMessageAt?: string }): number {
   return session.lastMessageAt ? (Date.parse(session.lastMessageAt) || sessionCreatedAtMs(session)) : sessionCreatedAtMs(session);
+}
+
+/**
+ * 为“重启后仅重挂、尚未收到新消息”的 worker 恢复精确 turn 归属。
+ * 只有持久化的 quote 与当前回复槽位彼此自洽时才复用；chat 会话若缺少回复槽位，
+ * 无法证明该 turn 仍对应当前话题，继续保持无归属，避免把历史 turn 当成新授权。
+ */
+export function restoredWorkerTurnId(
+  session: Pick<Session, 'scope' | 'quoteTargetId' | 'currentReplyTarget'>,
+): string | undefined {
+  const quoteTurnId = session.quoteTargetId?.trim();
+  if (!quoteTurnId) return undefined;
+  const targetTurnId = session.currentReplyTarget?.turnId?.trim();
+  if (session.scope === 'chat') return targetTurnId === quoteTurnId ? quoteTurnId : undefined;
+  return !targetTurnId || targetTurnId === quoteTurnId ? quoteTurnId : undefined;
+}
+
+/** 重挂始终 resume；没有安全 turn 时保留原布尔参数，减少无关调用契约变化。 */
+function restoredWorkerForkOptions(session: Session): true | { resume: true; turnId: string } {
+  const turnId = restoredWorkerTurnId(session);
+  return turnId ? { resume: true, turnId } : true;
 }
 
 function sameUsageLimit(a: DaemonSession['usageLimit'], b: DaemonSession['usageLimit']): boolean {
@@ -1523,7 +1544,9 @@ export async function restoreActiveSessions(activeSessions: Map<string, DaemonSe
 
   // Staggered re-fork (see staggeredRecoveryFork): empty prompt = re-attach
   // only, no new turn — same as the old per-session eager fork.
-  await staggeredRecoveryFork(toReattach, (ds) => forkWorker(ds, '', true));
+  await staggeredRecoveryFork(toReattach, (ds) => (
+    forkWorker(ds, '', restoredWorkerForkOptions(ds.session))
+  ));
 
   const hasPersistentBackend = [...activeSessions.values()].some(ds => !!getSessionPersistentBackendType(ds));
   logger.info(`Restored ${active.length} session(s)${hasPersistentBackend ? '' : ', waiting for messages to resume'}`);
@@ -1566,7 +1589,7 @@ export async function ensureTerminalWorkerPort(ds: DaemonSession): Promise<numbe
 
   if (!ds.worker) {
     logger.info(`[${ds.session.sessionId.substring(0, 8)}] terminal accessed with no live worker — waking to re-attach`);
-    forkWorker(ds, '', true);
+    forkWorker(ds, '', restoredWorkerForkOptions(ds.session));
   }
 
   // Wait (bounded) for the re-forked worker to report its HTTP port via `ready`.

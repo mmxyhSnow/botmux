@@ -37,6 +37,7 @@ function deps(run: SourceUpdateDeployDeps['run']): SourceUpdateDeployDeps {
     }),
     verifyActivation: async () => undefined,
     activateController: () => undefined,
+    cleanupRuntimes: async () => undefined,
     run,
   };
 }
@@ -45,6 +46,7 @@ describe('finalizeSourceUpdateDeployment', () => {
   it('运行、候选与远端 HEAD 一致后才复用 record-deploy', async () => {
     const calls: string[] = [];
     const activateController = vi.fn();
+    const cleanupRuntimes = vi.fn(async () => undefined);
     const run = vi.fn<SourceUpdateDeployDeps['run']>(async (command, args, cwd) => {
       calls.push(`${cwd}:${command} ${args.join(' ')}`);
       if (command === 'git' && args[0] === 'worktree') return { code: 0, output: worktrees() };
@@ -65,12 +67,14 @@ describe('finalizeSourceUpdateDeployment', () => {
     await expect(finalizeSourceUpdateDeployment(releaseTag, expectedHead, {
       ...deps(run),
       activateController,
+      cleanupRuntimes,
     })).resolves.toEqual({
       productionHead: expectedHead,
       deployTag: 'deploy/v3.8.0-custom.1',
     });
     expect(calls.at(-1)).toBe(`${productionRoot}:pnpm release:record-deploy -- --tag ${releaseTag}`);
     expect(activateController).toHaveBeenCalledWith(runtimeRoot);
+    expect(cleanupRuntimes).toHaveBeenCalledWith(runtimeRoot);
   });
 
   it('重启后的运行 HEAD 不符时不调用 record-deploy', async () => {

@@ -147,9 +147,23 @@ botmux bots
 pm2 jlist | jq -r '.[] | [.name,.pm2_env.status,.pm2_env.pm_exec_path] | @tsv'
 ```
 
-确认 `botmux-*` 和 `botmux-dashboard` 为 online，执行路径全部落在 `runtime/current` 指向版本的
+`botmux status` 顶部的 `Live` 身份是版本、commit 与 build-id 的单一出口；Dashboard 与重启通知
+复用同一解析器，三处字符串必须一致。确认 `botmux-*` 和 `botmux-dashboard` 为 online，执行路径全部落在 `runtime/current` 指向版本的
 `dist`。再检查运行清单 `.botmux-runtime-release.json`、近期日志，
 并按变更类型做一次真实飞书消息、卡片交互、Dashboard 或 CLI 会话验证。
+
+## 重启恢复与告警
+
+- 重启后只追溯“精确 turn 在重启时仍运行”的任务；历史、空闲或无法确认归属的 ledger 记录二次扫描后
+  静默标记 `suppressed`，不得向原群逐条发“未确认”消息。
+- 同一 ASK flow 只在首题发送一次独立 @ 通知，后续问题原卡更新；重启恢复也不得为每一题重复 @。
+- 存活 tmux/zellij 会话重挂时，仅当持久化 `quoteTargetId` 与当前回复目标完全一致才恢复 turn 绑定，
+  使尚未收到新消息的会话仍可精确执行 `botmux send`；不一致时保持无归属，等待新消息重新绑定。
+- Dashboard 对超过 daemon registry 心跳容忍窗口的离线 Bot 聚合私信 primary owner；同一离线集合只提醒
+  一次，恢复在线后重新布防。它覆盖 PM2 打满重启、OOM 或进程长期离线；飞书 API 整体不可用时只能
+  依赖本地日志和 Dashboard 状态，不能承诺同通道告警送达。
+- Web/Riff 能力 URL 写日志时只允许输出不可逆短哈希或显式 `<redacted>`，不得输出 query token 或唯一
+  sandbox host。
 
 ## 常见安装问题
 

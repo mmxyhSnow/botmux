@@ -20,6 +20,10 @@ import {
   runtimeReleaseRoot,
   writeRuntimeReleaseManifest,
 } from './runtime-release.js';
+import {
+  cleanupRuntimeReleaseWorktrees,
+  type RuntimeCleanupResult,
+} from './runtime-release-cleanup.js';
 
 const RELEASE_TAG = /^release\/(v\d+\.\d+\.\d+-custom\.\d+)$/;
 const DEPLOY_TAG = /^deploy\/(v\d+\.\d+\.\d+-custom\.\d+)$/;
@@ -135,6 +139,13 @@ async function ensureRuntimeWorktree(
   }
 
   const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+  await checkedRun(
+    deps,
+    '发布工具链版本不一致',
+    process.execPath,
+    ['scripts/check-release-toolchain.mjs'],
+    root,
+  );
   await checkedRun(deps, '版本化运行依赖安装失败', pnpm, ['install', '--frozen-lockfile'], root);
   await checkedRun(deps, '版本化运行构建失败', pnpm, ['build'], root);
   for (const entry of ['cli.js', 'index-daemon.js', 'dashboard.js', '.runtime-build-id']) {
@@ -239,4 +250,24 @@ export async function backupCustomReleaseRuntime(
 /** 部署验收完成后，更新稳定 rollback 控制器；普通 CLI 始终仍跟随 current。 */
 export function activateCustomReleaseController(releaseRoot: string): void {
   activateRuntimeController(PRODUCTION_DEPS.configRoot(), releaseRoot);
+}
+
+/** 成功盖 deploy tag 后保留最新三个版本；清理失败只进入结果，不反向污染已成功部署。 */
+export async function cleanupCustomReleaseRuntimes(gitRoot: string): Promise<RuntimeCleanupResult> {
+  try {
+    return await cleanupRuntimeReleaseWorktrees(
+      PRODUCTION_DEPS.configRoot(),
+      gitRoot,
+      { keep: 3, apply: true },
+    );
+  } catch (error) {
+    return {
+      planned: [],
+      removed: [],
+      failed: [{
+        root: PRODUCTION_DEPS.configRoot(),
+        reason: error instanceof Error ? error.message : String(error),
+      }],
+    };
+  }
 }

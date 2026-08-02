@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { appendReleaseTimeline } from '../core/custom-release-timeline.js';
 
 export interface CustomReleaseChangeStats {
   commits: number;
@@ -56,6 +57,11 @@ export type CustomReleaseEventStatus =
   | 'deploy_failed'
   | 'deployed';
 
+export interface CustomReleaseTimelineEntry {
+  status: CustomReleaseEventStatus;
+  at: string;
+}
+
 export interface CustomReleaseEventState {
   status: CustomReleaseEventStatus;
   attempts: number;
@@ -67,6 +73,7 @@ export interface CustomReleaseEventState {
   productionHead?: string;
   deployTag?: string;
   notifiedStatus?: CustomReleaseEventStatus;
+  timeline?: CustomReleaseTimelineEntry[];
 }
 
 export interface CustomReleaseEventRecord {
@@ -176,6 +183,15 @@ export function parseCustomReleaseRecord(value: unknown): CustomReleaseEventReco
     state.notifiedStatus !== undefined
     && (typeof state.notifiedStatus !== 'string' || !STATUS.has(state.notifiedStatus as CustomReleaseEventStatus))
   ) throw new Error('自定义发版状态字段无效: notifiedStatus');
+  if (state.timeline !== undefined && (
+    !Array.isArray(state.timeline)
+    || state.timeline.length > 32
+    || state.timeline.some(entry => !plain(entry)
+      || typeof entry.status !== 'string'
+      || !STATUS.has(entry.status as CustomReleaseEventStatus)
+      || typeof entry.at !== 'string'
+      || !Number.isFinite(Date.parse(entry.at)))
+  )) throw new Error('自定义发版时间线无效');
   return { schemaVersion: 1, event, state: state as unknown as CustomReleaseEventState };
 }
 
@@ -216,7 +232,12 @@ export class CustomReleaseEventStore {
     const record: CustomReleaseEventRecord = {
       schemaVersion: 1,
       event: normalized,
-      state: { status: 'queued', attempts: 0, updatedAt: new Date().toISOString() },
+      state: {
+        status: 'queued',
+        attempts: 0,
+        updatedAt: new Date().toISOString(),
+        timeline: [{ status: 'queued', at: normalized.createdAt }],
+      },
     };
     this.write(record);
     return record;
@@ -246,12 +267,18 @@ export class CustomReleaseEventStore {
   updateState(eventId: string, patch: Partial<CustomReleaseEventState>): CustomReleaseEventRecord {
     const record = this.get(eventId);
     if (!record) throw new Error(`自定义发版事件不存在: ${eventId}`);
+    const updatedAt = patch.updatedAt ?? new Date().toISOString();
+    const nextStatus = patch.status ?? record.state.status;
+    const timeline = nextStatus === record.state.status
+      ? record.state.timeline
+      : appendReleaseTimeline(record.state.timeline, nextStatus, updatedAt);
     const next = parseCustomReleaseRecord({
       ...record,
       state: {
         ...record.state,
         ...patch,
-        updatedAt: patch.updatedAt ?? new Date().toISOString(),
+        updatedAt,
+        timeline,
       },
     });
     this.write(next);

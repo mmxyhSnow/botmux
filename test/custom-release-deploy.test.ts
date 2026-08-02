@@ -89,6 +89,7 @@ function deps(overrides: Partial<CustomReleaseDeployDeps> = {}): CustomReleaseDe
     backupRuntime: async () => '/home/botmux/backups/runtime-v3.7.1-custom.2',
     activateRuntime: async () => undefined,
     activateController: () => undefined,
+    cleanupRuntimes: async () => undefined,
     startRestart: () => undefined,
     ...overrides,
   };
@@ -203,11 +204,13 @@ describe('finalizeCustomReleaseDeployment', () => {
     });
 
     const activateController = vi.fn();
+    const cleanupRuntimes = vi.fn(async () => undefined);
     const verifyActivation = vi.fn(async () => undefined);
     await expect(finalizeCustomReleaseDeployment(record(), deps({
       run,
       activePackageRoot: () => releaseRoot,
       activateController,
+      cleanupRuntimes,
       verifyActivation,
     }))).resolves.toEqual({
       productionHead: candidateHead,
@@ -215,6 +218,7 @@ describe('finalizeCustomReleaseDeployment', () => {
     });
     expect(verifyActivation).toHaveBeenCalledOnce();
     expect(activateController).toHaveBeenCalledWith(releaseRoot);
+    expect(cleanupRuntimes).toHaveBeenCalledWith(releaseRoot);
   });
 
   it('实际执行路径不是生产 checkout 时不创建部署标签', async () => {

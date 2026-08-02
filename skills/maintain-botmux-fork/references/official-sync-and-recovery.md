@@ -117,7 +117,8 @@ deploy 标签，并在维护通知中告警。
 
 ## 冲突处理
 
-合并冲突后，脚本会失败并保留 upgrade worktree。不要删除 worktree、reset 生产分支或盲目重跑。
+合并冲突后，脚本会失败并在 Dashboard/命令行错误中明确给出保留的 upgrade worktree 路径和
+“生产分支尚未推进”；不要删除 worktree、reset 生产分支或盲目重跑。
 
 在 upgrade worktree：
 
@@ -195,6 +196,18 @@ botmux rollback --to deploy/vX.Y.Z-custom.N
 
 该命令只接受本机完整运行清单和远端 deploy tag 指向同一 commit 的版本，在维护锁内原子切换
 `runtime/current` 并重启；目标失败会切回原版本。回滚完成后必须核对 current、PM2 执行路径和健康状态。
+
+版本目录日常治理只使用受限入口，不手工删除 `~/.botmux/releases`：
+
+```bash
+botmux worktree doctor
+botmux worktree clean --unused --dry-run
+# 回读计划无误后才允许显式应用
+botmux worktree clean --unused --apply
+```
+
+成功上线后自动保留最近 3 个版本，并始终保护 `runtime/current` 与 `runtime/controller`；清理通过
+`git worktree remove` 执行，脏 worktree 会失败保留，不会强制删除。
 
 运行态恢复不改写 `custom/prod` 历史。永久修复仍使用 Git 历史可审计流程：
 

@@ -5,7 +5,10 @@
 import { spawn } from 'node:child_process';
 import { botmuxInstallRoot } from '../utils/install-info.js';
 import { productionWorktreeFromPorcelain } from '../utils/source-update.js';
-import { activateCustomReleaseController } from './custom-release-runtime.js';
+import {
+  activateCustomReleaseController,
+  cleanupCustomReleaseRuntimes,
+} from './custom-release-runtime.js';
 import { readRuntimeRelease, type RuntimeReleaseRecord } from './runtime-release.js';
 import { waitForRuntimeActivation } from './runtime-release-verification.js';
 
@@ -29,6 +32,7 @@ export interface SourceUpdateDeployDeps {
   runtimeRelease: (root: string) => RuntimeReleaseRecord | null;
   verifyActivation: (runtime: RuntimeReleaseRecord) => Promise<void>;
   activateController: (root: string) => void;
+  cleanupRuntimes: (gitRoot: string) => Promise<unknown>;
   run: (command: string, args: string[], cwd: string) => Promise<CommandResult>;
 }
 
@@ -55,6 +59,7 @@ const PRODUCTION_DEPS: SourceUpdateDeployDeps = {
   runtimeRelease: readRuntimeRelease,
   verifyActivation: waitForRuntimeActivation,
   activateController: activateCustomReleaseController,
+  cleanupRuntimes: cleanupCustomReleaseRuntimes,
   run: runCommand,
 };
 
@@ -143,5 +148,6 @@ export async function finalizeSourceUpdateDeployment(
     || payload.commit !== expectedHead
   ) throw new Error('部署留痕结果与官方同步候选不一致');
   deps.activateController(activeRoot);
+  await deps.cleanupRuntimes(activeRoot);
   return { productionHead: expectedHead, deployTag };
 }

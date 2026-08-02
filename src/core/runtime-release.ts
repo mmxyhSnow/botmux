@@ -42,6 +42,13 @@ export interface RuntimeActivationResult {
   previousRoot?: string;
 }
 
+export interface RuntimeReleaseCleanupPlan {
+  keep: number;
+  protectedRoots: string[];
+  retained: RuntimeReleaseRecord[];
+  removable: RuntimeReleaseRecord[];
+}
+
 /** 把候选标签收敛为不含斜杠的版本目录名，拒绝路径穿越。 */
 export function runtimeReleaseVersion(releaseTag: string): string {
   const match = releaseTag.match(RELEASE_TAG);
@@ -179,6 +186,32 @@ export function listRuntimeReleases(configRoot: string): RuntimeReleaseRecord[] 
       return record ? [record] : [];
     })
     .sort((left, right) => compareDeployTags(right.manifest.deployTag, left.manifest.deployTag));
+}
+
+/**
+ * 默认保留最新三个完整版本，并无条件保护 current/controller 指向的目录。
+ * 这里只生成计划；实际删除必须由显式清理入口或部署成功后的受控收尾执行。
+ */
+export function planRuntimeReleaseCleanup(
+  configRoot: string,
+  keep = 3,
+): RuntimeReleaseCleanupPlan {
+  if (!Number.isSafeInteger(keep) || keep < 2) throw new Error('运行版本至少保留 2 个');
+  const releases = listRuntimeReleases(configRoot);
+  const protectedRoots = [
+    readCurrentRuntimeRelease(configRoot)?.root,
+    readControllerRuntimeRelease(configRoot)?.root,
+  ].filter((root): root is string => !!root);
+  const retainedRoots = new Set([
+    ...protectedRoots,
+    ...releases.slice(0, keep).map(record => record.root),
+  ]);
+  return {
+    keep,
+    protectedRoots: [...new Set(protectedRoots)],
+    retained: releases.filter(record => retainedRoots.has(record.root)),
+    removable: releases.filter(record => !retainedRoots.has(record.root)),
+  };
 }
 
 function deployParts(tag: string): [number, number, number, number] {

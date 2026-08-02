@@ -181,11 +181,13 @@ export function registerAsk(input: CreateAskInput): Promise<AskResult> {
       .send(snapshot(ask))
       .then(({ messageId }) => {
         const cur = pending.get(askId);
-        if (cur && !cur.settled) {
+        if (cur) {
           cur.cardMessageId = messageId;
           if (cur.flowId) {
             const flow = flows.get(flowKey(cur.sessionId, cur.flowId));
-            if (flow) {
+            // 飞书卡已可点击时，回调可能先于发送 Promise 的 then 结算 ASK。
+            // 即使本问已经 settled，也要保存卡片身份供同一 flow 的下一问复用。
+            if (flow && flow.lastAskId === askId) {
               flow.cardMessageId = messageId;
               flow.previousSegment = undefined;
             }

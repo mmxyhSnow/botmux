@@ -13,8 +13,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  activateRuntimeController,
   activateRuntimeRelease,
   listRuntimeReleases,
+  planRuntimeReleaseCleanup,
   readCurrentRuntimeRelease,
   runtimeReleaseRoot,
   selectPreviousRuntimeRelease,
@@ -98,5 +100,28 @@ describe('runtime release identity', () => {
       'deploy/v3.7.1-custom.9',
     ]);
     expect(previous?.manifest.deployTag).toBe('deploy/v3.7.1-custom.10');
+  });
+
+  it('清理计划保留最新三个，并额外保护 current/controller', () => {
+    const configRoot = tempRoot();
+    const v8 = createRelease(configRoot, 'v3.7.1-custom.8', '1'.repeat(40));
+    createRelease(configRoot, 'v3.7.1-custom.9', '2'.repeat(40));
+    createRelease(configRoot, 'v3.7.1-custom.10', '3'.repeat(40));
+    createRelease(configRoot, 'v3.7.1-custom.11', '4'.repeat(40));
+    const v12 = createRelease(configRoot, 'v3.7.1-custom.12', '5'.repeat(40));
+    activateRuntimeRelease(configRoot, v12);
+    activateRuntimeController(configRoot, v8);
+
+    const plan = planRuntimeReleaseCleanup(configRoot, 3);
+
+    expect(plan.retained.map(item => item.manifest.deployTag)).toEqual([
+      'deploy/v3.7.1-custom.12',
+      'deploy/v3.7.1-custom.11',
+      'deploy/v3.7.1-custom.10',
+      'deploy/v3.7.1-custom.8',
+    ]);
+    expect(plan.removable.map(item => item.manifest.deployTag)).toEqual([
+      'deploy/v3.7.1-custom.9',
+    ]);
   });
 });
