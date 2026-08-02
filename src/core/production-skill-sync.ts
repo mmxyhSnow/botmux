@@ -41,6 +41,7 @@ export interface ProductionSkillSyncDeps {
     path: string;
     ref: string;
     sourceOverride: SkillSource;
+    sshCommand?: string;
   }) => Promise<SkillPackage>;
 }
 
@@ -115,12 +116,19 @@ export async function reconcileProductionMaintenanceSkillAt(
       return { status: 'aligned', runtimeCommit, previousCommit, installedCommit: previousCommit };
     }
 
+    // 版本化运行目录是 detached worktree，但仍共享主仓库的本地 Git 配置；把其中已验证的
+    // core.sshCommand 只透传给本次 Skill 拉取，避免私有 fork 回退 SSH 时丢失专用密钥。
+    let sshCommand: string | undefined;
+    try { sshCommand = (await deps.runGit(root, ['config', '--get', 'core.sshCommand'])).trim() || undefined; }
+    catch { /* 未配置专用 SSH 命令时继续使用 Git 默认认证。 */ }
+
     // checkout 使用当前运行 commit，避免远端分支先推进时把未来手册提前装进旧 daemon；
     // registry 则保留 custom/prod，确保常规 skills update 继续跟随生产线。
     const installed = await deps.install({
       url: GIT_URL,
       path: SKILL_PATH,
       ref: runtimeCommit,
+      sshCommand,
       sourceOverride: {
         type: 'github',
         owner: 'mmxyhSnow',
@@ -163,7 +171,14 @@ export function productionSkillSyncNotice(result: ProductionSkillSyncResult): st
     return `✅ Botmux 维护 Skill 已自动对齐生产版本\n\n${result.previousCommit?.slice(0, 8) ?? '未知'} → ${result.installedCommit?.slice(0, 8) ?? '未知'}\n跟踪分支：custom/prod`;
   }
   if (result.status === 'failed') {
-    return `⚠️ Botmux 维护 Skill 与生产版本对齐失败\n\n原因：${result.reason ?? '未知错误'}\n已保持现有 Skill，不影响 daemon 启动；请运行 botmux skills doctor 后人工核对。`;
+    // 飞书会把 git@host 识别为邮箱敏感数据并拒绝整张卡；告警保留可执行原因，但不回显
+    // 邮箱样式地址、换行堆栈或无限长的底层 stderr。
+    const reason = (result.reason ?? '未知错误')
+      .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[SSH 地址已隐藏]')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 500);
+    return `⚠️ Botmux 维护 Skill 与生产版本对齐失败\n\n原因：${reason}\n已保持现有 Skill，不影响 daemon 启动；请运行 botmux skills doctor 后人工核对。`;
   }
   return null;
 }

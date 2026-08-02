@@ -37,6 +37,7 @@ function deps(current: SkillPackage, installed = skill()): ProductionSkillSyncDe
     runGit: async (_root, args) => {
       if (args[0] === 'symbolic-ref') return 'custom/prod';
       if (args[0] === 'remote') return 'git@github.com:mmxyhSnow/botmux.git';
+      if (args[0] === 'config') return 'ssh -i /safe/botmux-key -o IdentitiesOnly=yes';
       return runtimeCommit;
     },
     install: vi.fn(async () => installed),
@@ -61,6 +62,7 @@ describe('reconcileProductionMaintenanceSkill', () => {
     });
     expect(wiring.install).toHaveBeenCalledWith(expect.objectContaining({
       ref: runtimeCommit,
+      sshCommand: 'ssh -i /safe/botmux-key -o IdentitiesOnly=yes',
       sourceOverride: expect.objectContaining({ ref: 'custom/prod' }),
     }));
     expect(productionSkillSyncNotice(result)).toContain('已自动对齐生产版本');
@@ -106,5 +108,15 @@ describe('reconcileProductionMaintenanceSkill', () => {
     expect(wiring.install).not.toHaveBeenCalled();
     expect(productionSkillSyncNotice(result)).toContain('对齐失败');
     expect(productionSkillSyncCardContent(result)).toMatchObject({ template: 'orange' });
+  });
+
+  it('告警卡隐藏会触发飞书邮箱审计的 Git SSH 地址', () => {
+    const notice = productionSkillSyncNotice({
+      status: 'failed',
+      reason: 'git fetch failed: git@github.com:mmxyhSnow/botmux.git',
+    });
+
+    expect(notice).toContain('[SSH 地址已隐藏]');
+    expect(notice).not.toContain('git@github.com');
   });
 });
