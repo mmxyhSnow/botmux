@@ -576,14 +576,14 @@ function cloneGitSource(url: string, dir: string): void {
   });
 }
 
-async function cloneGitSourceAsync(url: string, dir: string): Promise<void> {
+async function cloneGitSourceAsync(url: string, dir: string, transportEnv?: NodeJS.ProcessEnv): Promise<void> {
   await withGithubHttpsFallbackAsync(url, async authEnv => {
     rmSync(dir, { recursive: true, force: true });
-    await gitAsync(['clone', '--', url, dir], skillSourcesDir(), authEnv);
+    await gitAsync(['clone', '--', url, dir], skillSourcesDir(), { ...transportEnv, ...authEnv });
   }, async sshUrl => {
     rmSync(dir, { recursive: true, force: true });
-    await gitAsync(['clone', '--', sshUrl, dir], skillSourcesDir());
-    await gitAsync(['remote', 'set-url', 'origin', url], dir);
+    await gitAsync(['clone', '--', sshUrl, dir], skillSourcesDir(), transportEnv);
+    await gitAsync(['remote', 'set-url', 'origin', url], dir, transportEnv);
   });
 }
 
@@ -603,17 +603,22 @@ function fetchGitSource(url: string, dir: string, args: string[]): string {
   );
 }
 
-async function fetchGitSourceAsync(url: string, dir: string, args: string[]): Promise<string> {
-  if (isGithubHttpsUrl(url)) await gitAsync(['remote', 'set-url', 'origin', url], dir);
+async function fetchGitSourceAsync(
+  url: string,
+  dir: string,
+  args: string[],
+  transportEnv?: NodeJS.ProcessEnv,
+): Promise<string> {
+  if (isGithubHttpsUrl(url)) await gitAsync(['remote', 'set-url', 'origin', url], dir, transportEnv);
   return withGithubHttpsFallbackAsync(
     url,
-    authEnv => gitAsync(args, dir, authEnv),
+    authEnv => gitAsync(args, dir, { ...transportEnv, ...authEnv }),
     async sshUrl => {
-      await gitAsync(['remote', 'set-url', 'origin', sshUrl], dir);
+      await gitAsync(['remote', 'set-url', 'origin', sshUrl], dir, transportEnv);
       try {
-        return await gitAsync(args, dir);
+        return await gitAsync(args, dir, transportEnv);
       } finally {
-        await gitAsync(['remote', 'set-url', 'origin', url], dir);
+        await gitAsync(['remote', 'set-url', 'origin', url], dir, transportEnv);
       }
     },
   );
@@ -647,32 +652,44 @@ function checkoutGitSource(url: string, refValue: string | undefined): { sourceD
   return { sourceDir, ref, commit: git(['rev-parse', 'HEAD'], sourceDir) };
 }
 
-async function ensureGitSourceAsync(url: string): Promise<string> {
+async function ensureGitSourceAsync(url: string, transportEnv?: NodeJS.ProcessEnv): Promise<string> {
   assertNoGitUrlCredentials(url);
   assertAllowedGitProtocol(url);
   const dir = join(skillSourcesDir(), sourceId(url));
   mkdirSync(skillSourcesDir(), { recursive: true });
   if (existsSync(join(dir, '.git'))) {
-    await fetchGitSourceAsync(url, dir, ['fetch', '--tags', '--prune']);
+    await fetchGitSourceAsync(url, dir, ['fetch', '--tags', '--prune'], transportEnv);
   } else {
     // See the synchronous path above: dashboard jobs must also be independent
     // from a stale/deleted daemon launch directory.
-    await cloneGitSourceAsync(url, dir);
+    await cloneGitSourceAsync(url, dir, transportEnv);
   }
   return dir;
 }
 
-async function checkoutGitSourceAsync(url: string, refValue: string | undefined): Promise<{ sourceDir: string; ref: string; commit: string }> {
+async function checkoutGitSourceAsync(
+  url: string,
+  refValue: string | undefined,
+  transportEnv?: NodeJS.ProcessEnv,
+): Promise<{ sourceDir: string; ref: string; commit: string }> {
   assertSafeGitRef(refValue);
-  const sourceDir = await ensureGitSourceAsync(url);
+  const sourceDir = await ensureGitSourceAsync(url, transportEnv);
   const ref = refValue ?? 'HEAD';
   if (ref === 'HEAD') {
-    await fetchGitSourceAsync(url, sourceDir, ['fetch', 'origin', 'HEAD']);
-    await gitAsync(['checkout', 'FETCH_HEAD'], sourceDir);
+    await fetchGitSourceAsync(url, sourceDir, ['fetch', 'origin', 'HEAD'], transportEnv);
+    await gitAsync(['checkout', 'FETCH_HEAD'], sourceDir, transportEnv);
   } else {
-    await gitAsync(['checkout', ref], sourceDir);
+    await gitAsync(['checkout', ref], sourceDir, transportEnv);
   }
-  return { sourceDir, ref, commit: await gitAsync(['rev-parse', 'HEAD'], sourceDir) };
+  return { sourceDir, ref, commit: await gitAsync(['rev-parse', 'HEAD'], sourceDir, transportEnv) };
+}
+
+/** 仅把调用方已验证的仓库级 SSH 命令传给 Git，不写入 Skill registry 或源码缓存。 */
+function skillGitTransportEnv(sshCommand: string | undefined): NodeJS.ProcessEnv | undefined {
+  const value = sshCommand?.trim();
+  if (!value) return undefined;
+  if (value.length > 4096 || /[\0\r\n]/.test(value)) throw new Error('skill_git_ssh_command_invalid');
+  return { GIT_SSH_COMMAND: value };
 }
 
 function discoverCheckedOutGitSource(
@@ -812,6 +829,7 @@ export async function installGitSkillAsync(opts: {
   path: string;
   ref?: string;
   sourceOverride?: SkillSource;
+  sshCommand?: string;
 }): Promise<SkillPackage> {
   return withGitSourceLock(opts.url, () => installGitSkillAsyncLocked(opts));
 }
@@ -821,8 +839,13 @@ async function installGitSkillAsyncLocked(opts: {
   path: string;
   ref?: string;
   sourceOverride?: SkillSource;
+  sshCommand?: string;
 }): Promise<SkillPackage> {
-  const { sourceDir, ref, commit } = await checkoutGitSourceAsync(opts.url, opts.ref);
+  const { sourceDir, ref, commit } = await checkoutGitSourceAsync(
+    opts.url,
+    opts.ref,
+    skillGitTransportEnv(opts.sshCommand),
+  );
   const source: SkillSource = opts.sourceOverride
     ? opts.sourceOverride.type === 'git' || opts.sourceOverride.type === 'github'
       ? { ...opts.sourceOverride, commit }

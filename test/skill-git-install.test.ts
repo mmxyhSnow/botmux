@@ -76,6 +76,7 @@ fi
 
 if [ "$1" = "clone" ] && [ "$3" = "$BOTMUX_TEST_GITHUB_SSH_URL" ]; then
   printf '%s\n' 'ssh-clone' >> "$log"
+  printf 'ssh-command=%s\n' "\${GIT_SSH_COMMAND:-}" >> "$log"
   exec "$real" clone -- "$repo" "$4"
 fi
 
@@ -183,6 +184,20 @@ describe('git skill install', () => {
       url,
     });
     expect(readFileSync(logFile, 'utf8')).toContain('ssh-clone');
+  });
+
+  it('passes an explicit repository SSH command to async GitHub fallback', async () => {
+    const { url, logFile } = installGithubGitShim(home, repo, 'ssh-only');
+
+    await installGitSkillAsync({
+      url,
+      path: 'skills/deploy',
+      ref: 'HEAD',
+      sshCommand: 'ssh -i /safe/botmux-key -o IdentitiesOnly=yes',
+    });
+
+    expect(readFileSync(logFile, 'utf8'))
+      .toContain('ssh-command=ssh -i /safe/botmux-key -o IdentitiesOnly=yes');
   });
 
   it('retries public GitHub HTTPS without a stale token before SSH', () => {
