@@ -306,6 +306,20 @@ describe('sendRestartReportIfPending', () => {
     await sendRestartReportIfPending(w);
     expect(sent).toHaveLength(1);
   });
+
+  it('生产 wiring 优先更新同类型重启卡，不再新增一张', async () => {
+    writeRestartIntentTo(dir, { kind: 'manual', at: new Date(T0).toISOString() });
+    const upserted: string[] = [];
+    const { w, sent } = fakeWiring({
+      upsertCard: async (_openId, card) => { upserted.push(card); },
+    });
+
+    await sendRestartReportIfPending(w);
+
+    expect(upserted).toHaveLength(1);
+    expect(upserted[0]).toContain('botmux 已重启');
+    expect(sent).toHaveLength(0);
+  });
 });
 
 describe('fetchChangelog', () => {

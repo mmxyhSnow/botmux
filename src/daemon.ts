@@ -24,7 +24,6 @@ import { writeHeartbeat } from './core/daemon-heartbeat.js';
 import { botmuxWrapperFiles } from './core/botmux-wrapper.js';
 import {
   evaluateOverload,
-  formatOverloadAlert,
   buildOverloadAlertCard,
   buildOverloadRecoveredCard,
   initialOverloadCardState,
@@ -34,6 +33,7 @@ import {
   type OverloadThresholds,
 } from './core/host-overload-alert.js';
 import { registerOverloadNonce } from './im/lark/overload-nonce.js';
+import { buildOwnerNoticeCard } from './im/lark/owner-notice-card.js';
 import { countHostOverload } from './im/lark/card-handler.js';
 import { startMaintenance, stopMaintenance } from './core/maintenance.js';
 import {
@@ -50,9 +50,10 @@ import {
   runCustomReleaseDeployment,
 } from './core/custom-release-deploy.js';
 import {
-  productionSkillSyncNotice,
+  buildProductionSkillSyncCard,
   reconcileProductionMaintenanceSkill,
 } from './core/production-skill-sync.js';
+import { upsertOwnerNoticeCard } from './services/owner-notice-card-store.js';
 import { finalizeSourceUpdateDeployment } from './core/source-update-deploy.js';
 import { reconcileOutstandingTurns } from './core/restart-turn-reconciler.js';
 import { statSync } from 'node:fs';
@@ -3151,14 +3152,27 @@ function notifyAllowedUsersResolveFailure(
   void (async () => {
     for (const openId of unique.slice(0, 5)) {
       try {
-        await sendUserMessage(
-          larkAppId,
-          openId,
-          `⚠️ Botmux allowedUsers 解析告警\n\n${notice}`,
-          'text',
-          undefined,
-          { timeoutMs: 10_000 },
-        );
+        const cardJson = buildOwnerNoticeCard({
+          title: 'Botmux allowedUsers 解析告警',
+          markdown: `⚠️ ${notice}`,
+          template: 'orange',
+        });
+        const recipientKey = createHash('sha256').update(`${larkAppId}\0${openId}`).digest('hex').slice(0, 12);
+        await upsertOwnerNoticeCard({
+          dataDir: config.session.dataDir,
+          kind: `allowed-users-resolve-${recipientKey}`,
+          cardJson,
+          sendCard: (content, uuid) => sendUserMessage(
+            larkAppId,
+            openId,
+            content,
+            'interactive',
+            uuid,
+            { timeoutMs: 10_000 },
+          ),
+          updateCard: (messageId, content) => updateMessage(larkAppId, messageId, content),
+          log: message => logger.warn(`[${larkAppId}] allowedUsers card ${message}`),
+        });
       } catch (err: any) {
         logger.warn(
           `[${larkAppId}] failed to DM allowedUsers resolve notice to ${openId.slice(0, 12)}: ${err?.message ?? err}`,
@@ -15667,7 +15681,19 @@ async function warnGroupJoinScopeOnce(larkAppId: string, detail: string): Promis
   }
   const dm = tr('daemon.auto_start_member_read_failed', { detail }, localeForBot(larkAppId));
   try {
-    await sendUserMessage(larkAppId, adminOpenId, dm, 'text');
+    const cardJson = buildOwnerNoticeCard({
+      title: 'Botmux 权限通知',
+      markdown: dm,
+      template: 'orange',
+    });
+    await upsertOwnerNoticeCard({
+      dataDir: config.session.dataDir,
+      kind: `group-join-permission-${createHash('sha256').update(larkAppId).digest('hex').slice(0, 12)}`,
+      cardJson,
+      sendCard: (content, uuid) => sendUserMessage(larkAppId, adminOpenId, content, 'interactive', uuid),
+      updateCard: (messageId, content) => updateMessage(larkAppId, messageId, content),
+      log: message => logger.warn(`[auto-start:入群] ${message}`),
+    });
     logger.info(`[auto-start:入群] ${larkAppId} 已私信 admin 提示补权限`);
   } catch (err) {
     logger.warn(`[auto-start:入群] ${larkAppId} 私信 admin 失败：${err}`);
@@ -18304,13 +18330,6 @@ export async function startDaemon(botIndex?: number): Promise<void> {
         uuid,
       ),
       updateCard: (messageId, card) => updateMessage(cfg.larkAppId, messageId, card),
-      notifyText: (openId, content, uuid) => sendUserMessage(
-        cfg.larkAppId,
-        openId,
-        content,
-        'text',
-        uuid,
-      ).then(() => undefined),
       freeze: runCustomReleaseFreeze,
       deploy: runCustomReleaseDeployment,
       finalizeDeploy: finalizeCustomReleaseDeployment,
@@ -18325,10 +18344,19 @@ export async function startDaemon(botIndex?: number): Promise<void> {
         + `installed=${result.installedCommit?.slice(0, 8) ?? result.previousCommit?.slice(0, 8) ?? '-'} `
         + `reason=${result.reason ?? '-'}`,
       );
-      const notice = productionSkillSyncNotice(result);
+      const card = buildProductionSkillSyncCard(result);
       const ownerOpenId = resolvePrimaryOwnerOpenId(cfg.larkAppId);
-      if (!notice || !ownerOpenId) return;
-      void sendUserMessage(cfg.larkAppId, ownerOpenId, notice, 'text')
+      if (!card || !ownerOpenId) return;
+      void upsertOwnerNoticeCard({
+        dataDir: config.session.dataDir,
+        kind: 'production-skill-sync',
+        cardJson: card,
+        sendCard: (cardJson, uuid) => sendUserMessage(
+          cfg.larkAppId, ownerOpenId, cardJson, 'interactive', uuid,
+        ),
+        updateCard: (messageId, cardJson) => updateMessage(cfg.larkAppId, messageId, cardJson),
+        log: message => logger.warn(`[production-skill] ${message}`),
+      })
         .catch(error => logger.warn(
           `[production-skill] owner notice failed: ${error instanceof Error ? error.message : String(error)}`,
         ));
@@ -18359,6 +18387,16 @@ export async function startDaemon(botIndex?: number): Promise<void> {
           intent.expectedHead,
         ),
         sendCard: (openId, card) => sendUserMessage(cfg.larkAppId, openId, card, 'interactive').then(() => undefined),
+        upsertCard: (openId, card) => upsertOwnerNoticeCard({
+          dataDir: config.session.dataDir,
+          kind: 'restart',
+          cardJson: card,
+          sendCard: (cardJson, uuid) => sendUserMessage(
+            cfg.larkAppId, openId, cardJson, 'interactive', uuid,
+          ),
+          updateCard: (messageId, cardJson) => updateMessage(cfg.larkAppId, messageId, cardJson),
+          log: message => logger.warn(`[restart-report] ${message}`),
+        }).then(() => undefined),
         log: (m) => logger.info(`[restart-report] ${m}`),
       });
     }, 5_000).unref?.();
@@ -18412,8 +18450,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
         // machine-wide zombie/idle candidates so the buttons can show「(N)」
         // before a click, and send the stateful two-button card (clicking one
         // never removes the other — the handler rebuilds this same card).
-        // `recovered`: display-only card. On any send failure, fall back to the
-        // plain-text alert so the owner still hears about it.
+        // `recovered`: display-only card。同一主机只保留一张过载卡，状态边沿更新原卡。
         let cardJson: string;
         if (action.kind === 'entered') {
           const nonce = randomUUID();
@@ -18425,12 +18462,18 @@ export async function startDaemon(botIndex?: number): Promise<void> {
         } else {
           cardJson = buildOverloadRecoveredCard(action);
         }
-        void sendUserMessage(cfg.larkAppId, ownerOpenId, cardJson, 'interactive')
-          .catch((err) => {
-            logger.warn(`[overload] card DM failed, falling back to text: ${err instanceof Error ? err.message : String(err)}`);
-            return sendUserMessage(cfg.larkAppId, ownerOpenId, formatOverloadAlert(action));
-          })
-          .catch((err) => logger.warn(`[overload] text fallback DM also failed: ${err instanceof Error ? err.message : String(err)}`));
+        void upsertOwnerNoticeCard({
+          dataDir: config.session.dataDir,
+          kind: 'host-overload',
+          cardJson,
+          sendCard: (content, uuid) => sendUserMessage(
+            cfg.larkAppId, ownerOpenId, content, 'interactive', uuid,
+          ),
+          updateCard: (messageId, content) => updateMessage(cfg.larkAppId, messageId, content),
+          log: message => logger.warn(`[overload] ${message}`),
+        }).catch((err) => logger.warn(
+          `[overload] card DM failed: ${err instanceof Error ? err.message : String(err)}`,
+        ));
       } catch (err) {
         logger.warn(`[overload] sample failed: ${err instanceof Error ? err.message : String(err)}`);
       }
