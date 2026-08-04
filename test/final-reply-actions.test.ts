@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   extractFinalReplyActions,
   isSafeFinalReplyActionPrompt,
+  requiresExplicitAuthorization,
 } from '../src/services/final-reply-actions.js';
 
 describe('extractFinalReplyActions', () => {
@@ -100,5 +101,45 @@ describe('isSafeFinalReplyActionPrompt', () => {
     const marker = { actions: [{ label: '冻结 3.7.1-custom.3', prompt, authorization: 'explicit' }] };
     expect(extractFinalReplyActions(`已合入\n<!--botmux-actions:${JSON.stringify(marker)}-->`).actions).toEqual([]);
     expect(isSafeFinalReplyActionPrompt('请冻结当前待发版 `3.7.1-custom.3`。', 'explicit')).toBe(false);
+  });
+
+  it('treats negated merge/deploy/restart as ordinary actions, not state changes', () => {
+    // 回归：Youc 曾在 push-only 动作里写“暂不合入 custom/dev，不部署或重启”，
+    // 旧的朴素子串匹配把“合入/部署/重启”当成状态变更，导致无授权按钮被整条静默丢弃。
+    const negatedPrompts = [
+      '完成定向测试、pnpm build、提交并 push 独立开发分支；暂不合入 custom/dev，不部署或重启。',
+      '本次仅提交，不发布、不上线。',
+      '先不合入，等 review 后再说。',
+      'Completed tests; do not merge or deploy or restart for now.',
+    ];
+    for (const prompt of negatedPrompts) {
+      expect(requiresExplicitAuthorization(prompt)).toBe(false);
+      // 无授权也能放行，说明否定语境不再要求 explicit。
+      expect(isSafeFinalReplyActionPrompt(prompt)).toBe(true);
+    }
+
+    // 端到端：Youc 原始标记（不带 authorization）现在应渲染出按钮。
+    const youcPrompt = negatedPrompts[0];
+    const marker = { actions: [{ label: '按方案实现', prompt: youcPrompt }] };
+    expect(extractFinalReplyActions(`本轮尚未修改、合入或部署。\n<!--botmux-actions:${JSON.stringify(marker)}-->`))
+      .toEqual({
+        content: '本轮尚未修改、合入或部署。',
+        actions: [{ label: '按方案实现', prompt: youcPrompt }],
+      });
+  });
+
+  it('still requires explicit authorization when any keyword is affirmative', () => {
+    // 同一 prompt 里混有否定与肯定：只要有一处肯定的状态变更，就必须显式授权。
+    const affirmativePrompts = [
+      '提交并 push；确认无误后合入并部署。',
+      '无需合入即可部署到测试环境。', // 否定“合入”但肯定“部署”
+      'Please merge to prod and restart.',
+      '先不部署，但现在就合入 custom/dev。', // 否定“部署”但肯定“合入”
+    ];
+    for (const prompt of affirmativePrompts) {
+      expect(requiresExplicitAuthorization(prompt)).toBe(true);
+      expect(isSafeFinalReplyActionPrompt(prompt)).toBe(false);
+      expect(isSafeFinalReplyActionPrompt(prompt, 'explicit')).toBe(true);
+    }
   });
 });

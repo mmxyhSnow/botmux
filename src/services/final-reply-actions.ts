@@ -20,14 +20,55 @@ const MAX_LABEL_LENGTH = 20;
 const MAX_PROMPT_LENGTH = 300;
 const FORBIDDEN_ACTION_PATTERN =
   /(?:删除|清空|强推|强制推送|重置|回滚|授权|提权|管理员权限|支付|付款|转账|rm\s+-rf|git\s+reset\s+--hard|push\s+--force|force[- ]?push|delete|drop\s+(?:table|database)|truncate|rollback|grant\s+permission|payment)/i;
-const EXPLICIT_AUTHORIZATION_PATTERN =
-  /(?:合入|部署|上线|发布|重启|\bmerge\b|\bdeploy\b|\brelease\b|\brestart\b)/i;
+// 状态变更关键词：合入、部署、上线、发布、重启及其英文形式。用 `g` 逐个定位以便判定否定语境。
+const AUTHORIZATION_KEYWORD_PATTERN =
+  /合入|部署|上线|发布|重启|\bmerge\b|\bdeploy\b|\brelease\b|\brestart\b/gi;
+// 子句强分隔符：跨过它就不再算同一句，避免否定词误跨句作用到后面的肯定关键词。
+const CLAUSE_DELIMITER = /[。！？!?；;，,、\n\r：:]/;
+// 关键词紧邻前缀里的“连接词/其它关键词/空白”噪声；剥掉后才能露出真正的否定词尾。
+const AUTHORIZATION_TAIL_NOISE =
+  /(?:合入|部署|上线|发布|重启|merge|deploy|release|restart|and|or|[、，,和与及或\/\s])+$/i;
+// 否定词尾：命中说明该关键词处于“暂不/不/无需…”等否定语境，不构成真正的状态变更意图。
+const NEGATION_SUFFIX =
+  /(?:暂缓|暂停|暂不|先不|不再|不会|不予|不用|不要|无需|无须|勿|别|未|非|不|no|not|without|never|do(?:es)?\s*n['’]?t|do\s+not|won['’]?t)\s*$/i;
 const CUSTOM_RELEASE_FREEZE_ACTION_PATTERN =
   /(?:冻结|freeze)[^<>\r\n]{0,40}(?:release\/v)?\d+\.\d+\.\d+-custom\.\d+/i;
 
 /**
+ * 判断某个状态变更关键词是否落在否定语境里。
+ * 只在同一子句内向前看：先截到最近的强分隔符之后，再剥掉紧邻的连接词/其它关键词/空白，
+ * 若剩余片段以否定词收尾（如“暂不”“不部署或”末尾的“不”），即认定该关键词被否定。
+ */
+function keywordOccurrenceIsNegated(prefix: string): boolean {
+  let clause = prefix;
+  for (let i = prefix.length - 1; i >= 0; i--) {
+    if (CLAUSE_DELIMITER.test(prefix[i])) {
+      clause = prefix.slice(i + 1);
+      break;
+    }
+  }
+  const stripped = clause.replace(AUTHORIZATION_TAIL_NOISE, '');
+  return NEGATION_SUFFIX.test(stripped);
+}
+
+/**
+ * 是否存在“肯定语气”的状态变更（合入/部署/上线/发布/重启）。
+ * 逐个关键词判定：只要有一处不在否定语境里，就需要显式授权；
+ * 全部处于否定语境（如“暂不合入 custom/dev，不部署或重启”）时返回 false，普通动作即可放行。
+ */
+export function requiresExplicitAuthorization(prompt: string): boolean {
+  const scanner = new RegExp(AUTHORIZATION_KEYWORD_PATTERN.source, 'gi');
+  let match: RegExpExecArray | null;
+  while ((match = scanner.exec(prompt)) !== null) {
+    if (!keywordOccurrenceIsNegated(prompt.slice(0, match.index))) return true;
+  }
+  return false;
+}
+
+/**
  * 判断卡片动作能否作为新用户回合提交。
- * 不可逆危险操作始终拒绝；合入、部署、发布和重启只有在按钮声明显式授权时放行。
+ * 不可逆危险操作始终拒绝；合入、部署、发布和重启只有在按钮声明显式授权时放行，
+ * 但仅当这些关键词是“肯定语气”时才要求授权——否定表述（暂不合入/不部署重启）不算状态变更。
  */
 export function isSafeFinalReplyActionPrompt(
   prompt: string,
@@ -39,7 +80,7 @@ export function isSafeFinalReplyActionPrompt(
     && !FORBIDDEN_ACTION_PATTERN.test(normalized)
     && !CUSTOM_RELEASE_FREEZE_ACTION_PATTERN.test(normalized)
     && (
-      !EXPLICIT_AUTHORIZATION_PATTERN.test(normalized)
+      !requiresExplicitAuthorization(normalized)
       || authorization === 'explicit'
     );
 }
