@@ -125,6 +125,14 @@ export interface CodexAppProgressCardArchivedPage {
   archivedSynced?: boolean;
 }
 
+/** 一条外部作业（MR/CI/HAR 等）的实时状态；与 AI 本轮执行状态互相独立。 */
+export interface CodexAppProgressExternalJob {
+  /** 人类可读的外部作业标识，例如 `MR 8293313`、`HAR 1.0.6-alpha.2 / job 816911007`。 */
+  label: string;
+  /** 平台回读到的原始状态文本，例如 `running`、`Failed`、`success`。 */
+  status: string;
+}
+
 /** AI 显式上报的任务看板字段；缺失时渲染层回退到普通进展。 */
 export interface CodexAppProgressOverview {
   stage: string;
@@ -137,6 +145,33 @@ export interface CodexAppProgressOverview {
   evidence?: string[];
   delivery?: string[];
   risks?: string[];
+  /**
+   * 外部作业的实时状态列表。用于区分「AI 本轮执行结束」与「外部任务终态」：
+   * 即使 stage 报告为完成，只要这里存在未终态或失败的作业，摘要就不得笼统声称成功。
+   */
+  external?: CodexAppProgressExternalJob[];
+}
+
+/** 摘要里程碑的语义类别，用于稳定去重与「保留交付/失败」的选择优先级。 */
+export type CodexAppProgressMilestoneKind =
+  | 'stage'
+  | 'progress'
+  | 'delivery'
+  | 'evidence'
+  | 'blocker'
+  | 'external'
+  | 'terminal';
+
+/** 一条摘要里程碑：绑定到完整记录的零基索引，并携带业务语义标题与类别。 */
+export interface CodexAppProgressMilestone {
+  index: number;
+  title: string;
+  kind: CodexAppProgressMilestoneKind;
+  /**
+   * 关键里程碑（终态、外部失败、交付、阻塞）在 4–6 条选择中优先保留，
+   * 避免被阶段噪音挤掉；普通阶段/过程推进则可被折叠。
+   */
+  critical?: boolean;
 }
 
 /** Codex App 即时进度卡的会话级投影，进程重启后可继续更新原卡片。 */
@@ -157,6 +192,12 @@ export interface CodexAppProgressCardSessionState {
   overview?: CodexAppProgressOverview;
   /** 完整记录中应进入摘要视图的零基索引；缺失表示旧状态，保守展示全部。 */
   summaryEntryIndexes?: number[];
+  /**
+   * 摘要视图使用的语义里程碑（业务标题 + 类别 + 索引）。
+   * 与 summaryEntryIndexes 一一对应但携带真实语义标题；旧状态缺失时渲染层
+   * 回退到「按记录文本推断标题 + 展示全部索引」的兼容路径。
+   */
+  summaryMilestones?: CodexAppProgressMilestone[];
   /** 当前任务对应的最终 assistant 回复；完整过程页据此保留结论和产物链接。 */
   finalResponse?: string;
   /** 主卡是否展开更多近期证据；完整历史仍使用独立分页卡。 */

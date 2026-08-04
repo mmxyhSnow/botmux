@@ -5,6 +5,14 @@ import type {
 } from '../types.js';
 import { renderCodexAppProgressCard } from './codex-app-progress-card-renderer.js';
 import {
+  computeExternalOutcome,
+  externalTerminalHeadline,
+} from './codex-app-progress-external.js';
+import {
+  deriveProgressMilestone,
+  deriveTerminalMilestone,
+} from './codex-app-progress-milestones.js';
+import {
   appendCodexAppProgressEntry,
   cloneCodexAppProgressState,
   isCodexAppProgressSummaryEvent,
@@ -42,10 +50,14 @@ function timestampedContent(content: string, now: Date): string {
   return `[${PROGRESS_TIME_FORMATTER.format(now)}] ${content}`;
 }
 
-function terminalText(phase: Exclude<CodexAppProgressCardPhase, 'running'>): string {
-  if (phase === 'completed') return '本轮已完成。';
+function terminalText(
+  phase: Exclude<CodexAppProgressCardPhase, 'running'>,
+  overview?: CodexAppProgressCardSessionState['overview'],
+): string {
   if (phase === 'failed') return '本轮处理失败。';
-  return '本轮已中断。';
+  if (phase === 'interrupted') return '本轮已中断。';
+  // completed 阶段是「AI 本轮执行结束」，是否等于外部任务成功取决于结构化状态。
+  return externalTerminalHeadline(computeExternalOutcome(overview?.external));
 }
 
 function fingerprint(content: string): string {
@@ -106,8 +118,13 @@ export class CodexAppProgressCard {
         current.phase = 'completed';
         appendCodexAppProgressEntry(
           current,
-          timestampedContent(terminalText('completed'), this.now()),
+          timestampedContent(terminalText('completed', current.overview), this.now()),
           true,
+          deriveTerminalMilestone({
+            overview: current.overview,
+            phase: 'completed',
+            index: current.currentEntryCount ?? 0,
+          }),
         );
         this.persist();
         await this.syncCard();
@@ -152,12 +169,20 @@ export class CodexAppProgressCard {
       const summaryEvent = parsed.overview
         ? isCodexAppProgressSummaryEvent(this.state.overview, parsed.overview)
         : false;
+      const milestone = summaryEvent && parsed.overview
+        ? deriveProgressMilestone({
+            previous: this.state.overview,
+            next: parsed.overview,
+            index: this.state.currentEntryCount ?? 0,
+          })
+        : undefined;
       if (parsed.title) this.state.title = parsed.title;
       if (parsed.overview) this.state.overview = parsed.overview;
       if (trimmed) appendCodexAppProgressEntry(
         this.state,
         timestampedContent(trimmed, now),
         summaryEvent,
+        milestone,
       );
       this.state.updatedAtMs = now.getTime();
       this.persist();
@@ -190,8 +215,13 @@ export class CodexAppProgressCard {
       const now = this.now();
       appendCodexAppProgressEntry(
         this.state,
-        timestampedContent(terminalText(phase), now),
+        timestampedContent(terminalText(phase, this.state.overview), now),
         true,
+        deriveTerminalMilestone({
+          overview: this.state.overview,
+          phase,
+          index: this.state.currentEntryCount ?? 0,
+        }),
       );
       this.state.updatedAtMs = now.getTime();
       this.persist();

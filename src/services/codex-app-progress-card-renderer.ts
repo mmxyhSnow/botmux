@@ -7,6 +7,11 @@ import type {
   CodexAppProgressCardPhase,
   CodexAppProgressCardSessionState,
 } from '../types.js';
+import {
+  computeExternalOutcome,
+  externalJobLines,
+  externalTerminalHeadline,
+} from './codex-app-progress-external.js';
 import { splitProgressCardEntries } from './codex-app-progress-pagination.js';
 
 export interface CodexAppProgressCardRenderOptions {
@@ -66,12 +71,16 @@ function overviewMarkdown(state: CodexAppProgressCardSessionState): string {
   if (!overview) {
     return '**当前** 等待新的明确进展';
   }
+  const externalDetail = externalJobLines(overview.external);
   return [
     `阶段 ${overview.stage}　·　进度 ${
       overview.total ? `${overview.completed.length}/${overview.total}` : `${overview.completed.length} 项`
     }`,
     `**当前** ${overview.current}`,
     `**下一步** ${overview.next}`,
+    externalDetail.length > 0
+      ? `**外部** ${summaryItems(externalDetail, '')}`
+      : undefined,
     overview.blocker
       ? `**⚠️ 需要处理** ${overview.blocker}`
       : undefined,
@@ -98,12 +107,22 @@ function completionMarkdown(state: CodexAppProgressCardSessionState, nowMs: numb
       : [];
   const endedAtMs = state.updatedAtMs ?? nowMs;
   const endedLabel = state.phase === 'completed' ? '完成' : '结束';
+  // 终态首行严格区分「AI 本轮执行结束」与「外部任务终态」；完成阶段依结构化状态改写。
+  const externalOutcome = computeExternalOutcome(overview?.external);
+  const headline = state.phase === 'completed'
+    ? externalTerminalHeadline(externalOutcome)
+    : state.phase === 'failed'
+      ? '本轮处理失败。'
+      : '本轮已中断。';
+  const externalDetail = externalJobLines(overview?.external);
   return [
     `用时 ${elapsedMinutes(state.startedAtMs, endedAtMs)} 分钟`
       + `　·　${PROGRESS_TIME_FORMATTER.format(new Date(endedAtMs))} ${endedLabel}`,
+    `**结论** ${headline}`,
     `**结果** ${conclusion}`,
     `**验证** ${summaryItems(validation, '未记录独立验证证据')}`,
     `**交付** ${summaryItems(delivery, '无外部交付')}`,
+    externalDetail.length > 0 ? `**外部** ${summaryItems(externalDetail, '')}` : undefined,
     risks.length > 0 ? `**风险** ${summaryItems(risks, '')}` : undefined,
   ].filter(Boolean).join('\n');
 }
