@@ -176,6 +176,7 @@ describe('isSafeFinalReplyActionPrompt', () => {
     // 旧的朴素子串匹配把“合入/部署/重启”当成状态变更，导致无授权按钮被整条静默丢弃。
     const negatedPrompts = [
       '完成定向测试、pnpm build、提交并 push 独立开发分支；暂不合入 custom/dev，不部署或重启。',
+      '完成定向测试和构建；不加入 custom/dev，不冻结、部署或重启。',
       '本次仅提交，不发布、不上线。',
       '先不合入，等 review 后再说。',
       'Completed tests; do not merge or deploy or restart for now.',
@@ -185,6 +186,26 @@ describe('isSafeFinalReplyActionPrompt', () => {
       // 无授权也能放行，说明否定语境不再要求 explicit。
       expect(isSafeFinalReplyActionPrompt(prompt)).toBe(true);
     }
+
+    // 真实回归：v2 修复动作即使明确排除整组发版操作，也必须保留为可渲染按钮。
+    const repairMarker = {
+      version: 2,
+      actions: [{
+        label: '修复两处卡片问题',
+        target: '修复待发版卡片展示及推荐操作误过滤问题',
+        scope: '仅修改相关源码和测试；不加入 custom/dev，不冻结、部署或重启',
+        acceptance: '定向测试和构建通过，最终回复能展示修复按钮',
+      }],
+    };
+    expect(extractFinalReplyActions(`结论\n<!--botmux-actions:${JSON.stringify(repairMarker)}-->`).actions)
+      .toEqual([{
+        label: '修复两处卡片问题',
+        prompt: [
+          '目标：修复待发版卡片展示及推荐操作误过滤问题',
+          '范围：仅修改相关源码和测试；不加入 custom/dev，不冻结、部署或重启',
+          '验收：定向测试和构建通过，最终回复能展示修复按钮',
+        ].join('\n'),
+      }]);
 
     // 端到端：Youc 原始标记（不带 authorization）现在应渲染出按钮。
     const youcPrompt = negatedPrompts[0];

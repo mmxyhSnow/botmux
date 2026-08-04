@@ -121,6 +121,7 @@ describe('custom release event store', () => {
     ]);
     expect(buildCustomReleaseSummaryCard(current)).toContain('发布时');
     expect(buildCustomReleaseSummaryCard(current)).toContain('2s');
+    expect(buildCustomReleaseSummaryCard(current)).not.toContain('待冻结 · 0s');
   });
 });
 
@@ -140,8 +141,8 @@ describe('custom release summary card', () => {
     });
     const table = JSON.parse(card).body.elements.find((element: any) => element.tag === 'table');
     expect(table.columns).toEqual([
-      expect.objectContaining({ name: 'kind', data_type: 'options', width: '80px' }),
-      expect.objectContaining({ name: 'change', data_type: 'lark_md' }),
+      expect.objectContaining({ name: 'kind', display_name: '类型', data_type: 'options', width: '80px' }),
+      expect.objectContaining({ name: 'change', display_name: '改动', data_type: 'lark_md' }),
     ]);
     expect(table.rows).toEqual([
       { kind: [{ text: 'feat', color: 'blue' }], change: expect.stringContaining('新增能力') },
@@ -173,6 +174,18 @@ describe('custom release summary card', () => {
     expect(encoded).toContain('冻结 3.7.1-custom.3');
     expect(encoded).toContain('custom_release_freeze');
     expect(card.body.elements.at(-1).tag).toBe('column_set');
+  });
+
+  it('用空行隔开发版状态、阶段说明和完整差异链接', () => {
+    const { record } = storeWithEvent();
+    const card = JSON.parse(buildCustomReleaseSummaryCard({
+      ...record,
+      state: { ...record.state, status: 'delivered', messageId: 'om_release' },
+    }));
+    const status = card.body.elements.find((element: any) =>
+      element.tag === 'markdown' && element.content.includes('发布状态'));
+    expect(status.content).toContain('累计：2 commits，13 files，+574/-92\n\n尚未冻结');
+    expect(status.content).toContain('尚未冻结、未推进生产、未部署。\n\n[查看完整差异]');
   });
 
   it('旧卡过期后移除冻结回调', () => {
@@ -245,6 +258,7 @@ describe('custom release notifier', () => {
     await notifier.flush();
     await notifier.flush();
     expect(sent).toHaveLength(1);
+    expect(patched.some(item => item.messageId === 'om_1' && item.card.includes('发布时间线'))).toBe(true);
 
     store.enqueue(event('2', {
       integration: {
@@ -258,6 +272,31 @@ describe('custom release notifier', () => {
     expect(store.get(event('2').eventId)?.state.messageId).toBe('om_2');
     expect(sent[1]).toContain('22222222');
     expect(patched.some(item => item.messageId === 'om_1' && item.card.includes('已有更新'))).toBe(true);
+  });
+
+  it('已送达卡片的终态重绘失败时保留 delivered 状态', async () => {
+    const { store } = storeWithEvent();
+    const logs: string[] = [];
+    const notifier = new CustomReleaseNotifier({
+      store,
+      ownerOpenId: () => 'ou_owner',
+      sendCard: async () => 'om_release',
+      updateCard: async () => { throw new Error('simulated patch failure'); },
+      freeze: async () => ({ candidateTag: 'release/v3.7.1-custom.3' }),
+      deploy: async () => undefined,
+      finalizeDeploy: async () => ({
+        productionHead: event().integration.head,
+        deployTag: 'deploy/v3.7.1-custom.3',
+      }),
+      log: message => { logs.push(message); },
+    });
+
+    await notifier.flush();
+    expect(store.get(event().eventId)?.state).toMatchObject({
+      status: 'delivered',
+      messageId: 'om_release',
+    });
+    expect(logs).toContainEqual(expect.stringContaining('delivered card refresh failed'));
   });
 
   it('只允许收件 owner 冻结，成功后只更新原卡片', async () => {
