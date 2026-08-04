@@ -153,6 +153,7 @@ import {
   getDaemonBootId,
   beginCodexAppProgressTurn,
   recordAcceptedTurnDelivery,
+  noteFinalReplyActionBotActivity,
   getDaemonStreamingCardUsageSnapshot,
   isSessionTransferring,
   type WorkerSessionReplyOptions,
@@ -378,7 +379,7 @@ import {
 } from './core/ask-broker.js';
 import { parseAskBody } from './core/ask-api.js';
 import { computeCocoPickerKeys } from './core/coco-picker-keys.js';
-import { createLarkAskCardDispatcher } from './im/lark/ask-card.js';
+import { createLarkAskCardDispatcher, noteAskCardBotActivity } from './im/lark/ask-card.js';
 import { normalizeVcMeetingEvents } from './vc-agent/normalizer.js';
 import {
   beginVcIngestionPass,
@@ -19122,6 +19123,16 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       beforeSessionTurn: (data, ctx) => maybeCatchUpVcMeetingConsumerBeforeTurn(data, ctx),
       isSessionOwner: (anchor, appId) => activeSessions.has(sessionKey(anchor, appId)),
       resolveReplyThreadAlias: (rootId, chatId, appId) => findChatReplyAlias(rootId, chatId, appId),
+      onBotMessageActivity: activity => {
+        noteAskCardBotActivity(activity);
+        for (const ds of activeSessions.values()) {
+          if (ds.larkAppId !== activity.larkAppId || ds.chatId !== activity.chatId) continue;
+          const sameConversation = ds.scope === 'chat'
+            ? !activity.inThread
+            : activity.inThread && activity.rootMessageId === ds.session.rootMessageId;
+          if (sameConversation) noteFinalReplyActionBotActivity(ds);
+        }
+      },
       // Chat was converted 普通群 → 话题群 while we held a chat-scope session.
       // Evict it from the routing map so subsequent inbound messages can land
       // on a fresh thread-scope session (dispatcher already rerouted this turn

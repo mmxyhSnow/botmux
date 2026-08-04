@@ -101,6 +101,7 @@ vi.mock('@larksuiteoapi/node-sdk', () => ({
 import {
   getDaemonReplyCardUsageSnapshot,
   initWorkerPool,
+  noteFinalReplyActionBotActivity,
   __testOnly_setupWorkerHandlers,
 } from '../src/core/worker-pool.js';
 import { MessageWithdrawnError } from '../src/im/lark/client.js';
@@ -329,9 +330,59 @@ describe('Bridge final_output delivery (P2 retry)', () => {
           session_id: 'sid-final-out',
           root_id: 'om_root',
           prompt: '请 push 当前分支并回读远端 HEAD。',
+          action_set_id: expect.any(String),
         },
       }],
     });
+    expect(ds.session.finalReplyActionProjection).toMatchObject({
+      status: 'pending',
+      messageId: 'om_reply',
+      reprojectCount: 0,
+    });
+  });
+
+  it('debounces later bot messages and moves one valid action card to the latest position', async () => {
+    const sessionReply = vi.fn()
+      .mockResolvedValueOnce('om_initial')
+      .mockResolvedValueOnce('om_latest');
+    initWorkerPool({
+      sessionReply,
+      getSessionWorkingDir: () => '/tmp',
+      getActiveCount: () => 1,
+      closeSession: vi.fn(),
+    });
+    const ds = makeDs();
+    const marker = '<!--botmux-actions:{"actions":[{"label":"执行 push","prompt":"请 push 当前分支并回读远端 HEAD。"}]}-->';
+    const { __testOnly_deliverFinalOutput } = await import('../src/core/worker-pool.js') as any;
+
+    __testOnly_deliverFinalOutput(ds, {
+      ...finalOutputMsg(),
+      content: `还没 push。\n${marker}`,
+    }, 'tag', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    ds.lastScreenStatus = 'idle';
+
+    noteFinalReplyActionBotActivity(ds);
+    await vi.advanceTimersByTimeAsync(600);
+    noteFinalReplyActionBotActivity(ds);
+    await vi.advanceTimersByTimeAsync(1_199);
+    expect(sessionReply).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(sessionReply).toHaveBeenCalledTimes(2);
+    const latestCard = JSON.parse(sessionReply.mock.calls[1][1] as string);
+    expect(JSON.stringify(latestCard)).toContain('待你操作');
+    expect(ds.session.finalReplyActionProjection).toMatchObject({
+      messageId: 'om_latest',
+      status: 'pending',
+      reprojectCount: 1,
+      reprojectRequestedAt: undefined,
+    });
+    expect(updateMessageMock).toHaveBeenCalledWith(
+      'app_test',
+      'om_initial',
+      expect.stringContaining('操作入口已移至下方最新卡片'),
+    );
   });
 
   it('renders an explicitly authorized lifecycle action without executing it', async () => {

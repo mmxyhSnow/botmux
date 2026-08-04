@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   AskCardDispatcher,
   AskClickOutcome,
@@ -5,7 +6,9 @@ import type {
   PendingAsk,
 } from '../../core/ask-types.js';
 import {
+  findPendingAskByAnchor,
   getAskSnapshot,
+  replaceAskCardProjection,
   submitAsk,
   submitUndoAsk,
   toggleAsk,
@@ -39,6 +42,8 @@ const FLOW_ACTIONS = {
   undo: ASK_UNDO_ACTION,
 };
 const MAX_BUTTONS_PER_ACTION_ROW = 4;
+const ASK_CARD_REPROJECT_DELAY_MS = 1_200;
+const askCardProjectionTimers = new Map<string, NodeJS.Timeout>();
 export interface AskCardActionData {
   operator?: { open_id?: string };
   action?: {
@@ -51,6 +56,90 @@ export interface AskCardDispatcherDeps {
   sendMessage?: typeof sendMessage;
   replyMessage?: typeof replyMessage;
   updateMessage?: typeof updateMessage;
+}
+
+/** 用于判断一条外部机器人消息是否遮挡当前 ASK 的最小路由信息。 */
+export interface AskCardBotActivity {
+  larkAppId: string;
+  chatId: string;
+  rootMessageId?: string;
+  inThread: boolean;
+}
+
+function buildMovedAskCard(): string {
+  return JSON.stringify({
+    schema: '2.0',
+    config: { update_multi: true },
+    body: {
+      elements: [{
+        tag: 'div',
+        text: { tag: 'lark_md', content: '这张待操作卡已移至下方最新位置。' },
+      }],
+    },
+  });
+}
+
+/**
+ * 外部机器人消息遮挡 ASK 时，在同一会话安静后新发当前问题并让旧投影失效。
+ * 新旧卡共享 askId/nonce，但 projectionId 只认可最新值，避免旧卡继续改写多选状态。
+ */
+export function noteAskCardBotActivity(
+  activity: AskCardBotActivity,
+  deps: AskCardDispatcherDeps = {},
+): void {
+  const anchor = activity.inThread ? activity.rootMessageId : activity.chatId;
+  if (!anchor) return;
+  const ask = findPendingAskByAnchor({
+    larkAppId: activity.larkAppId,
+    chatId: activity.chatId,
+    anchor,
+  });
+  if (!ask?.cardMessageId || ask.settled) return;
+
+  const previousTimer = askCardProjectionTimers.get(ask.askId);
+  if (previousTimer) clearTimeout(previousTimer);
+  const timer = setTimeout(() => {
+    askCardProjectionTimers.delete(ask.askId);
+    const current = getAskSnapshot(ask.askId);
+    if (!current?.cardMessageId || current.settled) return;
+    const nextProjectionId = randomUUID();
+    const projected = { ...current, projectionId: nextProjectionId };
+    const send = deps.sendMessage ?? sendMessage;
+    const reply = deps.replyMessage ?? replyMessage;
+    const update = deps.updateMessage ?? updateMessage;
+    const cardJson = buildAskCard(projected);
+    const canReplyToRoot = typeof current.rootMessageId === 'string'
+      && current.rootMessageId.startsWith('om_');
+    void (async () => {
+      const messageId = canReplyToRoot
+        ? await reply(current.larkAppId, current.rootMessageId!, cardJson, 'interactive', true)
+        : await send(current.larkAppId, current.chatId, cardJson, 'interactive');
+      const replaced = replaceAskCardProjection({
+        askId: current.askId,
+        expectedProjectionId: current.projectionId,
+        projectionId: nextProjectionId,
+        messageId,
+      });
+      if (!replaced) {
+        await update(current.larkAppId, messageId, buildMovedAskCard());
+        return;
+      }
+      try {
+        await update(current.larkAppId, current.cardMessageId!, buildMovedAskCard());
+      } catch (error) {
+        // projectionId 已切换，旧卡视觉更新失败也只会得到 stale 回调。
+        logger.warn(`[ask:${current.askId}] failed to retire previous projection: ${
+          error instanceof Error ? error.message : String(error)
+        }`);
+      }
+    })().catch(error => {
+      logger.warn(`[ask:${current.askId}] failed to move actionable card latest: ${
+        error instanceof Error ? error.message : String(error)
+      }`);
+    });
+  }, ASK_CARD_REPROJECT_DELAY_MS);
+  timer.unref?.();
+  askCardProjectionTimers.set(ask.askId, timer);
 }
 
 export function createLarkAskCardDispatcher(
@@ -134,6 +223,7 @@ export async function handleAskCardAction(
 
   const askId = asString(value?.ask_id);
   const nonce = asString(value?.nonce);
+  const projectionId = asString(value?.projection_id);
   const by = data.operator?.open_id;
   // Resolve the bot locale from the pending ask (best-effort — a stale/missing
   // ask falls back to the process-default locale).
@@ -141,6 +231,10 @@ export async function handleAskCardAction(
   if (!askId || !nonce || !by) {
     return staleToast(locale);
   }
+  const currentAsk = getAskSnapshot(askId);
+  // 旧进程生成的卡片没有 projection_id；ASK 本就不跨 daemon 恢复，因此只为兼容
+  // 当前进程内的旧测试/嵌入方放行缺字段，新版旧投影一定携带字段并会严格失效。
+  if (!currentAsk || (projectionId && currentAsk.projectionId !== projectionId)) return staleToast(locale);
 
   if (action === ASK_UNDO_ACTION) {
     const outcome = submitUndoAsk({ askId, nonce, by });
@@ -302,6 +396,7 @@ export function buildAskCard(ask: PendingAsk, result?: AskResult): string {
               action: ASK_TOGGLE_ACTION,
               ask_id: ask.askId,
               nonce: ask.nonce,
+              projection_id: ask.projectionId,
               question_index: String(i),
               key: opt.key,
             }
@@ -309,6 +404,7 @@ export function buildAskCard(ask: PendingAsk, result?: AskResult): string {
               action: ASK_SELECT_ACTION,
               ask_id: ask.askId,
               nonce: ask.nonce,
+              projection_id: ask.projectionId,
               key: opt.key,
             },
       }));
@@ -328,6 +424,7 @@ export function buildAskCard(ask: PendingAsk, result?: AskResult): string {
               action: ASK_SUBMIT_ACTION,
               ask_id: ask.askId,
               nonce: ask.nonce,
+              projection_id: ask.projectionId,
             },
           },
         ],

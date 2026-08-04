@@ -83,35 +83,20 @@ export class CustomReleaseNotifier {
       };
       try {
         const previous = this.deps.store.previousDelivered(attempt);
-        let messageId: string;
-        let reused = false;
-        if (previous?.state.messageId) {
-          try {
-            await this.deps.updateCard(previous.state.messageId, buildCustomReleaseSummaryCard(visible));
-            messageId = previous.state.messageId;
-            reused = true;
-          } catch (error) {
-            this.log(`previous card reuse failed ${previous.event.eventId.slice(0, 12)}: ${errorText(error)}`);
-            messageId = await this.deps.sendCard(
-              owner,
-              buildCustomReleaseSummaryCard(visible),
-              customReleaseMessageUuid(attempt.event.eventId),
-            );
-          }
-        } else {
-          messageId = await this.deps.sendCard(
-            owner,
-            buildCustomReleaseSummaryCard(visible),
-            customReleaseMessageUuid(attempt.event.eventId),
-          );
-        }
+        // 待冻结事件是明确需要 owner 操作的卡片；每次 HEAD 变化都新发到私聊最新位置，
+        // 再让旧事件服务端过期，不能用静默 PATCH 把按钮留在历史消息中。
+        const messageId = await this.deps.sendCard(
+          owner,
+          buildCustomReleaseSummaryCard(visible),
+          customReleaseMessageUuid(attempt.event.eventId),
+        );
         const delivered = this.deps.store.updateState(attempt.event.eventId, {
           status: 'delivered',
           messageId,
           lastError: undefined,
         });
-        await this.expirePreviousCard(delivered, previous, reused);
-        this.log(`${reused ? 'reused' : 'delivered'} ${attempt.event.eventId.slice(0, 12)} message=${messageId}`);
+        await this.expirePreviousCard(delivered, previous);
+        this.log(`delivered ${attempt.event.eventId.slice(0, 12)} message=${messageId}`);
       } catch (error) {
         this.deps.store.updateState(attempt.event.eventId, {
           status: 'delivery_failed',
@@ -125,15 +110,12 @@ export class CustomReleaseNotifier {
   private async expirePreviousCard(
     current: CustomReleaseEventRecord,
     previous: CustomReleaseEventRecord | undefined,
-    reused: boolean,
   ): Promise<void> {
     if (!previous?.state.messageId) return;
     const stale = this.deps.store.updateState(previous.event.eventId, {
       status: 'stale',
       supersededBy: current.event.eventId,
     });
-    // 同一 messageId 已显示新事件，不能再用旧事件内容覆盖；服务端旧事件仍标记为 stale。
-    if (reused) return;
     try {
       await this.deps.updateCard(previous.state.messageId, buildCustomReleaseSummaryCard(stale));
     } catch (error) {

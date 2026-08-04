@@ -70,6 +70,14 @@ import {
   extractFinalReplyActions,
   type ExtractedFinalReplyActions,
 } from '../services/final-reply-actions.js';
+import {
+  FINAL_REPLY_ACTION_MAX_REPROJECTS,
+  FINAL_REPLY_ACTION_REPROJECT_DELAY_MS,
+  createFinalReplyActionProjection,
+  finalReplyActionReminderMarkdown,
+  finalReplyActionSetId,
+  retireFinalReplyActionCard,
+} from '../services/final-reply-action-projection.js';
 
 /** A random id minted once per daemon process (this lifetime). Stamped onto
  *  isolated persistent panes so a suspend→resume reattach (same id) is
@@ -228,7 +236,7 @@ import type { CliId } from '../adapters/cli/types.js';
 import { isStructuredBridgeAdoptCli } from '../services/structured-bridge-clis.js';
 import { resolveEffectivePluginIds } from './plugins/effective.js';
 import { ensureGatewayEntry } from './plugins/mcp/gateway-installer.js';
-import type { CliTurnPayload, CodexAppTurnInput, DaemonToWorker, WorkerToDaemon, Session, DisplayMode } from '../types.js';
+import type { CliTurnPayload, CodexAppTurnInput, DaemonToWorker, WorkerToDaemon, Session, DisplayMode, FinalReplyActionProjectionState } from '../types.js';
 import { activeSessionKey, sessionKey, sessionAnchorId, storedSessionAnchorId, isDocNativeSession, larkTransportEnabled, type DaemonSession } from './types.js';
 import { DONE_REACTION_EMOJI_TYPE } from './pending-response.js';
 import { buildTerminalUrl } from './terminal-url.js';
@@ -406,6 +414,154 @@ export function initWorkerPool(cb: WorkerPoolCallbacks): void {
 function requireCallbacks(): WorkerPoolCallbacks {
   if (!callbacks) throw new Error('WorkerPool not initialised — call initWorkerPool() first');
   return callbacks;
+}
+
+function finalReplyActionWorkerBusy(ds: DaemonSession): boolean {
+  return !!ds.worker
+    && !ds.worker.killed
+    && ds.lastScreenStatus !== 'idle'
+    && ds.lastScreenStatus !== 'limited';
+}
+
+function persistFinalReplyActionProjection(
+  ds: DaemonSession,
+  state: FinalReplyActionProjectionState,
+): void {
+  ds.session.finalReplyActionProjection = state;
+  sessionStore.updateSession(ds.session);
+}
+
+function finalReplyActionButtons(
+  ds: DaemonSession,
+  state: FinalReplyActionProjectionState,
+): Array<{
+  label: string;
+  prompt: string;
+  sessionId: string;
+  rootId: string;
+  cliId: string;
+  actionSetId: string;
+  authorization?: 'explicit';
+}> {
+  const cliId = ds.session.cliId ?? getBot(ds.larkAppId).config.cliId;
+  return state.actions.map(action => ({
+    ...action,
+    sessionId: ds.session.sessionId,
+    rootId: sessionAnchorId(ds),
+    cliId,
+    actionSetId: state.actionSetId,
+  }));
+}
+
+async function retireFinalReplyActionProjection(
+  ds: DaemonSession,
+  state: FinalReplyActionProjectionState | undefined,
+): Promise<void> {
+  if (!state?.messageId) return;
+  const retired = retireFinalReplyActionCard(state.cardJson);
+  if (!retired) return;
+  try {
+    await updateMessage(ds.larkAppId, state.messageId, retired);
+  } catch (error) {
+    // 最新 messageId 已在持久化状态中切换；视觉更新失败也不能让旧卡重新获得执行权。
+    logger.warn(
+      `[${ds.session.sessionId.slice(0, 8)}] 旧快捷操作卡失效提示更新失败: `
+      + `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function reprojectFinalReplyAction(ds: DaemonSession, actionSetId: string): Promise<void> {
+  if (ds.session.status === 'closed') return;
+  const state = ds.session.finalReplyActionProjection;
+  if (!state || state.actionSetId !== actionSetId || state.status !== 'pending') return;
+  if (!state.reprojectRequestedAt) return;
+  if (state.reprojectCount >= FINAL_REPLY_ACTION_MAX_REPROJECTS) {
+    persistFinalReplyActionProjection(ds, {
+      ...state,
+      reprojectRequestedAt: undefined,
+      updatedAt: Date.now(),
+    });
+    logger.warn(`[${ds.session.sessionId.slice(0, 8)}] 快捷操作卡已达到抬升上限`);
+    return;
+  }
+  // 外部 bot 消息可能同时触发本会话的新一轮；等 worker 真正空闲后再发，避免卡片再次被结果顶走。
+  if (finalReplyActionWorkerBusy(ds)) return;
+
+  const effectiveCliId = ds.session.cliId ?? getBot(ds.larkAppId).config.cliId;
+  const cardJson = buildMarkdownCard(
+    finalReplyActionReminderMarkdown(),
+    daemonCardFooterRecipientOpenId(ds, effectiveCliId),
+    renderBrandTemplate(resolveBrandLabel(ds.larkAppId), ds.workingDir),
+    localeForBot(ds.larkAppId),
+    ds.workingDir,
+    daemonCardLocalHomeLinkMode(ds),
+    finalReplyActionButtons(ds, state),
+  );
+  const messageId = await requireCallbacks().sessionReply(
+    sessionAnchorId(ds),
+    cardJson,
+    'interactive',
+    ds.larkAppId,
+    undefined,
+    {
+      // Feishu 发送结果不确定时允许底层安全重试；每次后置投影仍有独立幂等键。
+      uuid: `fa-${state.actionSetId.slice(0, 32)}-${state.reprojectCount + 1}`,
+    },
+  );
+  const latest = ds.session.finalReplyActionProjection;
+  if (!latest || latest.actionSetId !== actionSetId || latest.status !== 'pending') {
+    // 发送期间若新一轮已替换或消费操作，立即让刚发出的卡片失效。
+    await retireFinalReplyActionProjection(ds, {
+      ...state,
+      messageId,
+      cardJson,
+    });
+    return;
+  }
+  const next: FinalReplyActionProjectionState = {
+    ...latest,
+    messageId,
+    cardJson,
+    reprojectCount: latest.reprojectCount + 1,
+    reprojectRequestedAt: undefined,
+    updatedAt: Date.now(),
+  };
+  persistFinalReplyActionProjection(ds, next);
+  await retireFinalReplyActionProjection(ds, latest);
+}
+
+/**
+ * 记录同会话后续机器人消息，并在消息收敛后把仍待处理的快捷操作抬到最新位置。
+ * 同一静默窗口只保留一个定时器；daemon 重启后持久化状态仍可校验旧卡。
+ */
+export function noteFinalReplyActionBotActivity(ds: DaemonSession): void {
+  if (ds.session.status === 'closed') return;
+  const state = ds.session.finalReplyActionProjection;
+  if (!state || state.status !== 'pending') return;
+  const next = {
+    ...state,
+    reprojectRequestedAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  persistFinalReplyActionProjection(ds, next);
+  if (ds.finalReplyActionProjectionTimer) clearTimeout(ds.finalReplyActionProjectionTimer);
+  ds.finalReplyActionProjectionTimer = setTimeout(() => {
+    ds.finalReplyActionProjectionTimer = undefined;
+    void reprojectFinalReplyAction(ds, next.actionSetId).catch(error => {
+      logger.warn(
+        `[${ds.session.sessionId.slice(0, 8)}] 快捷操作卡后置投递失败: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }, FINAL_REPLY_ACTION_REPROJECT_DELAY_MS);
+  ds.finalReplyActionProjectionTimer.unref?.();
+}
+
+function resumeFinalReplyActionProjectionAfterIdle(ds: DaemonSession): void {
+  const state = ds.session.finalReplyActionProjection;
+  if (!state?.reprojectRequestedAt || state.status !== 'pending') return;
+  noteFinalReplyActionBotActivity(ds);
 }
 
 /** 在普通飞书工作轮次被接受时先落账；专用接收器和不可见入口不会进入恢复集合。 */
@@ -2497,6 +2653,10 @@ export async function closeSession(
     // Usage ledger: flush the final delta before the worker goes away (a
     // crash/limited turn may never have reached an idle edge).
     recordUsageForDaemonSession(ds);
+    if (ds.finalReplyActionProjectionTimer) {
+      clearTimeout(ds.finalReplyActionProjectionTimer);
+      ds.finalReplyActionProjectionTimer = undefined;
+    }
     killWorker(ds);
     const activeKey = activeSessionKey(ds);
     if (activeSessionsRegistry?.get(activeKey) === ds) {
@@ -4823,6 +4983,7 @@ function setupWorkerHandlers(
           // ~seconds after GoGoGo while the CLI was still running the prompt.
           if (ds.lastScreenStatus === 'idle' || ds.lastScreenStatus === 'limited') {
             recordUsageForDaemonSession(ds);
+            resumeFinalReplyActionProjectionAfterIdle(ds);
             if (prevStatus === 'working' || prevStatus === 'analyzing') {
               void finishTurnReactions(ds);
             }
@@ -6360,6 +6521,19 @@ function deliverFinalOutput(
       const safeUserText = managedReceiver && msg.userText !== undefined
         ? neutralizeLarkAtTags(msg.userText)
         : msg.userText;
+      const rendersFinalReplyActions = msg.kind !== 'local-turn'
+        && msg.kind !== 'local-turn-headless'
+        && !managedReceiver
+        && !imOrigin
+        && extracted.actions.length > 0;
+      const priorActionProjection = ds.session.finalReplyActionProjection;
+      const nextActionSetId = rendersFinalReplyActions
+        ? finalReplyActionSetId({
+            sessionId: ds.session.sessionId,
+            turnId: msg.turnId,
+            actions: extracted.actions,
+          })
+        : undefined;
       const recipientOpenId = managedReceiver
         ? undefined
         : imOrigin?.replyTargetSenderOpenId
@@ -6394,6 +6568,7 @@ function deliverFinalOutput(
                   sessionId: ds.session.sessionId,
                   rootId: sessionAnchorId(ds),
                   cliId: effectiveCliId,
+                  ...(nextActionSetId ? { actionSetId: nextActionSetId } : {}),
                 }))
               : [],
             cardUsage,
@@ -6510,6 +6685,28 @@ function deliverFinalOutput(
             : undefined,
       );
       if (!stillCurrent()) return;
+      if (rendersFinalReplyActions && nextActionSetId) {
+        const projection = createFinalReplyActionProjection({
+          sessionId: ds.session.sessionId,
+          turnId: msg.turnId,
+          actions: extracted.actions,
+          messageId,
+          cardJson,
+        });
+        persistFinalReplyActionProjection(ds, projection);
+        if (priorActionProjection?.messageId !== messageId) {
+          await retireFinalReplyActionProjection(ds, priorActionProjection);
+        }
+      } else if (priorActionProjection?.status === 'pending') {
+        // 新一轮最终回复没有继续给出操作，视为旧决策已被当前任务生命周期取代。
+        persistFinalReplyActionProjection(ds, {
+          ...priorActionProjection,
+          status: 'superseded',
+          reprojectRequestedAt: undefined,
+          updatedAt: Date.now(),
+        });
+        await retireFinalReplyActionProjection(ds, priorActionProjection);
+      }
       recordPrimaryOutput(messageId);
       if (msg.turnId.startsWith('mlrp_turn_')) {
         markMessageListenerRunPreviewReplied(msg.turnId, {

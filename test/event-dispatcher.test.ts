@@ -852,6 +852,7 @@ function setupBotState(opts?: {
   onChatModeConverted: ReturnType<typeof vi.fn>;
   resolveReplyThreadAlias: ReturnType<typeof vi.fn>;
   handleVcMeetingPush: ReturnType<typeof vi.fn>;
+  onBotMessageActivity: ReturnType<typeof vi.fn>;
 } {
   return {
     handleCardAction: vi.fn(async () => undefined),
@@ -861,6 +862,7 @@ function setupBotState(opts?: {
     isSessionOwner: vi.fn(() => false),
     resolveReplyThreadAlias: vi.fn(() => null),
     onChatModeConverted: vi.fn(),
+    onBotMessageActivity: vi.fn(),
   };
 }
 
@@ -1821,6 +1823,13 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
       scope: 'thread',
       larkAppId: MY_APP_ID,
     }));
+    expect(handlers.onBotMessageActivity).toHaveBeenCalledWith({
+      larkAppId: MY_APP_ID,
+      chatId: 'chat-001',
+      messageId: 'msg-001',
+      rootMessageId: 'root-thread-1',
+      inThread: true,
+    });
   });
 
   it('routes @mentioned bot message (via mentions array) to handleThreadReply', async () => {
@@ -1853,6 +1862,10 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
 
     expect(handlers.handleThreadReply).not.toHaveBeenCalled();
     expect(handlers.handleNewTopic).not.toHaveBeenCalled();
+    expect(handlers.onBotMessageActivity).toHaveBeenCalledWith(expect.objectContaining({
+      rootMessageId: 'root-thread-3',
+      inThread: true,
+    }));
   });
 
   it('routes non-mentioned bot messages through configured group listener', async () => {

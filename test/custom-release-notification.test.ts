@@ -175,7 +175,7 @@ describe('custom release summary card', () => {
 });
 
 describe('custom release notifier', () => {
-  it('同类待冻结事件复用原卡，并把上一事件标为过期', async () => {
+  it('新的待冻结事件发到最新位置，并把上一张卡标为过期', async () => {
     const { store } = storeWithEvent('1');
     const sent: string[] = [];
     const patched: Array<{ messageId: string; card: string }> = [];
@@ -206,11 +206,11 @@ describe('custom release notifier', () => {
       },
     }));
     await notifier.flush();
-    expect(sent).toHaveLength(1);
+    expect(sent).toHaveLength(2);
     expect(store.get(event('1').eventId)?.state.status).toBe('stale');
-    expect(store.get(event('2').eventId)?.state.messageId).toBe('om_1');
-    expect(patched.some(item => item.messageId === 'om_1' && item.card.includes('22222222'))).toBe(true);
-    expect(patched.some(item => item.card.includes('已有更新'))).toBe(false);
+    expect(store.get(event('2').eventId)?.state.messageId).toBe('om_2');
+    expect(sent[1]).toContain('22222222');
+    expect(patched.some(item => item.messageId === 'om_1' && item.card.includes('已有更新'))).toBe(true);
   });
 
   it('只允许收件 owner 冻结，成功后只更新原卡片', async () => {

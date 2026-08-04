@@ -893,6 +893,8 @@ export function buildMarkdownCard(
     rootId: string;
     cliId: string;
     authorization?: 'explicit';
+    /** 同一组快捷操作跨消息投影时保持稳定，用于服务端拒绝旧卡。 */
+    actionSetId?: string;
   }> | CardUsageSnapshot = [],
   usage?: CardUsageSnapshot,
 ): string {
@@ -922,6 +924,7 @@ export function buildMarkdownCard(
               session_id: action.sessionId,
               root_id: action.rootId,
               cli_id: action.cliId,
+              ...(action.actionSetId ? { action_set_id: action.actionSetId } : {}),
               ...(action.authorization ? { authorization: action.authorization } : {}),
             },
           }],

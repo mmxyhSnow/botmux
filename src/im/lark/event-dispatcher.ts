@@ -1963,6 +1963,14 @@ export interface EventHandlers {
   isSessionOwner?: (anchor: string, larkAppId: string) => boolean;
   /** Resolve a persisted topic reply alias back to its owning chat-scope session. */
   resolveReplyThreadAlias?: (rootId: string, chatId: string, larkAppId: string) => { chatId: string; sessionId: string; anchor?: string } | null;
+  /** 后续机器人消息可能遮挡待操作卡；daemon 据此为同会话安排一次防抖后置投影。 */
+  onBotMessageActivity?: (activity: {
+    larkAppId: string;
+    chatId: string;
+    messageId: string;
+    rootMessageId?: string;
+    inThread: boolean;
+  }) => void;
   /** Fired when the dispatcher detects that a chat with a live chat-scope
    *  session has been converted to topic mode (chat_mode 'group' → 'topic'
    *  via Lark group settings). Daemon should evict the stale chat-scope
@@ -2718,6 +2726,13 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
             .catch(err => logger.error(`Error handling message event: ${err}`));
           return;
         }
+        handlers.onBotMessageActivity?.({
+          larkAppId,
+          chatId,
+          messageId,
+          ...(typeof message.root_id === 'string' ? { rootMessageId: message.root_id } : {}),
+          inThread: !!message.thread_id,
+        });
         // Learn teammate identity from team-assembled groups (the trust root):
         // any bot talking in a 拉群 group is a vouched teammate, so capture its
         // tenant-stable union_id — we then honour it as a teammate in ANY chat

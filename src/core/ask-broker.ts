@@ -128,6 +128,7 @@ export function registerAsk(input: CreateAskInput): Promise<AskResult> {
 
   const askId = randomUUID();
   const nonce = randomUUID().slice(0, 8);
+  const projectionId = randomUUID();
   const createdAt = Date.now();
   const deadlineAt = createdAt + input.timeoutMs;
   let flow: InternalFlow | undefined;
@@ -181,6 +182,7 @@ export function registerAsk(input: CreateAskInput): Promise<AskResult> {
     const ask: InternalPending = {
       askId,
       nonce,
+      projectionId,
       larkAppId: input.larkAppId,
       chatId: input.chatId,
       rootMessageId: input.rootMessageId,
@@ -230,6 +232,27 @@ export function registerAsk(input: CreateAskInput): Promise<AskResult> {
         });
       });
   });
+}
+
+/**
+ * ASK 新卡发送成功后原子切换当前投影身份和 messageId。
+ * 发送期间若问题已结算或又被替换则拒绝，调用方负责把孤儿新卡改成失效态。
+ */
+export function replaceAskCardProjection(input: {
+  askId: string;
+  expectedProjectionId: string;
+  projectionId: string;
+  messageId: string;
+}): boolean {
+  const ask = pending.get(input.askId);
+  if (!ask || ask.settled || ask.projectionId !== input.expectedProjectionId) return false;
+  ask.projectionId = input.projectionId;
+  ask.cardMessageId = input.messageId;
+  if (ask.flowId) {
+    const flow = flows.get(flowKey(ask.sessionId, ask.flowId));
+    if (flow?.lastAskId === ask.askId) flow.cardMessageId = input.messageId;
+  }
+  return true;
 }
 
 /**

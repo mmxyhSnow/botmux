@@ -168,6 +168,7 @@ function appendActiveQuestions(
             action: actions.toggle,
             ask_id: ask.askId,
             nonce: ask.nonce,
+            projection_id: ask.projectionId,
             question_index: String(index),
             key: option.key,
           }
@@ -175,6 +176,7 @@ function appendActiveQuestions(
             action: actions.select,
             ask_id: ask.askId,
             nonce: ask.nonce,
+            projection_id: ask.projectionId,
             key: option.key,
           },
     })));
@@ -186,7 +188,7 @@ function appendActiveQuestions(
         tag: 'button',
         text: { tag: 'plain_text', content: t('card.ask.submit', undefined, locale) },
         type: 'primary',
-        value: { action: actions.submit, ask_id: ask.askId, nonce: ask.nonce },
+        value: { action: actions.submit, ask_id: ask.askId, nonce: ask.nonce, projection_id: ask.projectionId },
       }],
     });
   }
@@ -197,7 +199,7 @@ function appendActiveQuestions(
         tag: 'button',
         text: { tag: 'plain_text', content: t('card.ask.flow.undo_previous', undefined, locale) },
         type: 'default',
-        value: { action: actions.undo, ask_id: ask.askId, nonce: ask.nonce },
+        value: { action: actions.undo, ask_id: ask.askId, nonce: ask.nonce, projection_id: ask.projectionId },
       }],
     });
   }
