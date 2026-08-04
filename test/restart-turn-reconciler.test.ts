@@ -12,7 +12,10 @@ import {
   stableTurnDeliveryUuid,
   type TurnDeliveryId,
 } from '../src/services/turn-delivery-ledger.js';
-import { appendCodexAppFinalOutbox } from '../src/services/codex-app-final-outbox.js';
+import {
+  appendCodexAppFinalOutbox,
+  readCodexAppFinalOutbox,
+} from '../src/services/codex-app-final-outbox.js';
 
 describe('restart turn reconciler', () => {
   let dataDir: string;
@@ -88,6 +91,39 @@ describe('restart turn reconciler', () => {
       stableTurnDeliveryUuid(id),
     );
     expect(ledger.listOutstanding('app_a')).toEqual([]);
+  });
+
+  it('恢复时连续静默终态只结算并 ACK，不向飞书重放', async () => {
+    const secondId: TurnDeliveryId = { ...id, turnId: 'om_turn_2' };
+    accept(ledger, secondId);
+    for (const [turnId, appTurnId] of [
+      [id.turnId, 'app-turn-silent-1'],
+      [secondId.turnId, 'app-turn-silent-2'],
+    ] as const) {
+      ledger.recordRunning({ ...id, turnId }, { atMs: 1_100, nativeTurnId: appTurnId });
+      appendCodexAppFinalOutbox(dataDir, 'session-a', {
+        appTurnId,
+        replyTurnId: turnId,
+        content: 'BOTMUX_NO_REPLY',
+        outcome: 'completed',
+        completedAtMs: 1_200,
+      });
+    }
+    const send = vi.fn(async () => 'om_unexpected');
+
+    const summary = await reconcileOutstandingTurns({
+      dataDir,
+      larkAppId: 'app_a',
+      ledger,
+      sessions: [makeSession('idle')],
+      send,
+      now: () => 2_000,
+    });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(summary).toEqual(expect.objectContaining({ suppressed: 2, delivered: 0, failed: 0 }));
+    expect(ledger.listOutstanding('app_a')).toEqual([]);
+    expect(readCodexAppFinalOutbox(dataDir, 'session-a')).toEqual([]);
   });
 
   it('活跃任务恢复进度跟踪，不发送未确认消息', async () => {

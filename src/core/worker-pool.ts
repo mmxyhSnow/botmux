@@ -278,7 +278,10 @@ import {
   type TurnDeliveryId,
   type TurnDeliveryLedger,
 } from '../services/turn-delivery-ledger.js';
-import { ackCodexAppFinalOutbox } from '../services/codex-app-final-outbox.js';
+import {
+  ackCodexAppFinalOutbox,
+  isSilentFinalOutput,
+} from '../services/codex-app-final-outbox.js';
 import { sendWorkerIpc } from './worker-ipc.js';
 
 type WindowsForkOptions = ForkOptions & { windowsHide?: boolean };
@@ -5987,7 +5990,7 @@ function setupWorkerHandlers(
           logger.debug(`[${t}] final_output captured/discarded for silent turn ${msg.turnId.substring(0, 8)}`);
           break;
         }
-        if (immediateProgressCardEnabled(ds)) {
+        if (immediateProgressCardEnabled(ds) && !isSilentFinalOutput(msg.content)) {
           try {
             await codexAppProgressCardFor(ds).recordFinal(msg.turnId, msg.content);
           } catch (error) {
@@ -6213,6 +6216,47 @@ function shouldDropMismatchedHermesFinalOutput(
 }
 
 /**
+ * 消费无需用户可见回复的内部终态。
+ *
+ * 该边界位于 HTTP 结果分流之后、飞书卡片构建之前：HTTP 调用方仍可收到原始
+ * 执行结果，而普通可见轮次会被持久结算，旧版 outbox 记录也会同步 ACK。
+ */
+function suppressSilentFinalOutput(
+  ds: DaemonSession,
+  msg: Extract<WorkerToDaemon, { type: 'final_output' }>,
+  t: string,
+): boolean {
+  if (!isSilentFinalOutput(msg.content)) return false;
+  const cb = requireCallbacks();
+  const deliveryId = turnDeliveryId(ds, msg.turnId, msg.dispatchAttempt);
+  const deliveryLedger = cb.turnDeliveryLedger;
+  if (deliveryLedger?.get(deliveryId)) {
+    deliveryLedger.recordRecoverySuppressed(deliveryId, {
+      atMs: Date.now(),
+      reason: 'silent_final_output',
+    });
+  }
+  if (msg.nativeTurnId) {
+    try {
+      ackCodexAppFinalOutbox(
+        config.session.dataDir,
+        ds.session.sessionId,
+        msg.nativeTurnId,
+      );
+    } catch (error) {
+      logger.warn(
+        `[${t}] 静默 final outbox ACK 失败 `
+        + `(turn ${msg.turnId.substring(0, 8)}): `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  ds.lastBridgeEmittedUuid = finalOutputDedupeKey(ds, msg);
+  logger.info(`[${t}] Suppressed silent final_output (turn ${msg.turnId.substring(0, 8)})`);
+  return true;
+}
+
+/**
  * Turn-end half of the two-phase turn reactions (auto-on for card-off sessions,
  * i.e. streaming card disabled). The 冲! "received" reactions are added per-message at the daemon
  * acceptance point (`noteTurnReceived`); the screen_update handler calls this
@@ -6300,6 +6344,7 @@ function deliverFinalOutput(
     logger.info(`[${t}] Captured final_output for Async HTTP request (turn ${msg.turnId.substring(0, 8)})`);
     return;
   }
+  if (suppressSilentFinalOutput(ds, msg, t)) return;
   const cb = requireCallbacks();
   const effectiveCliId = ds.session.cliId ?? getBot(ds.larkAppId).config.cliId;
   const scopedReply = (

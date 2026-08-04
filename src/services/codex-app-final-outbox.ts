@@ -25,6 +25,14 @@ type StoredFinal = CodexAppFinalOutboxEntry & {
   persistedAtMs: number;
 };
 
+/** 模型显式声明本轮无需用户可见回复时使用的内部终态。 */
+export const BOTMUX_NO_REPLY_FINAL = 'BOTMUX_NO_REPLY';
+
+/** 只识别完整内部标记，避免误吞正文中对该标记的解释或引用。 */
+export function isSilentFinalOutput(content: string): boolean {
+  return content.trim() === BOTMUX_NO_REPLY_FINAL;
+}
+
 function sessionFileKey(sessionId: string): string {
   return createHash('sha256').update(sessionId).digest('hex');
 }
@@ -186,6 +194,10 @@ export function emitCodexAppFinalWithOutbox(
   marker: CodexAppFinalOutboxEntry,
   emit: (marker: CodexAppFinalOutboxEntry) => void,
 ): void {
-  appendCodexAppFinalOutbox(dataDir, sessionId, marker);
+  // 静默终态仍要通知 daemon 结算入站轮次，但它不是用户可见回复，不能进入
+  // 可靠回复 outbox；否则 daemon 重启会把历史静默标记误当正文重放。
+  if (!isSilentFinalOutput(marker.content)) {
+    appendCodexAppFinalOutbox(dataDir, sessionId, marker);
+  }
   emit(marker);
 }
