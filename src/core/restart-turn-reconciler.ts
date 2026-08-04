@@ -1,8 +1,9 @@
 /**
  * Daemon 重启后的普通工作轮次追溯器。
  *
- * 只补偿用户可见的交付结果，不向 CLI 重放输入，因此不会重复安装、发布或删除等
- * 外部操作。每个轮次用短租约串行恢复，并复用稳定飞书 UUID 抵御发送边界崩溃。
+ * 优先补偿用户可见的交付结果；只有精确证明普通 Codex App turn 跨 worker generation
+ * 中断时，才发送一条“续做剩余工作”的新指令，不重放原始输入。每个轮次用短租约
+ * 串行恢复，并复用稳定飞书 UUID 抵御发送边界崩溃。
  */
 import {
   closeSync,
@@ -29,12 +30,19 @@ import {
 export type RestartTurnAction =
   | { kind: 'skip'; reason: string }
   | { kind: 'deliver-final'; content: string; outcome: 'completed' | 'failed' | 'cancelled' }
+  | { kind: 'resume-interrupted'; workerGeneration: number }
   | { kind: 'keep-following' }
   | { kind: 'settle-silently'; reason: string };
 
 export interface RestartTurnDecisionInput {
   record: TurnDeliveryRecord;
-  session?: { status: 'active' | 'closed'; working: boolean };
+  session?: {
+    status: 'active' | 'closed';
+    working: boolean;
+    interrupted?: boolean;
+    resumePending?: boolean;
+    workerGeneration?: number;
+  };
   reliableFinal?: {
     content: string;
     outcome: 'completed' | 'failed' | 'cancelled';
@@ -44,6 +52,7 @@ export interface RestartTurnDecisionInput {
 export interface RestartTurnReconcileSummary {
   scanned: number;
   delivered: number;
+  resumed: number;
   following: number;
   suppressed: number;
   deferred: number;
@@ -73,8 +82,10 @@ export interface RestartTurnReconcileInput {
     content: string,
     uuid: string,
   ): Promise<string>;
+  resume?(record: TurnDeliveryRecord, content: string): boolean | Promise<boolean>;
   now?: () => number;
   settleUnconfirmed?: boolean;
+  sessionId?: string;
   lookupSessionStatus?: (sessionId: string) => 'active' | 'closed' | undefined;
   log?: (message: string) => void;
 }
@@ -90,6 +101,13 @@ export function decideRestartTurnAction(input: RestartTurnDecisionInput): Restar
       kind: 'deliver-final',
       content: final.content,
       outcome: final.outcome,
+    };
+  }
+  if (input.session?.resumePending) return { kind: 'keep-following' };
+  if (input.session?.interrupted && input.session.workerGeneration) {
+    return {
+      kind: 'resume-interrupted',
+      workerGeneration: input.session.workerGeneration,
     };
   }
   if (input.session?.working) return { kind: 'keep-following' };
@@ -110,13 +128,53 @@ function sessionState(
   const currentTurnId = (ds.currentReplyTarget ?? ds.session.currentReplyTarget)?.turnId
     ?? ds.session.quoteTargetId;
   const exactCurrentTurn = progressRunning || currentTurnId === record.id.turnId;
+  const workerGeneration = ds.workerGeneration ?? ds.session.workerGeneration;
+  const receiptGeneration = ds.session.dispatchInputReceipts?.[record.id.turnId]?.workerGeneration;
+  const recoveryGeneration = record.recovery?.state === 'resumed'
+    ? record.recovery.workerGeneration
+    : undefined;
+  const crossedWorkerGeneration = Number.isSafeInteger(workerGeneration)
+    && Number.isSafeInteger(receiptGeneration)
+    && Number(receiptGeneration) < Number(workerGeneration);
+  const resumePending = record.recovery?.state === 'resumed'
+    && recoveryGeneration === workerGeneration;
+  const recoveryNeedsResume = record.recovery?.state === 'required'
+    || (record.recovery?.state === 'resumed'
+      && Number.isSafeInteger(recoveryGeneration)
+      && Number(recoveryGeneration) < Number(workerGeneration));
   const screenWorking = ds.lastScreenStatus === 'working'
     || ds.lastScreenStatus === 'analyzing'
     || ds.lastScreenStatus === 'starting';
   const working = workerAlive
     && exactCurrentTurn
     && (screenWorking || (progressRunning && ds.lastScreenStatus !== 'idle'));
-  return { status, working: status === 'active' && working };
+  const interrupted = record.cliId === 'codex-app'
+    && status === 'active'
+    && workerAlive
+    && ds.workerReady === true
+    && exactCurrentTurn
+    && ds.lastScreenStatus === 'idle'
+    && crossedWorkerGeneration
+    && recoveryNeedsResume
+    && !resumePending;
+  return {
+    status,
+    working: status === 'active' && working,
+    interrupted,
+    resumePending,
+    ...(workerGeneration !== undefined ? { workerGeneration } : {}),
+  };
+}
+
+/** 新回合只要求续做并先回读状态，避免把可能含外部副作用的原始输入整段重放。 */
+export function restartTurnContinuation(record: TurnDeliveryRecord): string {
+  return [
+    '<botmux_recovery>',
+    'Botmux 在上一轮执行中重启，原回合没有产生最终回复。请直接继续完成剩余工作。',
+    `原始任务摘要：${record.promptSummary}`,
+    '先回读已经完成的动作和外部状态，禁止重复不可逆操作或未经确认的外部写入；完成后正常回复用户。',
+    '</botmux_recovery>',
+  ].join('\n');
 }
 
 function reliableFinal(
@@ -214,6 +272,7 @@ function emptySummary(scanned: number): RestartTurnReconcileSummary {
   return {
     scanned,
     delivered: 0,
+    resumed: 0,
     following: 0,
     suppressed: 0,
     deferred: 0,
@@ -225,7 +284,8 @@ function emptySummary(scanned: number): RestartTurnReconcileSummary {
 export async function reconcileOutstandingTurns(
   input: RestartTurnReconcileInput,
 ): Promise<RestartTurnReconcileSummary> {
-  const records = input.ledger.listOutstanding(input.larkAppId);
+  const records = input.ledger.listOutstanding(input.larkAppId)
+    .filter(record => !input.sessionId || record.id.sessionId === input.sessionId);
   const summary = emptySummary(records.length);
   const sessions = new Map(
     [...input.sessions]
@@ -260,8 +320,23 @@ export async function reconcileOutstandingTurns(
       }
       if (action.kind === 'keep-following') {
         if (ds) ds.suppressRecoveryCard = false;
-        input.ledger.recordRecoveryRequired(record.id, now());
+        const currentGeneration = ds?.workerGeneration ?? ds?.session.workerGeneration;
+        const alreadyResumedHere = record.recovery?.state === 'resumed'
+          && record.recovery.workerGeneration === currentGeneration;
+        if (!alreadyResumedHere) input.ledger.recordRecoveryRequired(record.id, now());
         summary.following++;
+        continue;
+      }
+      if (action.kind === 'resume-interrupted') {
+        if (!ds || !input.resume) throw new Error('restart resume callback unavailable');
+        input.ledger.recordRecoveryResumed(record.id, {
+          atMs: now(),
+          workerGeneration: action.workerGeneration,
+        });
+        const accepted = await input.resume(record, restartTurnContinuation(record));
+        if (!accepted) throw new Error('restart resume input was not accepted');
+        ds.suppressRecoveryCard = false;
+        summary.resumed++;
         continue;
       }
       if (action.kind === 'settle-silently' && input.settleUnconfirmed === false) {

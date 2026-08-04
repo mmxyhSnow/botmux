@@ -403,6 +403,8 @@ export interface WorkerPoolCallbacks {
       disposition: 'queued_removed' | 'cli_fenced';
     },
   ) => void;
+  /** replacement worker 首次回到 idle 时触发精确的普通 turn 续跑判定。 */
+  onRestartRecoveryIdle?: (ds: DaemonSession) => void | Promise<void>;
 }
 
 let callbacks: WorkerPoolCallbacks | undefined;
@@ -4990,6 +4992,14 @@ function setupWorkerHandlers(
             if (prevStatus === 'working' || prevStatus === 'analyzing') {
               void finishTurnReactions(ds);
             }
+          }
+          if (ds.lastScreenStatus === 'idle') {
+            void Promise.resolve(cb.onRestartRecoveryIdle?.(ds)).catch(error => {
+              logger.warn(
+                `[${t}] 重启续跑判定失败: `
+                + `${error instanceof Error ? error.message : String(error)}`,
+              );
+            });
           }
           if (
             ds.lastScreenStatus === 'idle'

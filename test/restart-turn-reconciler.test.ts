@@ -6,6 +6,7 @@ import type { DaemonSession } from '../src/core/types.js';
 import {
   decideRestartTurnAction,
   reconcileOutstandingTurns,
+  restartTurnContinuation,
 } from '../src/core/restart-turn-reconciler.js';
 import {
   TurnDeliveryLedger,
@@ -54,6 +55,55 @@ describe('restart turn reconciler', () => {
       record,
       session: sessionState('idle'),
     })).toEqual({ kind: 'settle-silently', reason: 'not_in_flight' });
+  });
+
+  it('只对跨 worker generation 的精确 Codex App turn 发一次续跑指令', async () => {
+    ledger.recordRecoveryRequired(id, 1_500);
+    const ds = makeSession('idle');
+    ds.worker = { killed: false } as any;
+    ds.workerReady = true;
+    ds.workerGeneration = 2;
+    ds.session.workerGeneration = 2;
+    ds.session.currentReplyTarget = {
+      rootMessageId: 'om_root',
+      turnId: id.turnId,
+      updatedAt: new Date(1_500).toISOString(),
+    };
+    ds.session.dispatchInputReceipts = {
+      [id.turnId]: {
+        rootMessageId: 'om_root',
+        committedAt: new Date(1_100).toISOString(),
+        workerGeneration: 1,
+      },
+    };
+    const resume = vi.fn(async () => true);
+    const expectedContinuation = restartTurnContinuation(ledger.get(id)!);
+    const input = {
+      dataDir,
+      larkAppId: 'app_a',
+      ledger,
+      sessions: [ds],
+      send: vi.fn(async () => 'om_unexpected'),
+      resume,
+      sessionId: ds.session.sessionId,
+      now: () => 2_000,
+    };
+
+    const first = await reconcileOutstandingTurns(input);
+    const second = await reconcileOutstandingTurns(input);
+
+    expect(first.resumed).toBe(1);
+    expect(second.following).toBe(1);
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(resume).toHaveBeenCalledWith(
+      expect.objectContaining({ id }),
+      expectedContinuation,
+    );
+    expect(ledger.get(id)?.recovery).toEqual({
+      state: 'resumed',
+      atMs: 2_000,
+      workerGeneration: 2,
+    });
   });
 
   it('已关闭会话跳过，不会把旧任务重新打开', () => {
