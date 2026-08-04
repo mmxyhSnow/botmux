@@ -6,6 +6,8 @@
  * 未登记动作默认一次性，确实需要重复点击的 toast-only 动作必须加入白名单。
  */
 
+import { BOTMUX_CALLBACK_LABEL_KEY } from './callback-button-marker.js';
+
 type JsonObject = Record<string, unknown>;
 
 /** 这些动作成功后不结束当前交互，必须保留再次点击能力。 */
@@ -79,6 +81,94 @@ function callbackValues(button: JsonObject): unknown[] {
   return values;
 }
 
+/** 一次性按钮的可见文案来自业务 label，或发送出口自动写入的内部 label。 */
+function actionLabel(value: unknown): string | undefined {
+  if (!isObject(value)) return undefined;
+  for (const key of ['label', BOTMUX_CALLBACK_LABEL_KEY]) {
+    const label = value[key];
+    if (typeof label === 'string' && label.trim()) return label.trim();
+  }
+  return undefined;
+}
+
+function buttonLabel(button: JsonObject): string | undefined {
+  if (!isObject(button.text)) return undefined;
+  const content = button.text.content;
+  return typeof content === 'string' && content.trim() ? content.trim() : undefined;
+}
+
+function isJumpButton(button: JsonObject): boolean {
+  if (typeof button.url === 'string' && button.url) return true;
+  if (isObject(button.multi_url) && Object.values(button.multi_url).some(value => typeof value === 'string' && value)) {
+    return true;
+  }
+  return Array.isArray(button.behaviors)
+    && button.behaviors.some(behavior => isObject(behavior) && behavior.type === 'open_url');
+}
+
+function checkedLabel(label: string): string {
+  return label.startsWith('✅') ? label : `✅ ${label}`;
+}
+
+/** 置灰按钮，并只给用户实际选择的按钮加勾。 */
+function freezeButton(button: JsonObject, selected: boolean): void {
+  button.disabled = true;
+  button.type = 'default';
+  if (!selected || !isObject(button.text)) return;
+  const label = buttonLabel(button);
+  if (label) button.text.content = checkedLabel(label);
+}
+
+function sameSelection(candidate: unknown, clicked: unknown): boolean {
+  const clickedLabel = actionLabel(clicked);
+  if (clickedLabel && actionLabel(candidate) === clickedLabel) return true;
+  try {
+    return JSON.stringify(candidate) === JSON.stringify(clicked);
+  } catch {
+    return false;
+  }
+}
+
+function buttonsWithin(value: unknown, output: JsonObject[] = []): JsonObject[] {
+  if (Array.isArray(value)) {
+    value.forEach(item => buttonsWithin(item, output));
+    return output;
+  }
+  if (!isObject(value)) return output;
+  if (value.tag === 'button') output.push(value);
+  Object.values(value).forEach(item => buttonsWithin(item, output));
+  return output;
+}
+
+/**
+ * 飞书消息回读会剥离 callback behaviors/value；此时在最小 action 容器内按可见文案
+ * 找到选中项，并只冻结同容器中的非跳转按钮，避免误伤“查看报告”等链接。
+ */
+function freezeStrippedActionGroup(card: JsonObject, clickedValue: unknown): boolean {
+  const selectedLabel = actionLabel(clickedValue);
+  if (!selectedLabel) return false;
+  let changed = false;
+  const visit = (value: unknown): void => {
+    if (changed) return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!isObject(value)) return;
+    if (value.tag === 'column_set' || value.tag === 'action') {
+      const buttons = buttonsWithin(value).filter(button => !isJumpButton(button));
+      if (buttons.some(button => buttonLabel(button) === selectedLabel)) {
+        buttons.forEach(button => freezeButton(button, buttonLabel(button) === selectedLabel));
+        changed = buttons.length > 0;
+        return;
+      }
+    }
+    Object.values(value).forEach(visit);
+  };
+  visit(card);
+  return changed;
+}
+
 /**
  * 克隆卡片并禁用同一 action 组的全部按钮。
  * 同组而非只禁用当前按钮，保证“预览 / 执行”“同意 / 拒绝”这类互斥选择同步终态化。
@@ -91,6 +181,7 @@ export function freezeOneShotActionGroup(
   if (!group || !isObject(cardData)) return undefined;
   const card = JSON.parse(JSON.stringify(cardData)) as JsonObject;
   let changed = false;
+  let selectedMarked = false;
 
   const visit = (value: unknown): void => {
     if (Array.isArray(value)) {
@@ -102,14 +193,17 @@ export function freezeOneShotActionGroup(
       value.tag === 'button'
       && callbackValues(value).some(candidate => oneShotActionGroup(candidate) === group)
     ) {
-      value.disabled = true;
-      value.type = 'default';
+      const selected = !selectedMarked
+        && callbackValues(value).some(candidate => sameSelection(candidate, clickedValue));
+      freezeButton(value, selected);
+      selectedMarked ||= selected;
       changed = true;
     }
     Object.values(value).forEach(visit);
   };
 
   visit(card);
+  if (!changed) changed = freezeStrippedActionGroup(card, clickedValue);
   return { card, changed };
 }
 

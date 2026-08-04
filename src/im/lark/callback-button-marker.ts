@@ -22,12 +22,24 @@
  */
 
 export const BOTMUX_CALLBACK_MARKER_KEY = '__bm_cb';
+/** 回传值中的按钮可见文案，供一次性操作在飞书剥离 behaviors 后恢复完成态。 */
+export const BOTMUX_CALLBACK_LABEL_KEY = '__bm_label';
 
 /** True when a button payload object carries the botmux callback marker. */
-function markPayload(value: unknown): void {
+function markPayload(value: unknown, label: string | undefined): void {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
-    (value as Record<string, unknown>)[BOTMUX_CALLBACK_MARKER_KEY] = 1;
+    const payload = value as Record<string, unknown>;
+    payload[BOTMUX_CALLBACK_MARKER_KEY] = 1;
+    if (label) payload[BOTMUX_CALLBACK_LABEL_KEY] = label;
   }
+}
+
+/** 读取按钮发送给用户的文案；非纯文本文案不参与完成态回填。 */
+function visibleButtonLabel(node: Record<string, unknown>): string | undefined {
+  const text = node.text;
+  if (!text || typeof text !== 'object' || Array.isArray(text)) return undefined;
+  const content = (text as Record<string, unknown>).content;
+  return typeof content === 'string' && content.trim() ? content.trim() : undefined;
 }
 
 function stampElement(el: unknown): void {
@@ -47,10 +59,11 @@ function stampElement(el: unknown): void {
       || !!(node.multi_url && typeof node.multi_url === 'object'
         && Object.values(node.multi_url as Record<string, unknown>).some(v => typeof v === 'string' && v));
     if (!hasOpenUrl) {
-      markPayload(node.value);
+      const label = visibleButtonLabel(node);
+      markPayload(node.value, label);
       if (Array.isArray(node.behaviors)) {
         for (const b of node.behaviors as any[]) {
-          if (b && typeof b === 'object' && b.type === 'callback') markPayload(b.value);
+          if (b && typeof b === 'object' && b.type === 'callback') markPayload(b.value, label);
         }
       }
     }
