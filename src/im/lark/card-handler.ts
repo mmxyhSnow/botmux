@@ -979,6 +979,9 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
       return { toast: { type: 'warning', content: t('card.final_action.need_auth', undefined, loc) } };
     }
     const prompt = typeof value.prompt === 'string' ? value.prompt.trim() : '';
+    const actionSetId = typeof value.action_set_id === 'string'
+      ? value.action_set_id.trim()
+      : '';
     const rawAuthorization = value.authorization;
     const authorization = rawAuthorization === 'explicit' ? 'explicit' : undefined;
     if (
@@ -988,8 +991,21 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
       logger.warn(`[${tag(target)}] Rejected unsafe final reply quick action`);
       return { toast: { type: 'warning', content: t('card.final_action.unsafe', undefined, loc) } };
     }
+    const projection = target.session.finalReplyActionProjection;
+    if (actionSetId) {
+      if (
+        !projection
+        || projection.actionSetId !== actionSetId
+        || projection.messageId !== cardMessageId
+      ) {
+        return { toast: { type: 'warning', content: '这张操作卡已被更新，请使用最新卡片' } };
+      }
+      if (projection.status !== 'pending') {
+        return { toast: { type: 'info', content: t('card.final_action.already', undefined, loc) } };
+      }
+    }
     const dedupeKey = cardMessageId ?? `${target.session.sessionId}:${prompt}`;
-    if (submittedFinalReplyActionCards.has(dedupeKey)) {
+    if (!actionSetId && submittedFinalReplyActionCards.has(dedupeKey)) {
       return { toast: { type: 'info', content: t('card.final_action.already', undefined, loc) } };
     }
     if (!isLiveWorkerIdleOrLimited(target)) {
@@ -998,10 +1014,19 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
     if (!deps.submitUserTurn) {
       return { toast: { type: 'warning', content: t('card.final_action.unavailable', undefined, loc) } };
     }
-    submittedFinalReplyActionCards.add(dedupeKey);
-    if (submittedFinalReplyActionCards.size > 5000) {
-      submittedFinalReplyActionCards.clear();
+    if (actionSetId && projection) {
+      target.session.finalReplyActionProjection = {
+        ...projection,
+        status: 'submitting',
+        updatedAt: Date.now(),
+      };
+      sessionStore.updateSession(target.session);
+    } else {
       submittedFinalReplyActionCards.add(dedupeKey);
+      if (submittedFinalReplyActionCards.size > 5000) {
+        submittedFinalReplyActionCards.clear();
+        submittedFinalReplyActionCards.add(dedupeKey);
+      }
     }
     try {
       await deps.submitUserTurn({
@@ -1010,10 +1035,27 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
         operatorOpenId,
         ...(cardMessageId ? { sourceMessageId: cardMessageId } : {}),
       });
+      if (actionSetId && target.session.finalReplyActionProjection?.actionSetId === actionSetId) {
+        target.session.finalReplyActionProjection = {
+          ...target.session.finalReplyActionProjection,
+          status: 'consumed',
+          updatedAt: Date.now(),
+        };
+        sessionStore.updateSession(target.session);
+      }
       logger.info(`[${tag(target)}] Final reply quick action submitted by ${operatorOpenId}`);
       return { toast: { type: 'success', content: t('card.final_action.submitted', undefined, loc) } };
     } catch (error) {
-      submittedFinalReplyActionCards.delete(dedupeKey);
+      if (actionSetId && target.session.finalReplyActionProjection?.actionSetId === actionSetId) {
+        target.session.finalReplyActionProjection = {
+          ...target.session.finalReplyActionProjection,
+          status: 'pending',
+          updatedAt: Date.now(),
+        };
+        sessionStore.updateSession(target.session);
+      } else {
+        submittedFinalReplyActionCards.delete(dedupeKey);
+      }
       logger.warn(
         `[${tag(target)}] Final reply quick action failed: `
         + `${error instanceof Error ? error.message : String(error)}`,

@@ -186,6 +186,8 @@ export interface DaemonSession {
    *  flipped to ✅ when the turn returns to idle. In-memory only (a daemon
    *  restart mid-turn just leaves a stale ✋ — purely cosmetic). */
   pendingAckReactions?: Array<{ messageId: string; reactionId?: string }>;
+  /** 后续机器人消息触发的操作卡防抖定时器；仅驻内存。 */
+  finalReplyActionProjectionTimer?: NodeJS.Timeout;
   /** Card body display mode. Default 'hidden'. When user clicks 显示输出, defaults to 'screenshot'. */
   displayMode?: DisplayMode;
   /** Latest uploaded screenshot image_key for the streaming card. */

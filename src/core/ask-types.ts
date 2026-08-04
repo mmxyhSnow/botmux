@@ -142,6 +142,8 @@ export interface PendingAsk {
    *  whose nonce doesn't match → treated as stale (e.g. card from a previous
    *  daemon process before restart). */
   nonce: string;
+  /** 同一问题被后置成新卡时递增替换；旧投影回调必须按此字段失效。 */
+  projectionId: string;
   larkAppId: string;
   chatId: string;
   rootMessageId: string | null;

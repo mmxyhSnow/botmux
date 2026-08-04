@@ -59,6 +59,15 @@ function action(
   };
 }
 
+function projectedAction(messageId = 'om_latest_card'): any {
+  const value = action().action.value;
+  return {
+    ...action(),
+    context: { open_message_id: messageId },
+    action: { value: { ...value, action_set_id: 'set-1' } },
+  };
+}
+
 async function fresh() {
   vi.resetModules();
   const types = await import('../src/core/types.js');
@@ -156,5 +165,33 @@ describe('final_reply_quick_action', () => {
 
     expect(result?.toast?.type).toBe('warning');
     expect(submitUserTurn).not.toHaveBeenCalled();
+  });
+
+  it('rejects an older projection and durably consumes the latest card once', async () => {
+    const { types, handler } = await fresh();
+    const ds = fakeSession();
+    ds.session.finalReplyActionProjection = {
+      schemaVersion: 1,
+      actionSetId: 'set-1',
+      turnId: 'turn-1',
+      status: 'pending',
+      actions: [{ label: '执行 push', prompt: '请 push 当前分支并回读远端 HEAD。' }],
+      messageId: 'om_latest_card',
+      cardJson: '{}',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      reprojectCount: 1,
+    };
+    deps.activeSessions.set(types.sessionKey('om_root', 'app_test'), ds);
+
+    const stale = await handler.handleCardAction(projectedAction('om_old_card'), deps, 'app_test');
+    const first = await handler.handleCardAction(projectedAction(), deps, 'app_test');
+    const second = await handler.handleCardAction(projectedAction(), deps, 'app_test');
+
+    expect(stale?.toast?.type).toBe('warning');
+    expect(first?.toast?.type).toBe('success');
+    expect(second?.toast?.type).toBe('info');
+    expect(submitUserTurn).toHaveBeenCalledTimes(1);
+    expect(ds.session.finalReplyActionProjection.status).toBe('consumed');
   });
 });

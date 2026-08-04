@@ -24,6 +24,7 @@ import {
   buildAskCard,
   createLarkAskCardDispatcher,
   handleAskCardAction,
+  noteAskCardBotActivity,
   parseFormSelections,
 } from '../src/im/lark/ask-card.js';
 
@@ -38,6 +39,7 @@ afterEach(() => {
   _resetForTest();
   // 只清计数/记录，不重置实现（spy 默认透传真实 submitAsk）
   mockedSubmitAsk.mockClear();
+  vi.useRealTimers();
 });
 
 /** 构造一个带 questions/askId/nonce/deadlineAt 的 PendingAsk。 */
@@ -45,6 +47,7 @@ function makePending(overrides: Partial<PendingAsk> = {}): PendingAsk {
   return {
     askId: 'ask-1',
     nonce: 'nonce-1',
+    projectionId: 'projection-1',
     larkAppId: 'cli_ask',
     chatId: 'oc_chat',
     rootMessageId: 'om_root',
@@ -213,6 +216,70 @@ describe('buildAskCard', () => {
 });
 
 describe('handleAskCardAction', () => {
+  it('后续机器人消息后只保留最新 ASK 投影，旧 projection_id 被拒绝', async () => {
+    vi.useFakeTimers();
+    let captured: PendingAsk | undefined;
+    setCardDispatcher({
+      async send(ask) {
+        captured = ask;
+        return { messageId: 'om_initial_ask' };
+      },
+    });
+    const promise = registerAsk({
+      larkAppId: 'cli_ask',
+      chatId: 'oc_chat',
+      rootMessageId: 'om_root',
+      sessionId: 'sess-1',
+      questions: makePending().questions,
+      timeoutMs: 10_000,
+    });
+    await Promise.resolve();
+    const initialProjectionId = captured!.projectionId;
+    const reply = vi.fn(async () => 'om_latest_ask');
+    const update = vi.fn(async () => undefined);
+
+    noteAskCardBotActivity({
+      larkAppId: 'cli_ask',
+      chatId: 'oc_chat',
+      rootMessageId: 'om_root',
+      inThread: true,
+    }, { replyMessage: reply as any, updateMessage: update as any });
+    await vi.advanceTimersByTimeAsync(1_200);
+
+    const latest = _getPending(captured!.askId)!;
+    expect(latest.cardMessageId).toBe('om_latest_ask');
+    expect(latest.projectionId).not.toBe(initialProjectionId);
+    expect(update).toHaveBeenCalledWith(
+      'cli_ask',
+      'om_initial_ask',
+      expect.stringContaining('已移至下方最新位置'),
+    );
+
+    const stale = await handleAskCardAction({
+      operator: { open_id: 'ou_owner' },
+      action: { value: {
+        action: ASK_SELECT_ACTION,
+        ask_id: latest.askId,
+        nonce: latest.nonce,
+        projection_id: initialProjectionId,
+        key: 'deploy',
+      } },
+    });
+    expect(stale?.toast.content).toContain('失效');
+
+    await handleAskCardAction({
+      operator: { open_id: 'ou_owner' },
+      action: { value: {
+        action: ASK_SELECT_ACTION,
+        ask_id: latest.askId,
+        nonce: latest.nonce,
+        projection_id: latest.projectionId,
+        key: 'deploy',
+      } },
+    });
+    await expect(promise).resolves.toMatchObject({ kind: 'answered' });
+  });
+
   it('旧单选路径 ask_select：resolves pending ask，返回终态卡片（同步替换）', async () => {
     let askId = '';
     setCardDispatcher({

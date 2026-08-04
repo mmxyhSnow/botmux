@@ -209,6 +209,31 @@ export interface CodexAppProgressCardSessionState {
   repostedAfterWithdraw?: boolean;
 }
 
+/**
+ * 最终回复快捷操作的持久化投影。
+ *
+ * 同一组操作可以先随结果卡展示，后续再因机器人消息遮挡而投影到最新位置；
+ * 服务端始终只认可这里记录的最新 messageId，避免旧卡重复提交。
+ */
+export interface FinalReplyActionProjectionState {
+  schemaVersion: 1;
+  actionSetId: string;
+  turnId: string;
+  status: 'pending' | 'submitting' | 'consumed' | 'superseded';
+  actions: Array<{
+    label: string;
+    prompt: string;
+    authorization?: 'explicit';
+  }>;
+  messageId: string;
+  cardJson: string;
+  createdAt: number;
+  updatedAt: number;
+  reprojectCount: number;
+  /** 收到后续机器人消息后等待会话空闲并重新投影；成功投影后清空。 */
+  reprojectRequestedAt?: number;
+}
+
 export interface Session {
   sessionId: string;
   /** Build fingerprint of the last fresh owned Codex App runner that became ready. */
@@ -534,6 +559,8 @@ export interface Session {
   };
   /** Codex App 即时进度卡状态；功能缺省开启，仅 bot 显式关闭时不写入。 */
   codexAppProgressCard?: CodexAppProgressCardSessionState;
+  /** 最终回复中仍待用户处理的快捷操作；daemon 重启后继续用于旧卡校验。 */
+  finalReplyActionProjection?: FinalReplyActionProjectionState;
 }
 
 export interface LarkAttachment {
