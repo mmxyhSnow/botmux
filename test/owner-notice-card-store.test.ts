@@ -43,8 +43,29 @@ describe('owner notice card slot', () => {
     expect(uuid.length).toBeLessThanOrEqual(50);
   });
 
-  it('同类型第二次只更新原卡，不新增消息', async () => {
+  it('允许复用的同类型第二次只更新原卡，不新增消息', async () => {
     const sendCard = vi.fn(async () => 'om_notice');
+    const updateCard = vi.fn(async () => undefined);
+    const base = {
+      dataDir,
+      larkAppId: 'cli_a',
+      recipientOpenId: 'ou_owner',
+      policy: 'host-overload' as const,
+      transport: { sendCard, updateCard },
+    };
+
+    await deliverOwnerNotice({ ...base, card: { mode: 'raw', cardJson: raw(1) } });
+    const result = await deliverOwnerNotice({ ...base, card: { mode: 'raw', cardJson: raw(2) } });
+
+    expect(sendCard).toHaveBeenCalledTimes(1);
+    expect(updateCard).toHaveBeenCalledWith('om_notice', raw(2));
+    expect(result).toEqual(expect.objectContaining({ action: 'updated', messageId: 'om_notice', policy: 'host-overload' }));
+  });
+
+  it('每次重启都新增通知卡，不更新历史卡片', async () => {
+    const sendCard = vi.fn()
+      .mockResolvedValueOnce('om_restart_1')
+      .mockResolvedValueOnce('om_restart_2');
     const updateCard = vi.fn(async () => undefined);
     const base = {
       dataDir,
@@ -54,12 +75,15 @@ describe('owner notice card slot', () => {
       transport: { sendCard, updateCard },
     };
 
-    await deliverOwnerNotice({ ...base, card: { mode: 'raw', cardJson: raw(1) } });
-    const result = await deliverOwnerNotice({ ...base, card: { mode: 'raw', cardJson: raw(2) } });
+    expect(await deliverOwnerNotice({ ...base, card: { mode: 'raw', cardJson: raw(1) } }))
+      .toEqual(expect.objectContaining({ action: 'sent', messageId: 'om_restart_1' }));
+    expect(await deliverOwnerNotice({ ...base, card: { mode: 'raw', cardJson: raw(2) } }))
+      .toEqual(expect.objectContaining({ action: 'sent', messageId: 'om_restart_2' }));
 
-    expect(sendCard).toHaveBeenCalledTimes(1);
-    expect(updateCard).toHaveBeenCalledWith('om_notice', raw(2));
-    expect(result).toEqual(expect.objectContaining({ action: 'updated', messageId: 'om_notice', policy: 'restart' }));
+    expect(sendCard).toHaveBeenCalledTimes(2);
+    expect(sendCard).toHaveBeenNthCalledWith(1, 'ou_owner', raw(1));
+    expect(sendCard).toHaveBeenNthCalledWith(2, 'ou_owner', raw(2));
+    expect(updateCard).not.toHaveBeenCalled();
   });
 
   it('原卡不可更新时新发并替换槽位，之后继续复用新卡', async () => {
@@ -73,7 +97,7 @@ describe('owner notice card slot', () => {
       dataDir,
       larkAppId: 'cli_a',
       recipientOpenId: 'ou_owner',
-      policy: 'restart' as const,
+      policy: 'host-overload' as const,
       transport: { sendCard, updateCard },
     };
 

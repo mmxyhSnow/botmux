@@ -307,17 +307,17 @@ describe('sendRestartReportIfPending', () => {
     expect(sent).toHaveLength(1);
   });
 
-  it('生产 wiring 优先更新同类型重启卡，不再新增一张', async () => {
+  it('生产 wiring 优先通过已登记的 owner 通知策略投递', async () => {
     writeRestartIntentTo(dir, { kind: 'manual', at: new Date(T0).toISOString() });
-    const upserted: string[] = [];
+    const delivered: string[] = [];
     const { w, sent } = fakeWiring({
-      upsertCard: async (_openId, card) => { upserted.push(card); },
+      deliverCard: async (_openId, card) => { delivered.push(card); },
     });
 
     await sendRestartReportIfPending(w);
 
-    expect(upserted).toHaveLength(1);
-    expect(upserted[0]).toContain('botmux 已重启');
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain('botmux 已重启');
     expect(sent).toHaveLength(0);
   });
 });
