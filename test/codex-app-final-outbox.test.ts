@@ -101,6 +101,24 @@ describe('Codex App final outbox', () => {
     expect(observed).toEqual(['app-turn-ordered']);
   });
 
+  it('静默终态只通知 daemon 结算，不写入可靠回复 outbox', () => {
+    const observed: string[] = [];
+    emitCodexAppFinalWithOutbox(
+      dataDir,
+      'session-a',
+      {
+        appTurnId: 'app-turn-silent',
+        replyTurnId: 'om_silent',
+        content: '  BOTMUX_NO_REPLY\n',
+        outcome: 'completed',
+      },
+      marker => observed.push(marker.appTurnId),
+    );
+
+    expect(observed).toEqual(['app-turn-silent']);
+    expect(readCodexAppFinalOutbox(dataDir, 'session-a')).toEqual([]);
+  });
+
   it('worker 重启丢失内存绑定后，从 durable outbox 恢复可信 reply turn', () => {
     appendCodexAppFinalOutbox(dataDir, 'session-a', {
       appTurnId: 'app-turn-restarted',

@@ -251,4 +251,52 @@ describe('普通轮次最终交付账本接入', () => {
       }),
     }));
   });
+
+  it('连续静默终态不发送消息，并结算账本与可靠 outbox', async () => {
+    const ledger = new TurnDeliveryLedger(dataDir, { now: () => 2_000 });
+    const ids: TurnDeliveryId[] = ['om_silent_1', 'om_silent_2'].map(turnId => ({
+      larkAppId: 'app_test',
+      sessionId: 'sid-final-out',
+      turnId,
+      dispatchAttempt: 0,
+    }));
+    const sessionReply = vi.fn(async () => 'om_unexpected');
+    initWorkerPool({
+      sessionReply,
+      getSessionWorkingDir: () => '/tmp',
+      getActiveCount: () => 1,
+      closeSession: vi.fn(),
+      turnDeliveryLedger: ledger,
+    });
+    const ds = makeSession();
+
+    ids.forEach((id, index) => {
+      const nativeTurnId = `app-turn-silent-${index + 1}`;
+      accept(ledger, id);
+      appendCodexAppFinalOutbox(dataDir, 'sid-final-out', {
+        appTurnId: nativeTurnId,
+        replyTurnId: id.turnId,
+        content: 'BOTMUX_NO_REPLY',
+        outcome: 'completed',
+      });
+      __testOnly_deliverFinalOutput(ds, {
+        type: 'final_output',
+        content: 'BOTMUX_NO_REPLY',
+        lastUuid: nativeTurnId,
+        turnId: id.turnId,
+        nativeTurnId,
+      }, 'tag', 0);
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(sessionReply).not.toHaveBeenCalled();
+    expect(ledger.listOutstanding('app_test')).toEqual([]);
+    expect(readCodexAppFinalOutbox(dataDir, 'sid-final-out')).toEqual([]);
+    ids.forEach(id => {
+      expect(ledger.get(id)?.recovery).toEqual(expect.objectContaining({
+        state: 'suppressed',
+        reason: 'silent_final_output',
+      }));
+    });
+  });
 });

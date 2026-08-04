@@ -22,6 +22,7 @@ import {
 } from '../services/turn-delivery-ledger.js';
 import {
   ackCodexAppFinalOutbox,
+  isSilentFinalOutput,
   readCodexAppFinalOutbox,
 } from '../services/codex-app-final-outbox.js';
 
@@ -82,6 +83,9 @@ export function decideRestartTurnAction(input: RestartTurnDecisionInput): Restar
   if (input.session?.status === 'closed') return { kind: 'skip', reason: 'session_closed' };
   const final = input.reliableFinal ?? input.record.final;
   if (final) {
+    if (isSilentFinalOutput(final.content)) {
+      return { kind: 'settle-silently', reason: 'silent_final_output' };
+    }
     return {
       kind: 'deliver-final',
       content: final.content,
@@ -271,6 +275,15 @@ export async function reconcileOutstandingTurns(
           atMs: now(),
           reason: action.reason,
         });
+        // 兼容修复前已写入 outbox 的静默终态；结算后同步 ACK，避免它继续
+        // 污染后续恢复扫描或可信 reply turn 路由。
+        if (foundFinal?.appTurnId) {
+          ackCodexAppFinalOutbox(
+            input.dataDir,
+            record.id.sessionId,
+            foundFinal.appTurnId,
+          );
+        }
         summary.suppressed++;
         continue;
       }
