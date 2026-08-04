@@ -11,11 +11,12 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { logger } from './utils/logger.js';
-import { config } from './config.js';
+import { config, isWildcardBindHost } from './config.js';
 import { listenWithProbe } from './utils/listen-with-probe.js';
 import {
   generateToken, parseCookie, buildSetCookie, verifyHmac, cliAuthBind, decideDashboardAuth,
-  loadPersistedToken, persistToken, loadDashboardSecret, loadOrCreateDashboardSecret,
+  loadPersistedToken, loadOrCreatePersistedToken, persistToken,
+  loadDashboardSecret, loadOrCreateDashboardSecret,
 } from './dashboard/auth.js';
 import { DaemonRegistry, botsRosterSignature } from './dashboard/registry.js';
 import {
@@ -52,6 +53,7 @@ import {
 } from './dashboard/public-redact.js';
 import { handleWebhookRoute } from './dashboard/webhook-routes.js';
 import { handleFederationApi } from './dashboard/federation-api.js';
+import { buildFederatedRoster } from './services/federation-roster.js';
 import { handleFederationSpokeApi, syncAllMemberships, autoBindOwnerIfUnambiguous, type TeamSessionRowLike } from './dashboard/federation-spoke-api.js';
 import type { TeamGroupCreateResult, TeamGroupOwnerTransferResult } from './dashboard/federated-group-core.js';
 import { BotOnboardingManager } from './dashboard/bot-onboarding.js';
@@ -88,6 +90,7 @@ import {
   type RollbackVersionsResult,
 } from './core/update-check.js';
 import { GITHUB_REPO } from './core/restart-report.js';
+import { DEFAULT_OVERLOAD_THRESHOLDS } from './core/host-overload-alert.js';
 import { spawnDetachedRestart, globalInstallUpdateLockTarget, globalInstallUpdateCwd } from './core/maintenance.js';
 import { spawnRuntimeRestartDriver } from './core/runtime-release-restart.js';
 import {
@@ -248,8 +251,9 @@ function loadOrCreateSecret(): string {
 }
 
 // The active dashboard token is persisted to disk so a previously-issued
-// dashboard URL survives `botmux restart`; only `botmux dashboard` (the
-// /__cli/rotate endpoint) rotates it and thereby invalidates the old link.
+// dashboard URL survives `botmux restart`. A platform-bound dashboard creates
+// the first token on startup; only `botmux dashboard` (the /__cli/rotate
+// endpoint) replaces it and thereby invalidates the old link.
 // The start/restart hint reads it via the non-rotating /__cli/current endpoint
 // so it can show the live link without invalidating it.
 let activeToken: string | null = loadPersistedToken(TOKEN_PATH);
@@ -259,10 +263,6 @@ let activeToken: string | null = loadPersistedToken(TOKEN_PATH);
 let boundDashboardPort = config.dashboard.port;
 
 const SECRET = loadOrCreateSecret();
-
-function isWildcardBindHost(host: string): boolean {
-  return host === '0.0.0.0' || host === '::' || host === '';
-}
 
 function tcpPortAvailable(host: string, port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -525,6 +525,9 @@ interface ResolvedDashboardSettings {
    *  source the SPA can offer as a one-click fill; never persisted unless picked. */
   herdrTraexPlugin: { enabled: boolean; source: string; ref: string; recommendedSource: string; recommendedRef: string };
   codexRpcInput: boolean;
+  /** Whether botmux auto-bypasses Codex's interactive hook-trust gate for
+   *  Codex-family plain-TUI launches. Default ON (only an explicit false disables). */
+  bypassCodexHookTrust: boolean;
   codexNotifier: {
     enabled: boolean;
     targetBotAppId: string | null;
@@ -544,6 +547,26 @@ interface ResolvedDashboardSettings {
     workerOnline: boolean;
     lastError: { at: string; message: string; retryAt: string } | null;
   };
+  /** Machine-wide host-overload alert. Default OFF. Delivered by the selected
+   *  notifier bot's daemon (any non-apiOnly bot with a resolvable admin). */
+  hostOverloadAlert: {
+    enabled: boolean;
+    targetBotAppId: string | null;
+    enterLoadRatio: number;
+    enterMemUsedFrac: number;
+    botOptions: Array<{
+      larkAppId: string;
+      botName: string | null;
+      cliId: string;
+      apiOnly: boolean;
+      recipientConfigured: boolean;
+      recipientVerified: boolean;
+      recipientHint: string | null;
+    }>;
+    targetDaemonOnline: boolean;
+  };
+  /** Experimental anti-resend guidance in botmux routing hints. Default OFF. */
+  noVisibleOutputHint: boolean;
   /** Machine-wide VC meeting listener kill-switch. Default ON. */
   vcMeetingAgent: {
     enabled: boolean;
@@ -589,7 +612,11 @@ interface ResolvedDashboardSettings {
 function vcMeetingListenerBotOptions(): ResolvedDashboardSettings['vcMeetingAgent']['listenerBotOptions'] {
   try {
     const onlineByAppId = new Map(registry.list().map(bot => [bot.larkAppId, bot] as const));
-    return loadBotConfigs().map(bot => ({
+    // Exclude core-only (apiOnly) bots: a VC listener attends real Feishu
+    // meetings and needs open-platform scopes + a live Lark connection, which a
+    // no-Feishu bot categorically cannot have. Offering it would let setup
+    // raw-fetch token/application APIs with its synthetic/empty credentials.
+    return loadBotConfigs().filter(bot => bot.apiOnly !== true).map(bot => ({
       larkAppId: bot.larkAppId,
       botName: bot.displayName ?? onlineByAppId.get(bot.larkAppId)?.botName ?? bot.name ?? null,
       cliId: onlineByAppId.get(bot.larkAppId)?.cliId ?? bot.cliId,
@@ -611,6 +638,11 @@ async function validateVcMeetingListenerBotAppId(appId: string): Promise<{ ok: t
   }
   const bot = bots.find(b => b.larkAppId === appId);
   if (!bot) return { ok: false, error: 'vcMeetingAgent_listenerBot_unknown' };
+  // Core-only (apiOnly) bots cannot attend Feishu meetings (no Feishu connection,
+  // no open-platform scopes). Reject at the settings WRITE boundary so a manual
+  // PUT can't select one and drive syncVcMeetingListenerBotConfig →
+  // automateOpenPlatformSetup against the open platform with synthetic creds.
+  if (bot.apiOnly === true) return { ok: false, error: 'vcMeetingAgent_listenerBot_api_only' };
   return { ok: true };
 }
 
@@ -651,6 +683,54 @@ function codexNotifierBotOptions(): ResolvedDashboardSettings['codexNotifier']['
           larkAppId: bot.larkAppId,
           botName: bot.displayName ?? onlineByAppId.get(bot.larkAppId)?.botName ?? bot.name ?? null,
           cliId: onlineByAppId.get(bot.larkAppId)?.cliId ?? bot.cliId,
+          ...resolveCodexNotifierRecipientView(bot.allowedUsers, resolvedOwners),
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/** Validate an overload-alert notifier bot. Unlike codexNotifier this is NOT
+ *  codex-only — any non-apiOnly bot that can resolve an admin recipient works.
+ *  On enable (requireReady) the target daemon must be online, else the alert
+ *  can't be delivered (this feature is best-effort, no outbox). */
+async function validateHostOverloadAlertTargetBotAppId(
+  appId: string,
+  options: { requireReady?: boolean } = {},
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const bot = loadBotConfigs().find(candidate => candidate.larkAppId === appId);
+    if (!bot) return { ok: false, error: 'hostOverloadAlert_target_unknown' };
+    if (bot.apiOnly === true) return { ok: false, error: 'hostOverloadAlert_target_apiOnly' };
+    if (!(bot.allowedUsers ?? []).some(user => typeof user === 'string' && user.trim())) {
+      return { ok: false, error: 'hostOverloadAlert_target_owner_missing' };
+    }
+    if (options.requireReady !== true) return { ok: true };
+    const daemon = registry.list().find(candidate => candidate.larkAppId === appId);
+    if (!daemon) return { ok: false, error: 'hostOverloadAlert_target_offline' };
+    const resolvedOwners = daemon.resolvedAllowedUsers ?? [];
+    if (!hasResolvedCodexNotifierRecipient(resolvedOwners)) {
+      return { ok: false, error: 'hostOverloadAlert_target_owner_missing' };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: 'hostOverloadAlert_target_unknown' };
+  }
+}
+
+function hostOverloadAlertBotOptions(): ResolvedDashboardSettings['hostOverloadAlert']['botOptions'] {
+  try {
+    const onlineByAppId = new Map(registry.list().map(bot => [bot.larkAppId, bot] as const));
+    return loadBotConfigs()
+      .filter(bot => bot.apiOnly !== true) // apiOnly bots can't send Feishu messages
+      .map(bot => {
+        const resolvedOwners = onlineByAppId.get(bot.larkAppId)?.resolvedAllowedUsers ?? [];
+        return {
+          larkAppId: bot.larkAppId,
+          botName: bot.displayName ?? onlineByAppId.get(bot.larkAppId)?.botName ?? bot.name ?? null,
+          cliId: onlineByAppId.get(bot.larkAppId)?.cliId ?? bot.cliId,
+          apiOnly: bot.apiOnly === true,
           ...resolveCodexNotifierRecipientView(bot.allowedUsers, resolvedOwners),
         };
       });
@@ -728,7 +808,14 @@ async function reloadVcMeetingBotConfigOnDaemons(appIds: string[]): Promise<void
  * Used after automateOpenPlatformSetup to verify that VC meeting scopes were
  * actually applied (not just "requested").
  */
-async function fetchGrantedScopesForBot(bot: { larkAppId: string; larkAppSecret: string; brand?: string }): Promise<{ ok: true; granted: Set<string> } | { ok: false; error: string }> {
+async function fetchGrantedScopesForBot(bot: { larkAppId: string; larkAppSecret: string; brand?: string; apiOnly?: boolean }): Promise<{ ok: true; granted: Set<string> } | { ok: false; error: string }> {
+  // Core-only (apiOnly) bots have no real Feishu credentials — refuse the raw
+  // token/application fetch outright rather than dialing the open platform with
+  // a synthetic/empty secret. (Belt-and-suspenders: apiOnly is already excluded
+  // from listener options, but a pre-existing VC config could still reach here.)
+  if (bot.apiOnly === true) {
+    return { ok: false, error: 'api_only_bot_has_no_feishu_credentials' };
+  }
   const brand = bot.brand === 'lark' ? 'lark' : 'feishu';
   const openApi = larkHosts(brand).openApi;
   const ac = new AbortController();
@@ -815,6 +902,18 @@ async function syncVcMeetingListenerBotConfig(listenerBotAppId: string | null, p
   const nextAppId = listenerBotAppId?.trim() || null;
   const prevAppId = previousListenerBotAppId?.trim() || null;
   if (!nextAppId && !prevAppId) return { ok: true };
+
+  // Defense-in-depth: even though the settings validator rejects apiOnly, guard
+  // the sync entry too so no caller reaches automateOpenPlatformSetup / the
+  // open-platform raw fetches for a core-only bot.
+  if (nextAppId) {
+    try {
+      const bot = loadBotConfigs().find(b => b.larkAppId === nextAppId);
+      if (bot?.apiOnly === true) {
+        return { ok: false, error: 'vcMeetingAgent_listenerBot_api_only' };
+      }
+    } catch { /* fall through to normal errors below */ }
+  }
 
   // Require lark-cli >= MIN_LARK_CLI_VERSION_FOR_VC_BOT for VC bot meeting commands
   // (vc +meeting-join/events/message-send --as bot). Earlier versions silently reject
@@ -1049,6 +1148,8 @@ function resolveDashboardSettings(): ResolvedDashboardSettings {
       recommendedRef: TRAEX_RECOMMENDED_REF,
     },
     codexRpcInput: dashboard.codexRpcInput === true, // default OFF until live-verified
+    // default ON — only an explicit stored false disables (matches config.ts getter)
+    bypassCodexHookTrust: dashboard.bypassCodexHookTrust !== false,
     codexNotifier: {
       enabled: codexNotifier.enabled,
       targetBotAppId: codexNotifier.targetBotAppId ?? null,
@@ -1062,6 +1163,16 @@ function resolveDashboardSettings(): ResolvedDashboardSettings {
       workerOnline: isCodexNotifierWorkerStateFresh(codexNotifierState),
       lastError: codexNotifierState?.lastError ?? null,
     },
+    hostOverloadAlert: {
+      enabled: global.hostOverloadAlert?.enabled === true,
+      targetBotAppId: global.hostOverloadAlert?.targetBotAppId ?? null,
+      enterLoadRatio: global.hostOverloadAlert?.enterLoadRatio ?? DEFAULT_OVERLOAD_THRESHOLDS.enterLoadRatio,
+      enterMemUsedFrac: global.hostOverloadAlert?.enterMemUsedFrac ?? DEFAULT_OVERLOAD_THRESHOLDS.enterMemUsedFrac,
+      botOptions: hostOverloadAlertBotOptions(),
+      targetDaemonOnline: !!global.hostOverloadAlert?.targetBotAppId
+        && registry.list().some(bot => bot.larkAppId === global.hostOverloadAlert?.targetBotAppId),
+    },
+    noVisibleOutputHint: dashboard.noVisibleOutputHint === true, // default OFF; opt-in anti-resend guidance
     vcMeetingAgent: {
       enabled: global.vcMeetingAgent?.enabled !== false,
       listenerBotAppId: global.vcMeetingAgent?.listenerBotAppId ?? null,
@@ -1094,6 +1205,7 @@ const settingsWriteApplierDeps = defaultSettingsWriteApplierDeps(resolveDashboar
 settingsWriteApplierDeps.syncVcMeetingListenerBotConfig = syncVcMeetingListenerBotConfig;
 settingsWriteApplierDeps.validateVcMeetingListenerBotAppId = validateVcMeetingListenerBotAppId;
 settingsWriteApplierDeps.validateCodexNotifierTargetBotAppId = validateCodexNotifierTargetBotAppId;
+settingsWriteApplierDeps.validateHostOverloadAlertTargetBotAppId = validateHostOverloadAlertTargetBotAppId;
 
 /** Helper to render a {status, body} HandlerResult through `res`. */
 function writeHandlerResult(res: import('node:http').ServerResponse, result: GroupsHandlerResult): void {
@@ -2055,12 +2167,33 @@ async function createTeamGroup(args: { name: string; larkAppIds: string[]; userO
   // Only auto-invite the web user when their paired bot is the creator (open_id
   // is scoped to that app); otherwise create the group but don't forward a
   // wrong-scope open_id — UI will flag autoInviteUnavailable.
+  // Two DISTINCT predicates — conflating them regressed federation:
+  //  • isNoTransportBot: a bot with no Feishu transport (core-only apiOnly).
+  //    Checked from LOCAL config AND, for a remote federated bot, from the
+  //    aggregated roster's `larkTransportEnabled === false` (propagated
+  //    spoke→sync→store→roster). undefined/absent (legacy spoke) → normal.
+  //    Does NOT require local-registry presence, so a remote normal bot stays.
+  //  • canBeCreator: creator must be a locally-online daemon AND have transport
+  //    (getBotClient throws for apiOnly). Remote bots can be members, not creator.
+  let noTransportRosterIds = new Set<string>();
+  try {
+    noTransportRosterIds = new Set(
+      buildFederatedRoster(config.session.dataDir, undefined, undefined, undefined, liveBots())
+        .bots.filter(b => b.larkTransportEnabled === false).map(b => b.larkAppId),
+    );
+  } catch { /* roster unavailable → rely on local config only */ }
+  const isNoTransportBot = (id: string): boolean => {
+    if (noTransportRosterIds.has(id)) return true;
+    try { return loadBotConfigs().find(b => b.larkAppId === id)?.apiOnly === true; }
+    catch { return false; }
+  };
+  const canBeCreator = (id: string): boolean => !!registry.getByAppId(id) && !isNoTransportBot(id);
   const plan = planGroupCreator(
     selectedIds,
     args.preferredCreator,
-    (id) => !!registry.getByAppId(id),
+    canBeCreator,
     (ids) => {
-      const p = pickCreatorForGroup(ids, (id) => {
+      const p = pickCreatorForGroup(ids.filter(canBeCreator), (id) => {
         const d = registry.getByAppId(id);
         return d ? { larkAppId: d.larkAppId, resolvedAllowedUsers: d.resolvedAllowedUsers ?? [] } : undefined;
       });
@@ -2070,12 +2203,16 @@ async function createTeamGroup(args: { name: string; larkAppIds: string[]; userO
   if (!plan.creatorLarkAppId) return { ok: false, error: 'no_online_daemon' };
   const userOpenIds = plan.inviteUser && args.userOpenId ? [args.userOpenId] : [];
   try {
+    // Exclude ONLY apiOnly bots from the member payload (they have no Feishu
+    // identity to invite). Federation remote NORMAL bots stay — the fix for the
+    // creator-predicate regression that also dropped them.
+    const memberIds = selectedIds.filter(id => !isNoTransportBot(id));
     const upstream = await proxyToDaemon(plan.creatorLarkAppId, '/api/groups/create', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(buildTeamGroupCreatePayload({
         name: args.name,
-        larkAppIds: selectedIds,
+        larkAppIds: memberIds,
         userOpenIds,
         ownerUnionIds: args.ownerUnionIds ?? [],
         transferOwnerUnionId: args.transferOwnerUnionId,
@@ -2203,7 +2340,7 @@ async function buildGroupsMatrix(): Promise<{ chats: any[]; bots: any[] }> {
       if (!r.ok) return;
       const j = await r.json() as { chats?: any[] };
       for (const c of j.chats ?? []) {
-        const { oncallChat, firstSeenAt, hasRole, observedBotNames, ...chatBase } = c;
+        const { oncallChat, firstSeenAt, hasRole, hasMessageListener, observedBotNames, ...chatBase } = c;
         const cur = out.get(c.chatId) ?? {
           ...chatBase,
           memberBots: [] as any[],
@@ -2220,6 +2357,7 @@ async function buildGroupsMatrix(): Promise<{ chats: any[]; bots: any[] }> {
           inChat: true,
           oncallChat: oncallChat ?? null,
           hasRole: hasRole ?? false,
+          hasMessageListener: hasMessageListener ?? false,
         });
         if (typeof firstSeenAt === 'number') {
           cur._firstSeenAt = cur._firstSeenAt === null
@@ -2234,7 +2372,7 @@ async function buildGroupsMatrix(): Promise<{ chats: any[]; bots: any[] }> {
     const present = new Set<string>(c.memberBots.map((mb: any) => mb.larkAppId));
     for (const b of onlineBots) {
       if (!present.has(b.larkAppId)) {
-        c.memberBots.push({ larkAppId: b.larkAppId, botName: b.botName, cliId: b.cliId, inChat: false, oncallChat: null, hasRole: false });
+        c.memberBots.push({ larkAppId: b.larkAppId, botName: b.botName, cliId: b.cliId, inChat: false, oncallChat: null, hasRole: false, hasMessageListener: false });
       }
     }
   }
@@ -4012,26 +4150,6 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // Sandbox landing: review the clone's diff (GET) then apply/discard (POST).
-    if (req.method === 'GET' && (m = url.pathname.match(/^\/api\/sessions\/([^/]+)\/sandbox-diff$/))) {
-      const sid = decodeURIComponent(m[1]);
-      const owner = aggregator.ownerOf(sid);
-      if (!owner) return jsonRes(res, 404, { ok: false, error: 'unknown_session' });
-      const upstream = await proxyToDaemon(owner, `/api/sessions/${sid}/sandbox-diff`, { method: 'GET' });
-      res.writeHead(upstream.status, { 'content-type': 'application/json' });
-      res.end(await upstream.text());
-      return;
-    }
-    if (req.method === 'POST' && (m = url.pathname.match(/^\/api\/sessions\/([^/]+)\/sandbox-land\/(apply|discard)$/))) {
-      const sid = decodeURIComponent(m[1]); const action = m[2];
-      const owner = aggregator.ownerOf(sid);
-      if (!owner) return jsonRes(res, 404, { ok: false, error: 'unknown_session' });
-      const upstream = await proxyToDaemon(owner, `/api/sessions/${sid}/sandbox-land/${action}`, { method: 'POST' });
-      res.writeHead(upstream.status, { 'content-type': 'application/json' });
-      res.end(await upstream.text());
-      return;
-    }
-
     if (req.method === 'POST' && (m = url.pathname.match(/^\/api\/schedules\/([^/]+)\/(run|pause|resume|delivery)$/))) {
       const id = decodeURIComponent(m[1]); const op = m[2];
       const owner = resolveScheduleOwner(id);
@@ -4174,6 +4292,86 @@ const server = createServer(async (req, res) => {
         res.end(await upstream.text());
         return;
       }
+    }
+
+    // ─── Message listeners (proxy to daemon) ───────────────────────────────
+    // GET    /api/message-listeners/:larkAppId/:chatId
+    // PUT    /api/message-listeners/:larkAppId/:chatId
+    // DELETE /api/message-listeners/:larkAppId/:chatId
+    // POST   /api/message-listeners/:larkAppId/:chatId/(preview|run-preview)
+    // GET    /api/message-listeners/:larkAppId/:chatId/run-preview/:runId
+    let mMessageListener: RegExpMatchArray | null;
+    if ((mMessageListener = url.pathname.match(/^\/api\/message-listeners\/([^/]+)\/([^/]+)\/run-preview\/([^/]+)$/))) {
+      const larkAppId = decodeURIComponent(mMessageListener[1]);
+      const chatId = decodeURIComponent(mMessageListener[2]);
+      const runId = decodeURIComponent(mMessageListener[3]);
+      if (req.method === 'GET') {
+        const upstream = await proxyToDaemon(
+          larkAppId,
+          `/api/message-listeners/${encodeURIComponent(chatId)}/run-preview/${encodeURIComponent(runId)}`,
+          { method: 'GET' },
+        );
+        res.writeHead(upstream.status, { 'content-type': 'application/json' });
+        res.end(await upstream.text());
+        return;
+      }
+    }
+    if ((mMessageListener = url.pathname.match(/^\/api\/message-listeners\/([^/]+)\/([^/]+)\/(preview|run-preview)$/))) {
+      const larkAppId = decodeURIComponent(mMessageListener[1]);
+      const chatId = decodeURIComponent(mMessageListener[2]);
+      const op = mMessageListener[3];
+      if (req.method === 'POST') {
+        const chunks: Buffer[] = [];
+        for await (const c of req) chunks.push(c as Buffer);
+        const raw = Buffer.concat(chunks).toString('utf8') || '{}';
+        const upstream = await proxyToDaemon(larkAppId, `/api/message-listeners/${encodeURIComponent(chatId)}/${op}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: raw,
+        });
+        res.writeHead(upstream.status, { 'content-type': 'application/json' });
+        res.end(await upstream.text());
+        return;
+      }
+    }
+    if ((mMessageListener = url.pathname.match(/^\/api\/message-listeners\/([^/]+)\/([^/]+)$/))) {
+      const larkAppId = decodeURIComponent(mMessageListener[1]);
+      const chatId = decodeURIComponent(mMessageListener[2]);
+      if (req.method === 'GET') {
+        const upstream = await proxyToDaemon(larkAppId, `/api/message-listeners/${encodeURIComponent(chatId)}`, { method: 'GET' });
+        res.writeHead(upstream.status, { 'content-type': 'application/json' });
+        res.end(await upstream.text());
+        return;
+      }
+      if (req.method === 'PUT') {
+        const chunks: Buffer[] = [];
+        for await (const c of req) chunks.push(c as Buffer);
+        const raw = Buffer.concat(chunks).toString('utf8') || '{}';
+        const upstream = await proxyToDaemon(larkAppId, `/api/message-listeners/${encodeURIComponent(chatId)}`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: raw,
+        });
+        res.writeHead(upstream.status, { 'content-type': 'application/json' });
+        res.end(await upstream.text());
+        return;
+      }
+      if (req.method === 'DELETE') {
+        const upstream = await proxyToDaemon(larkAppId, `/api/message-listeners/${encodeURIComponent(chatId)}`, { method: 'DELETE' });
+        res.writeHead(upstream.status, { 'content-type': 'application/json' });
+        res.end(await upstream.text());
+        return;
+      }
+    }
+
+    let mGroupMembersDisplay: RegExpMatchArray | null;
+    if (req.method === 'GET' && (mGroupMembersDisplay = url.pathname.match(/^\/api\/groups\/([^/]+)\/([^/]+)\/members-display$/))) {
+      const larkAppId = decodeURIComponent(mGroupMembersDisplay[1]);
+      const chatId = decodeURIComponent(mGroupMembersDisplay[2]);
+      const upstream = await proxyToDaemon(larkAppId, `/api/groups/${encodeURIComponent(chatId)}/members-display`, { method: 'GET' });
+      res.writeHead(upstream.status, { 'content-type': 'application/json' });
+      res.end(await upstream.text());
+      return;
     }
 
     // ─── Profiles (aggregate/proxy to daemon) ─────────────────────────────
@@ -4686,7 +4884,7 @@ const server = createServer(async (req, res) => {
     }
 
     // PUT /api/bots/:appId/backend-type — proxy to that bot's daemon. Body
-    // `{ backendType: 'pty'|'tmux'|'herdr'|'zellij'|'' }` ('' / 'auto' clears the override).
+    // `{ backendType: 'pty'|'tmux'|'herdr'|'zellij'|'zmx'|'' }` ('' / 'auto' clears the override).
     let mBotBackendType: RegExpMatchArray | null;
     if (req.method === 'PUT' && (mBotBackendType = url.pathname.match(/^\/api\/bots\/([^/]+)\/backend-type$/))) {
       const appId = decodeURIComponent(mBotBackendType[1]);
@@ -5367,6 +5565,10 @@ function startPlatformTunnelIfBound(): void {
   try {
     const binding = readPlatformBinding();
     if (!binding) return;
+    if (!activeToken) {
+      activeToken = loadOrCreatePersistedToken(TOKEN_PATH);
+      logger.info('[platform-tunnel] 已初始化 dashboard token');
+    }
     const version = readBotmuxVersion();
     platformTunnel = startPlatformTunnelClient({
       binding,

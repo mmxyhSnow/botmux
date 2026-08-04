@@ -142,6 +142,13 @@ describe('session presentation redaction', () => {
     repoName: 'customer-a',
     gitBranch: 'issue/CUSTOMER-123',
     botAvatarUrl: 'https://img.example/bot.png',
+    previewUserText: 'private question',
+    previewBotText: 'private answer',
+    previewUserFullText: 'private question in full',
+    previewBotFullText: 'private answer in full',
+    previewUserAt: 100,
+    previewBotAt: 200,
+    previewBotState: 'replied',
   };
 
   it('strips branch names from anonymous REST rows without mutating authenticated data', () => {
@@ -153,6 +160,13 @@ describe('session presentation redaction', () => {
       botAvatarUrl: 'https://img.example/bot.png',
     });
     expect(out[0]).not.toHaveProperty('gitBranch');
+    expect(out[0]).not.toHaveProperty('previewUserText');
+    expect(out[0]).not.toHaveProperty('previewBotText');
+    expect(out[0]).not.toHaveProperty('previewUserFullText');
+    expect(out[0]).not.toHaveProperty('previewBotFullText');
+    expect(out[0]).not.toHaveProperty('previewUserAt');
+    expect(out[0]).not.toHaveProperty('previewBotAt');
+    expect(out[0]).not.toHaveProperty('previewBotState');
     expect(session.gitBranch).toBe('issue/CUSTOMER-123');
   });
 
@@ -162,11 +176,61 @@ describe('session presentation redaction', () => {
 
     const updateBody = {
       sessionId: 's1',
-      patch: { gitBranch: 'issue/CUSTOMER-456', repoName: 'customer-a' },
+      patch: {
+        gitBranch: 'issue/CUSTOMER-456',
+        repoName: 'customer-a',
+        previewUserText: 'private question',
+        previewBotText: 'private answer',
+        previewBotState: 'replied',
+      },
     };
     const updated = redactSessionEventForPublic('session.update', updateBody) as any;
     expect(updated.patch).toEqual({ repoName: 'customer-a' });
     expect(updateBody.patch.gitBranch).toBe('issue/CUSTOMER-456');
+  });
+
+  it('strips the Riff sandbox write URL from anonymous REST rows without mutating authenticated data', () => {
+    // riffAccessUrl is a bearer WRITE capability (the unique sandbox subdomain
+    // IS the credential). An anonymous read-only visitor must never receive it,
+    // or the public board would hand out write access to the sandbox. Read
+    // access stays available via the local worker log terminal (webPort).
+    const riffSession = { sessionId: 's-riff', webPort: 3007, riffAccessUrl: 'https://abc123.sandbox.example/term' };
+    const out = redactSessionsForPublic([riffSession]) as any[];
+    expect(out[0]).toMatchObject({ sessionId: 's-riff', webPort: 3007 });
+    expect(out[0]).not.toHaveProperty('riffAccessUrl');
+    expect(riffSession.riffAccessUrl).toBe('https://abc123.sandbox.example/term');
+  });
+
+  it('strips riffAccessUrl from spawned and update SSE bodies', () => {
+    const riffSession = { sessionId: 's-riff', webPort: 3007, riffAccessUrl: 'https://abc123.sandbox.example/term' };
+    const spawned = redactSessionEventForPublic('session.spawned', { session: riffSession }) as any;
+    expect(spawned.session).not.toHaveProperty('riffAccessUrl');
+    expect(spawned.session).toMatchObject({ sessionId: 's-riff', webPort: 3007 });
+
+    const updateBody = { sessionId: 's-riff', patch: { riffAccessUrl: 'https://def456.sandbox.example/term', webPort: 3007 } };
+    const updated = redactSessionEventForPublic('session.update', updateBody) as any;
+    expect(updated.patch).toEqual({ webPort: 3007 });
+    expect(updateBody.patch.riffAccessUrl).toBe('https://def456.sandbox.example/term');
+  });
+
+  it('fails closed for future preview-prefixed fields on anonymous REST and SSE surfaces', () => {
+    const future = {
+      sessionId: 's-future',
+      status: 'idle',
+      previewUserMarkdown: 'future private user field',
+      previewBotRichText: 'future private bot field',
+    };
+    const rest = redactSessionsForPublic([future]) as any[];
+    expect(rest[0]).toEqual({ sessionId: 's-future', status: 'idle' });
+
+    const update = redactSessionEventForPublic('session.update', {
+      sessionId: 's-future',
+      patch: {
+        status: 'working',
+        previewUserMarkdown: 'future private patch',
+      },
+    }) as any;
+    expect(update.patch).toEqual({ status: 'working' });
   });
 });
 
@@ -220,5 +284,45 @@ describe('redactSettingsForPublic', () => {
     expect(redactSettingsForPublic({
       codexNotifier: { botOptions: ['private malformed option'] },
     })).toEqual({});
+  });
+
+  it('removes the complete hostOverloadAlert snapshot (target bot + recipient hints) from tokenless settings', () => {
+    const settings = {
+      publicReadOnly: true,
+      hostOverloadAlert: {
+        enabled: true,
+        targetBotAppId: 'cli_notify',
+        enterLoadRatio: 1.5,
+        enterMemUsedFrac: 0.92,
+        targetDaemonOnline: true,
+        botOptions: [{
+          larkAppId: 'cli_notify',
+          botName: 'Claude',
+          cliId: 'claude',
+          apiOnly: false,
+          recipientConfigured: true,
+          recipientVerified: true,
+          recipientHint: 'b***@example.com',
+        }],
+      },
+    };
+
+    const out = redactSettingsForPublic(settings) as any;
+
+    expect(out.publicReadOnly).toBe(true);
+    expect(out.hostOverloadAlert).toBeUndefined();
+    expect(JSON.stringify(out)).not.toContain('b***@example.com');
+    expect(JSON.stringify(out)).not.toContain('cli_notify');
+    // Non-mutating: authed callers still see the full snapshot.
+    expect(settings.hostOverloadAlert.botOptions[0].recipientHint).toBe('b***@example.com');
+  });
+
+  it('strips BOTH notifier snapshots at once (codexNotifier + hostOverloadAlert)', () => {
+    const out = redactSettingsForPublic({
+      publicReadOnly: false,
+      codexNotifier: { enabled: true, targetBotAppId: 'cli_codex' },
+      hostOverloadAlert: { enabled: true, targetBotAppId: 'cli_notify' },
+    }) as any;
+    expect(out).toEqual({ publicReadOnly: false });
   });
 });

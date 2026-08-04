@@ -20,10 +20,17 @@ interface ActionAsk {
   flowId?: string;
 }
 
+/** 文字作答携带的可选发送者上下文，供 broker 复用完整 talk 判定。 */
+export interface AskAuthorizationActor {
+  botSender?: boolean;
+  senderUnionId?: string;
+  memberUnionId?: string;
+}
+
 interface AskBrokerActionContext {
   gc(): void;
   getAsk(askId: string): ActionAsk | undefined;
-  isAuthorized(ask: ActionAsk, by: string): boolean;
+  isAuthorized(ask: ActionAsk, by: string, actor?: AskAuthorizationActor): boolean;
   settle(askId: string, result: AskResult): void;
   hasFlowSteps(ask: ActionAsk): boolean;
 }
@@ -42,7 +49,12 @@ export interface AskBrokerActions {
     by: string;
     selections?: ReadonlyArray<ReadonlyArray<string>>;
   }): AskClickOutcome;
-  submitCustomReply(args: { askId: string; by: string; text: string }): AskClickOutcome;
+  submitCustomReply(args: {
+    askId: string;
+    by: string;
+    text: string;
+    actor?: AskAuthorizationActor;
+  }): AskClickOutcome;
   submitUndoAsk(args: { askId: string; nonce: string; by: string }): AskClickOutcome;
   tryResolveAsk(args: {
     askId: string;
@@ -63,13 +75,14 @@ export function createAskBrokerActions(context: AskBrokerActionContext): AskBrok
     askId: string,
     by: string,
     nonce?: string,
+    actor?: AskAuthorizationActor,
   ): ActionAsk | AskClickOutcome {
     context.gc();
     const ask = context.getAsk(askId);
     if (!ask) return 'stale';
     if (nonce !== undefined && ask.nonce !== nonce) return 'stale';
     if (ask.settled) return 'already_settled';
-    if (!context.isAuthorized(ask, by)) return 'unauthorized';
+    if (!context.isAuthorized(ask, by, actor)) return 'unauthorized';
     return ask;
   }
 
@@ -115,7 +128,7 @@ export function createAskBrokerActions(context: AskBrokerActionContext): AskBrok
   function submitCustomReply(
     args: Parameters<AskBrokerActions['submitCustomReply']>[0],
   ): AskClickOutcome {
-    const checked = pendingAuthorized(args.askId, args.by);
+    const checked = pendingAuthorized(args.askId, args.by, undefined, args.actor);
     if (typeof checked === 'string') return checked;
     const text = args.text.trim();
     if (!text) return 'stale';

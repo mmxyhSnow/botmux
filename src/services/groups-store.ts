@@ -10,7 +10,7 @@
  * proxy selection happens at the route layer.
  */
 import { getBotClient } from '../bot-registry.js';
-import { larkGet } from '../im/lark/client.js';
+import { larkGet, listChatBotMembers } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
 
 export interface ChatBrief {
@@ -72,6 +72,98 @@ export async function isInChat(larkAppId: string, chatId: string): Promise<boole
   } catch {
     return false;
   }
+}
+
+export type RenameChatResult =
+  | { ok: true; oldName: string; newName: string; changed: boolean }
+  | {
+      ok: false;
+      error: 'bot_not_in_chat' | 'permission_denied' | 'lark_api_error' | 'rate_limited';
+      detail?: string;
+      oldName?: string;
+      newName?: string;
+      larkCode?: number;
+      retryAfterSeconds?: number;
+    };
+
+/**
+ * Rename one chat using exactly the supplied bot identity.
+ *
+ * Deliberately does not try another configured bot on failure: callers use
+ * this for session-scoped AI actions, where credential fallback would violate
+ * the "the acting bot must itself be in the chat" boundary.
+ */
+export async function renameChat(
+  larkAppId: string,
+  chatId: string,
+  newName: string,
+  opts: {
+    beforeUpdate?: () =>
+      | { ok: true }
+      | { ok: false; error: 'rate_limited'; retryAfterSeconds: number };
+  } = {},
+): Promise<RenameChatResult> {
+  const client = getBotClient(larkAppId);
+  if (!await isInChat(larkAppId, chatId)) {
+    return { ok: false, error: 'bot_not_in_chat' };
+  }
+  let oldName: string | undefined;
+  try {
+    const current: any = await larkGet(
+      client,
+      `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`,
+      { user_id_type: 'open_id' },
+    );
+    if (current.code !== 0 && current.code !== undefined) {
+      return {
+        ok: false,
+        error: classifyRenameChatError(current.code),
+        detail: `${current.msg ?? 'unknown'} (code: ${current.code})`,
+      };
+    }
+    const fetchedOldName = typeof current.data?.name === 'string' ? current.data.name.trim() : '';
+    oldName = fetchedOldName;
+    if (fetchedOldName === newName) return { ok: true, oldName: fetchedOldName, newName, changed: false };
+    const gate = opts.beforeUpdate?.();
+    if (gate && !gate.ok) return { ...gate, oldName: fetchedOldName, newName };
+
+    const updated: any = await (client as any).im.v1.chat.update({
+      path: { chat_id: chatId },
+      data: { name: newName },
+    });
+    if (updated.code !== 0 && updated.code !== undefined) {
+      return {
+        ok: false,
+        error: classifyRenameChatError(updated.code),
+        detail: `${updated.msg ?? 'unknown'} (code: ${updated.code})`,
+        oldName: fetchedOldName,
+        newName,
+        larkCode: Number.isFinite(Number(updated.code)) ? Number(updated.code) : undefined,
+      };
+    }
+    return { ok: true, oldName: fetchedOldName, newName, changed: true };
+  } catch (e: any) {
+    const detail = e?.message ?? String(e);
+    return {
+      ok: false,
+      error: /permission|forbidden|99991672|2300\d/i.test(detail)
+        ? 'permission_denied'
+        : 'lark_api_error',
+      detail,
+      oldName,
+      newName,
+      larkCode: Number.isFinite(Number(e?.code)) ? Number(e.code) : undefined,
+    };
+  }
+}
+
+function classifyRenameChatError(code: unknown): 'permission_denied' | 'lark_api_error' {
+  const numeric = Number(code);
+  // Lark uses 99991672 for missing app scope; 230xxx errors cover common
+  // chat-role / operation-permission failures.
+  return numeric === 99991672 || (numeric >= 230000 && numeric < 231000)
+    ? 'permission_denied'
+    : 'lark_api_error';
 }
 
 /**
@@ -340,4 +432,60 @@ export async function addUsersToChatByUnionId(
     }
   }
   return { invalidUserIds };
+}
+
+export interface ChatMemberDisplay {
+  openId: string;
+  name: string;
+  memberType: 'user' | 'bot' | 'unknown';
+}
+
+export async function listChatMemberDisplays(larkAppId: string, chatId: string): Promise<ChatMemberDisplay[]> {
+  const client = getBotClient(larkAppId);
+  const out: ChatMemberDisplay[] = [];
+  const seen = new Map<string, number>();
+  let pageToken: string | undefined;
+  for (let page = 0; page < 20; page++) {
+    const params: Record<string, string> = {
+      member_id_type: 'open_id',
+      page_size: '100',
+      with_member_name: 'true',
+    };
+    if (pageToken) params.page_token = pageToken;
+    const res: any = await larkGet(client, `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}/members`, params);
+    if (res.code !== 0 && res.code !== undefined) {
+      throw new Error(`Failed to list chat members: ${res.msg} (code: ${res.code})`);
+    }
+    for (const item of res.data?.items ?? []) {
+      const openId = String(item?.member_id ?? '').trim();
+      if (!openId) continue;
+      const name = String(item?.name ?? item?.member_name ?? item?.display_name ?? openId).trim() || openId;
+      const typeRaw = String(item?.member_type ?? item?.type ?? '').trim();
+      const memberType: ChatMemberDisplay['memberType'] = typeRaw === 'bot' || typeRaw === 'app'
+        ? 'bot'
+        : typeRaw === 'user' ? 'user' : 'unknown';
+      seen.set(openId, out.length);
+      out.push({ openId, name, memberType });
+    }
+    if (!res.data?.has_more || !res.data?.page_token) break;
+    pageToken = res.data.page_token;
+  }
+  try {
+    const bots = await listChatBotMembers(larkAppId, chatId);
+    for (const bot of bots) {
+      const openId = String(bot.openId ?? '').trim();
+      if (!openId) continue;
+      const name = String(bot.displayName ?? bot.name ?? openId).trim() || openId;
+      const existing = seen.get(openId);
+      if (existing === undefined) {
+        seen.set(openId, out.length);
+        out.push({ openId, name, memberType: 'bot' });
+      } else {
+        out[existing] = { openId, name, memberType: 'bot' };
+      }
+    }
+  } catch (err) {
+    logger.debug(`Failed to merge chat bot displays for ${chatId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return out;
 }

@@ -53,23 +53,46 @@ function flowKey(sessionId: string, flowId: string): string {
   return `${sessionId}\u0000${flowId}`;
 }
 let dispatcher: AskCardDispatcher | null = null;
+
+/** Optional actor context for the talk check. Card-click paths (toggle/submit)
+ *  omit it — Lark card-action callbacks carry no sender union / bot flag, so the
+ *  checker degrades to the human `evaluateTalk(openId, chatType)`. The custom
+ *  text-reply path (submitCustomReply) DOES have the full message event, so it
+ *  passes actor context and the checker dispatches to the same predicate as the
+ *  dispatcher gate / quota recheck (bot → evaluateBotTalk, human → evaluateTalk
+ *  with the teamMember union leg). Without this, a cross-deployment team bot or a
+ *  platform teamMember human answering by text is wrongly rejected. */
+export interface AskAnswerActor {
+  /** Feishu-stamped bot sender (sender_type ∈ app|bot, or a cross-ref sibling). */
+  botSender?: boolean;
+  /** Bot-locked union (evaluateTalk teamBot leg / evaluateBotTalk). */
+  senderUnionId?: string;
+  /** Raw sender union (evaluateTalk teamMember leg — may be a human union). */
+  memberUnionId?: string;
+}
+
 /** IM-side canTalk predicate, wired by the daemon at bootstrap. Lets the broker
  *  honour the bot's canTalk gate without importing Lark types: whoever may
  *  address the bot in this chat may answer its `botmux ask`. Returns false until
- *  wired, so an unwired broker authorizes no one (daemon always wires it). */
-let canTalkChecker: ((larkAppId: string, chatId: string, openId: string, chatType?: 'group' | 'p2p') => boolean) | null = null;
+ *  wired, so an unwired broker authorizes no one (daemon always wires it).
+ *  `actor` carries optional union / bot context (see AskAnswerActor); omitted on
+ *  card-click paths, supplied on the text-reply path. */
+let canTalkChecker:
+  | ((larkAppId: string, chatId: string, openId: string, chatType?: 'group' | 'p2p', actor?: AskAnswerActor) => boolean)
+  | null = null;
 /** Wire the canTalk predicate. Called once during daemon bootstrap. */
 export function setCanTalkChecker(
-  fn: (larkAppId: string, chatId: string, openId: string, chatType?: 'group' | 'p2p') => boolean,
+  fn: (larkAppId: string, chatId: string, openId: string, chatType?: 'group' | 'p2p', actor?: AskAnswerActor) => boolean,
 ): void {
   canTalkChecker = fn;
 }
 /** A click is authorized iff the clicker may `canTalk` to the bot in this chat.
  *  `botmux ask` is a talk-level interaction (answering the agent's question),
- *  so it follows the canTalk gate — not the stricter canOperate / allowedUsers. */
-function isAuthorizedToAnswer(ask: InternalPending, by: string): boolean {
+ *  so it follows the canTalk gate — not the stricter canOperate / allowedUsers.
+ *  `actor` is only supplied by the text-reply path; card clicks omit it. */
+function isAuthorizedToAnswer(ask: InternalPending, by: string, actor?: AskAnswerActor): boolean {
   if (ask.approvers?.length && !ask.approvers.includes(by)) return false;
-  return canTalkChecker?.(ask.larkAppId, ask.chatId, by, ask.chatType) ?? false;
+  return canTalkChecker?.(ask.larkAppId, ask.chatId, by, ask.chatType, actor) ?? false;
 }
 
 /** Window during which a settled ask is still queryable so race-losers get a
@@ -455,7 +478,7 @@ export const {
 } = createAskBrokerActions({
   gc: gcSettled,
   getAsk: askId => pending.get(askId),
-  isAuthorized: (ask, by) => isAuthorizedToAnswer(ask as InternalPending, by),
+  isAuthorized: (ask, by, actor) => isAuthorizedToAnswer(ask as InternalPending, by, actor),
   settle,
   hasFlowSteps: ask => !!ask.flowId
     && (flows.get(flowKey(ask.sessionId, ask.flowId))?.steps.length ?? 0) > 0,
