@@ -71,7 +71,70 @@ describe('one-shot card action policy', () => {
 
     expect(columns[0].elements[0]).toMatchObject({ disabled: true, type: 'default' });
     expect(columns[1].elements[0]).toMatchObject({ disabled: true, type: 'default' });
+    expect(columns[0].elements[0].text.content).toBe('生成补报预览');
+    expect(columns[1].elements[0].text.content).toBe('✅ 修复并补报');
     expect((finalActionsCard.body.elements[0].columns[0].elements[0] as any).disabled).toBeUndefined();
+  });
+
+  it('freezes and checks a stored card after Feishu strips callback behaviors', () => {
+    const storedCard = {
+      schema: '2.0',
+      body: {
+        elements: [
+          {
+            tag: 'column_set',
+            columns: [
+              {
+                tag: 'column',
+                elements: [{
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: '生成补报预览' },
+                  type: 'primary',
+                }],
+              },
+              {
+                tag: 'column',
+                elements: [{
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: '修复并补报' },
+                  type: 'default',
+                }],
+              },
+            ],
+          },
+          {
+            tag: 'column_set',
+            columns: [{
+              tag: 'column',
+              elements: [{
+                tag: 'button',
+                text: { tag: 'plain_text', content: '查看完整过程' },
+                type: 'default',
+                multi_url: { url: 'https://example.com/report' },
+              }],
+            }],
+          },
+        ],
+      },
+    };
+
+    const result = freezeOneShotActionGroup(storedCard, clickedValue);
+    const elements = (result!.card.body as any).elements;
+    const choices = elements[0].columns;
+    const report = elements[1].columns[0].elements[0];
+
+    expect(result?.changed).toBe(true);
+    expect(choices[0].elements[0]).toMatchObject({
+      disabled: true,
+      type: 'default',
+      text: { content: '生成补报预览' },
+    });
+    expect(choices[1].elements[0]).toMatchObject({
+      disabled: true,
+      type: 'default',
+      text: { content: '✅ 修复并补报' },
+    });
+    expect(report).not.toHaveProperty('disabled');
   });
 
   it('unwraps user_dsl message content before freezing historical cards', () => {
