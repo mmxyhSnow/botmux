@@ -3,6 +3,7 @@
  * 使用原生单选框和 CSS 切换摘要/全部，页面不执行脚本。
  */
 import type { CodexAppProgressCardSessionState } from '../types.js';
+import { selectSummaryMilestones } from './codex-app-progress-milestones.js';
 import { splitProgressCardEntries } from './codex-app-progress-pagination.js';
 
 export const PROGRESS_REPORT_TIMELINE_STYLE = [
@@ -35,12 +36,16 @@ function timelineItem(
   hasNext: boolean,
   summaryEvent: boolean,
   summaryLast: boolean,
+  summaryTitle: string | undefined,
 ): string {
   const matched = /^\[(\d{2}:\d{2}):\d{2}\]\s*([\s\S]*)$/.exec(entry);
   const time = matched?.[1] ?? '--:--';
   const content = (matched?.[2] ?? entry).trim();
   const titled = /^([^：:\n/]{2,12})[：:]\s*([\s\S]+)$/.exec(content);
-  const title = titled?.[1] ?? `过程记录 ${String(recordIndex + 1).padStart(2, '0')}`;
+  // 摘要节点优先使用结构化里程碑标题；仅在缺失里程碑（旧状态）时才回退推断，
+  // 且绝不用「过程记录 N」作为摘要标题。
+  const inferredTitle = titled?.[1] ?? `过程记录 ${String(recordIndex + 1).padStart(2, '0')}`;
+  const title = summaryEvent && summaryTitle ? summaryTitle : inferredTitle;
   const copy = titled?.[2] ?? content;
   const classes = [
     'timeline-item',
@@ -57,9 +62,19 @@ export function renderCodexAppProgressTimeline(
   headingHtml: string,
 ): string {
   const history = splitProgressCardEntries(state.content);
-  const validSummaryIndexes = state.summaryEntryIndexes === undefined
-    ? history.map((_, index) => index)
-    : state.summaryEntryIndexes.filter(index => index >= 0 && index < history.length);
+  // 优先用结构化里程碑：语义标题 + 4–6 条选择（保留交付/失败/终态，折叠阶段噪音）。
+  // 里程碑缺失（旧状态）时回退到既有的索引集合，仍展示全部或既登记的重点索引。
+  const milestones = state.summaryMilestones
+    ?.filter(milestone => milestone.index >= 0 && milestone.index < history.length);
+  const selected = milestones && milestones.length > 0
+    ? selectSummaryMilestones(milestones)
+    : undefined;
+  const titleByIndex = new Map(selected?.map(item => [item.index, item.title]));
+  const validSummaryIndexes = selected
+    ? selected.map(item => item.index)
+    : state.summaryEntryIndexes === undefined
+      ? history.map((_, index) => index)
+      : state.summaryEntryIndexes.filter(index => index >= 0 && index < history.length);
   const summaryIndexes = new Set(validSummaryIndexes);
   const summaryLastIndex = validSummaryIndexes.length
     ? Math.min(...validSummaryIndexes)
@@ -82,6 +97,7 @@ export function renderCodexAppProgressTimeline(
     index < newestFirstHistory.length - 1,
     summaryIndexes.has(recordIndex),
     recordIndex === summaryLastIndex,
+    titleByIndex.get(recordIndex),
   )).join('');
   return `${controls}${empty}<ol class="timeline">${items}</ol>`;
 }

@@ -76,7 +76,7 @@ describe('Codex App 即时进度卡', () => {
     expect(h.card.snapshot()?.content).toBe(
       '[19:11:58] 已收到，开始处理。'
       + '\n\n[19:12:07] 源码差异已经定位。'
-      + '\n\n[19:13:09] 本轮已完成。',
+      + '\n\n[19:13:09] AI 本轮执行已结束（未记录外部任务状态）。',
     );
   });
 
@@ -163,7 +163,7 @@ describe('Codex App 即时进度卡', () => {
 
     expect(h.posts).toHaveLength(1);
     expect(h.card.snapshot()).toMatchObject({ phase: 'completed' });
-    expect(h.card.snapshot()?.content).toContain('本轮已完成');
+    expect(h.card.snapshot()?.content).toContain('AI 本轮执行已结束（未记录外部任务状态）');
     expect(JSON.parse(h.patches.at(-1)!.cardJson).header).toMatchObject({
       template: 'green',
       title: { content: '已完成 · 完成测试' },

@@ -15,6 +15,11 @@ import {
   PROGRESS_REPORT_TIMELINE_STYLE,
   renderCodexAppProgressTimeline,
 } from './codex-app-progress-report-timeline.js';
+import {
+  computeExternalOutcome,
+  externalJobLines,
+  externalTerminalHeadline,
+} from './codex-app-progress-external.js';
 
 export interface CodexAppProgressReportWriteOptions {
   dataDir?: string;
@@ -168,6 +173,15 @@ export function renderCodexAppProgressReport(
   const blocker = overview?.blocker
     ? `<aside class="alert"><strong>当前阻塞</strong><p>${escapeHtml(overview.blocker)}</p></aside>`
     : '';
+  // 外部作业状态只从结构化 overview.external 渲染，与快照时点一致；报告每次从持久化
+  // state 重渲染，因此后续状态翻转（如 HAR 变 Failed）只在刷新后才反映，不倒灌历史。
+  const externalOutcome = computeExternalOutcome(overview?.external);
+  const externalDetail = externalJobLines(overview?.external);
+  const externalBlock = overview?.external
+    ? `<aside class="external-status external-${externalOutcome}"><strong>外部任务</strong>`
+      + `<p>${escapeHtml(externalTerminalHeadline(externalOutcome))}</p>`
+      + `<ul>${externalDetail.map(line => `<li>${escapeHtml(line)}</li>`).join('')}</ul></aside>`
+    : '';
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -186,6 +200,7 @@ export function renderCodexAppProgressReport(
     .section-heading{display:flex;align-items:flex-start;gap:14px;margin-bottom:34px}.section-heading>span{padding-top:3px;color:var(--accent);font:800 10px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace}.section-heading p{margin:0 0 5px;color:#858a9a;font:700 10px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.12em}.section-heading h2{margin:0;font-size:23px;line-height:1.15;letter-spacing:-.03em}
     .metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:28px 18px}.metric{min-width:0}.metric span{display:block;color:#858a9a;font-size:10px;font-weight:700;letter-spacing:.06em}.metric strong{display:block;margin:5px 0 1px;font-size:17px;line-height:1.3;overflow-wrap:anywhere}.metric small{color:#858a9a;font:9px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
     .progress-track{height:3px;margin:30px 0 26px;overflow:hidden;background:#e5e7ec}.progress-track span{display:block;height:100%;background:var(--accent)}.next-step{padding:17px 20px;border-left:4px solid #93b2f5;background:var(--accent-soft)}.next-step span,.alert strong{color:#7b9ee9;font-size:10px;font-weight:800;letter-spacing:.08em}.next-step p,.alert p{margin:7px 0 0;line-height:1.55}.alert{margin-top:14px;padding:15px 18px;border-left:4px solid #e7b84b;background:#fff5d8}.alert strong{color:#8d6a10}
+    .external-status{margin-top:14px;padding:15px 18px;border-left:4px solid var(--accent);background:var(--surface)}.external-status strong{color:#676b78;font-size:10px;font-weight:800;letter-spacing:.08em}.external-status p{margin:7px 0 0;line-height:1.55}.external-status ul{margin:8px 0 0;padding:0;list-style:none}.external-status li{margin:3px 0 0;padding-left:14px;position:relative;color:var(--muted);font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.external-status li:before{content:"";position:absolute;top:.62em;left:0;width:5px;height:5px;border-radius:50%;background:var(--accent)}.external-failed{border-left-color:var(--danger)}.external-failed li:before{background:var(--danger)}.external-success{border-left-color:var(--success)}.external-success li:before{background:var(--success)}
     .final-response{font-size:14px}.final-response>p:first-child{margin-top:0;font-size:clamp(24px,3.8vw,32px);font-weight:720;line-height:1.28;letter-spacing:-.035em;color:var(--ink)}.final-response p,.final-response ul,.final-response ol,.final-response pre,.final-response table,.final-response blockquote{margin:0 0 18px}.final-response>:last-child{margin-bottom:0}.final-response a{color:var(--accent);overflow-wrap:anywhere}.final-response ul,.final-response ol{padding:0;list-style:none;counter-reset:outcome}${FINAL_RESPONSE_LIST_STYLE}.final-response li:first-child{border-top:1px solid var(--border)}${FINAL_RESPONSE_INDEX_STYLE}.final-response pre{padding:14px;overflow:auto;background:#f2f3f5}.final-response code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.final-response table{display:block;max-width:100%;overflow:auto;border-collapse:collapse}.final-response th,.final-response td{padding:7px 10px;border:1px solid var(--border);text-align:left}.final-response blockquote{padding-left:14px;border-left:3px solid var(--border);color:var(--muted)}
     .list-block{margin-top:30px;padding-top:20px;border-top:1px solid var(--border)}.list-block h3{margin:0 0 12px;color:#676b78;font-size:10px;letter-spacing:.08em}.list-block ul{margin:0;padding:0;list-style:none}.list-block li{margin:0 0 8px;padding-left:15px;position:relative}.list-block li:before{content:"";position:absolute;top:.72em;left:0;width:5px;height:5px;border-radius:50%;background:var(--accent)}.list-block a{color:var(--accent);overflow-wrap:anywhere}
     .conclusion-panel>.list-block{padding:20px 22px;border:0;background:#1a1c1c;color:#fff}.conclusion-panel>.list-block h3{color:#858a9a}.conclusion-panel>.list-block li{padding-left:0}.conclusion-panel>.list-block li:before{display:none}.conclusion-panel>.list-block a{color:#fff;text-decoration-color:#777;text-underline-offset:4px}
@@ -221,6 +236,7 @@ export function renderCodexAppProgressReport(
         <div class="progress-track" aria-label="任务进度 ${progressPercent}%"><span style="width:${progressPercent}%"></span></div>
         <div class="next-step"><span>下一步</span><p>${escapeHtml(overview?.next ?? '无')}</p></div>
         ${blocker}
+        ${externalBlock}
       </section>
       ${finalResponseSection(state.finalResponse, overview?.delivery)}
       <section class="evidence-panel">

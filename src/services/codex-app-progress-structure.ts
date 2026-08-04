@@ -4,7 +4,10 @@
  * AI 在普通 commentary 末尾附带 HTML 注释标记；本模块验证字段并从用户可见
  * 时间线中移除标记。非法标记只按普通文本剥离，不得污染持久化看板。
  */
-import type { CodexAppProgressOverview } from '../types.js';
+import type {
+  CodexAppProgressExternalJob,
+  CodexAppProgressOverview,
+} from '../types.js';
 
 export interface ParsedCodexAppProgress {
   content: string;
@@ -15,6 +18,7 @@ export interface ParsedCodexAppProgress {
 const PROGRESS_MARKER = /<!--botmux-progress:([\s\S]*?)-->/g;
 const MAX_TITLE_CHARS = 40;
 const MAX_FIELD_CHARS = 240;
+const MAX_STATUS_CHARS = 40;
 const MAX_LIST_ITEMS = 12;
 const MAX_TOTAL_ITEMS = 999;
 
@@ -32,6 +36,23 @@ function boundedList(value: unknown): string[] | undefined {
     const normalized = boundedString(item);
     if (!normalized) return undefined;
     items.push(normalized);
+  }
+  return items;
+}
+
+/** 校验外部作业列表；每项必须同时给出可读标识和结构化状态，缺一即整体拒绝。 */
+function boundedExternalList(
+  value: unknown,
+): CodexAppProgressExternalJob[] | undefined {
+  if (!Array.isArray(value) || value.length > MAX_LIST_ITEMS) return undefined;
+  const items: CodexAppProgressExternalJob[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
+    const record = entry as Record<string, unknown>;
+    const label = boundedString(record.label);
+    const status = boundedString(record.status, MAX_STATUS_CHARS);
+    if (!label || !status) return undefined;
+    items.push({ label, status });
   }
   return items;
 }
@@ -65,10 +86,12 @@ function parseOverview(value: unknown): {
   const evidence = input.evidence === undefined ? undefined : boundedList(input.evidence);
   const delivery = input.delivery === undefined ? undefined : boundedList(input.delivery);
   const risks = input.risks === undefined ? undefined : boundedList(input.risks);
+  const external = input.external === undefined ? undefined : boundedExternalList(input.external);
   if (
     (input.evidence !== undefined && !evidence)
     || (input.delivery !== undefined && !delivery)
     || (input.risks !== undefined && !risks)
+    || (input.external !== undefined && !external)
   ) return undefined;
   return {
     ...(boundedString(input.title, MAX_TITLE_CHARS)
@@ -84,6 +107,7 @@ function parseOverview(value: unknown): {
       ...(evidence ? { evidence } : {}),
       ...(delivery ? { delivery } : {}),
       ...(risks ? { risks } : {}),
+      ...(external ? { external } : {}),
     },
   };
 }
