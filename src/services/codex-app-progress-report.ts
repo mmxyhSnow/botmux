@@ -9,9 +9,12 @@ import MarkdownIt from 'markdown-it';
 import type { CodexAppProgressCardSessionState } from '../types.js';
 import { resolveBotmuxDataDir } from '../core/data-dir.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { splitProgressCardEntries } from './codex-app-progress-pagination.js';
 import { extractFinalReplyActions } from './final-reply-actions.js';
 import { FINAL_RESPONSE_INDEX_STYLE, FINAL_RESPONSE_LIST_STYLE, normalizeHistoricalCodexAppProgressReportFile } from './codex-app-progress-report-compat.js';
+import {
+  PROGRESS_REPORT_TIMELINE_STYLE,
+  renderCodexAppProgressTimeline,
+} from './codex-app-progress-report-timeline.js';
 
 export interface CodexAppProgressReportWriteOptions {
   dataDir?: string;
@@ -145,18 +148,6 @@ function finalResponseSection(
   return `<section class="conclusion-panel">${sectionHeading('02', 'THE OUTCOME', '最终结论')}<div class="final-response">${body}</div>${listBlock('产物与链接', delivery, '无外部交付', true)}</section>`;
 }
 
-/** 把历史记录的时间戳拆成独立刻度，并保留其原始记录编号。 */
-function timelineItem(entry: string, recordIndex: number, hasNext: boolean): string {
-  const matched = /^\[(\d{2}:\d{2}):\d{2}\]\s*([\s\S]*)$/.exec(entry);
-  const time = matched?.[1] ?? '--:--';
-  const content = (matched?.[2] ?? entry).trim();
-  const titled = /^([^：:\n/]{2,12})[：:]\s*([\s\S]+)$/.exec(content);
-  const title = titled?.[1] ?? `过程记录 ${String(recordIndex + 1).padStart(2, '0')}`;
-  const copy = titled?.[2] ?? content;
-  const connector = hasNext ? '<b></b>' : '';
-  return `<li><div class="timeline-time"><strong>${escapeHtml(time)}</strong><span>记录 ${String(recordIndex + 1).padStart(2, '0')}</span></div><div class="timeline-marker"><i></i>${connector}</div><div class="timeline-copy"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(copy).replace(/\n/g, '<br>')}</p></div></li>`;
-}
-
 /** 将当前持久化投影渲染成不依赖脚本和外部资源的单文件 HTML。 */
 export function renderCodexAppProgressReport(
   state: CodexAppProgressCardSessionState,
@@ -170,15 +161,10 @@ export function renderCodexAppProgressReport(
   const progressPercent = overview?.total
     ? Math.min(100, Math.round((overview.completed.length / overview.total) * 100))
     : 0;
-  const history = splitProgressCardEntries(state.content);
-  // 展示层按最新优先排列，但编号继续表达真实发生顺序，避免倒序后把最新记录误标为 01。
-  const newestFirstHistory = history
-    .map((entry, recordIndex) => ({ entry, recordIndex }))
-    .reverse();
-  const historyHtml = newestFirstHistory.length
-    ? `<ol class="timeline">${newestFirstHistory.map(({ entry, recordIndex }, index) =>
-        timelineItem(entry, recordIndex, index < newestFirstHistory.length - 1)).join('')}</ol>`
-    : '<p class="muted">暂无过程记录</p>';
+  const timelineHtml = renderCodexAppProgressTimeline(
+    state,
+    sectionHeading('04', 'FULL TRACE', '完整时间线'),
+  );
   const blocker = overview?.blocker
     ? `<aside class="alert"><strong>当前阻塞</strong><p>${escapeHtml(overview.blocker)}</p></aside>`
     : '';
@@ -204,10 +190,10 @@ export function renderCodexAppProgressReport(
     .list-block{margin-top:30px;padding-top:20px;border-top:1px solid var(--border)}.list-block h3{margin:0 0 12px;color:#676b78;font-size:10px;letter-spacing:.08em}.list-block ul{margin:0;padding:0;list-style:none}.list-block li{margin:0 0 8px;padding-left:15px;position:relative}.list-block li:before{content:"";position:absolute;top:.72em;left:0;width:5px;height:5px;border-radius:50%;background:var(--accent)}.list-block a{color:var(--accent);overflow-wrap:anywhere}
     .conclusion-panel>.list-block{padding:20px 22px;border:0;background:#1a1c1c;color:#fff}.conclusion-panel>.list-block h3{color:#858a9a}.conclusion-panel>.list-block li{padding-left:0}.conclusion-panel>.list-block li:before{display:none}.conclusion-panel>.list-block a{color:#fff;text-decoration-color:#777;text-underline-offset:4px}
     .proof-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.proof-card{min-width:0;padding:16px;background:#fff;border:1px solid var(--border)}.proof-card>span{display:block;color:#858a9a;font-size:9px;font-weight:800;letter-spacing:.07em}.proof-card>strong{display:block;margin:9px 0 13px;font:700 13px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.proof-card>small{display:flex;align-items:center;gap:6px;color:var(--success);font-size:9px;font-weight:800}.proof-card>small i{width:5px;height:5px;border-radius:50%;background:var(--success)}.evidence-panel>.list-block{margin-top:32px}.evidence-panel>.list-block li{padding-left:14px;color:var(--muted);font-size:12px}
-    .timeline{margin:0;padding:0;list-style:none}.timeline li{display:grid;grid-template-columns:74px 32px minmax(0,1fr);min-height:104px}.timeline-time{display:flex;align-items:flex-end;flex-direction:column;padding-top:1px}.timeline-time strong{font:750 14px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace}.timeline-time span{margin-top:4px;color:#858a9a;font-size:9px;font-weight:700}.timeline-marker{display:flex;align-items:center;flex-direction:column;padding-top:5px}.timeline-marker i{z-index:1;width:8px;height:8px;border:2px solid var(--accent);border-radius:50%;background:var(--paper)}.timeline-marker b{width:1px;flex:1;background:var(--border)}.timeline-copy{padding:0 0 28px 12px}.timeline-copy h3{margin:0 0 5px;font-size:15px;line-height:1.35}.timeline-copy p{margin:0;color:var(--muted);font-size:12px;line-height:1.65}
+    ${PROGRESS_REPORT_TIMELINE_STYLE}
     .report-footer{display:flex;justify-content:space-between;gap:24px;padding:25px 30px;border-top:1px solid var(--border);color:#858a9a;font:700 9px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.1em}.footer-note{margin-left:auto;text-align:right}
     @media(max-width:760px){main{padding:12px 10px 36px}.report-header{min-height:0;padding:34px 24px 30px;flex-direction:column;gap:24px}.report-heading h1{font-size:34px}.report-deck{font-size:15px}.report-index{width:100%;padding-top:18px;border-top:1px solid var(--border);align-items:flex-start;text-align:left}.report-layout{grid-template-columns:1fr}.summary-panel,.conclusion-panel,.evidence-panel,.timeline-panel{grid-column:auto;grid-row:auto;padding:34px 24px 40px;border-right:0;border-bottom:1px solid var(--border)}.summary-panel,.evidence-panel{background:#fafafa}.report-footer{flex-wrap:wrap}.footer-note{width:100%;margin-left:0;text-align:left}}
-    @media(max-width:440px){.metric-grid,.proof-grid{grid-template-columns:1fr}.timeline li{grid-template-columns:56px 20px minmax(0,1fr)}.timeline-copy{padding-left:9px}.final-response>p:first-child{font-size:23px}.report-index strong{font-size:23px}}
+    @media(max-width:440px){.metric-grid,.proof-grid{grid-template-columns:1fr}.final-response>p:first-child{font-size:23px}.report-index strong{font-size:23px}}
     @media print{body{background:#fff}main{max-width:none;padding:0}.report{box-shadow:none}.report-footer{break-before:avoid}}
   </style>
 </head>
@@ -243,8 +229,7 @@ export function renderCodexAppProgressReport(
         ${listBlock('剩余风险', overview?.risks, '无已知剩余风险')}
       </section>
       <section class="timeline-panel">
-        ${sectionHeading('04', 'FULL TRACE', '完整时间线')}
-        ${historyHtml}
+        ${timelineHtml}
       </section>
     </div>
     <footer class="report-footer"><span>BOTMUX / PROGRESS REPORT</span><span class="footer-note">报告内容取自真实任务，页面用于完整回顾。</span><span>00—04</span></footer>

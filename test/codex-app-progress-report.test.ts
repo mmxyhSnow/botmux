@@ -63,7 +63,8 @@ describe('Codex App 完整过程 HTML', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'botmux-progress-report-'));
     roots.push(dataDir);
 
-    const report = writeCodexAppProgressReport(completedState(), { dataDir });
+    const state = Object.assign(completedState(), { summaryEntryIndexes: [1, 2] });
+    const report = writeCodexAppProgressReport(state, { dataDir });
     const html = readFileSync(report.filePath, 'utf8');
 
     expect(report.reportId).toMatch(/^[a-f0-9]{32}$/);
@@ -101,6 +102,14 @@ describe('Codex App 完整过程 HTML', () => {
     expect(html).toContain('第二条完整证据');
     expect(html).toContain('<strong>17:10</strong>');
     expect(html).toContain('<h3>过程记录 01</h3>');
+    expect(html).toContain('id="timeline-mode-summary"');
+    expect(html).toContain('id="timeline-mode-all"');
+    expect(html).toContain('for="timeline-mode-summary">展示摘要 <span>2</span>');
+    expect(html).toContain('for="timeline-mode-all">展示所有 <span>3</span>');
+    expect(html).toContain('id="timeline-mode-summary" name="timeline-mode" type="radio" checked');
+    expect(html).toContain('timeline-item timeline-detail-event');
+    expect(html).toContain('timeline-item timeline-summary-event');
+    expect(html).toContain('#timeline-mode-summary:checked~.timeline .timeline-detail-event{display:none}');
     expect(html).toMatch(
       /<strong>17:28<\/strong><span>记录 03<\/span>[\s\S]*本轮已完成[\s\S]*<strong>17:12<\/strong><span>记录 02<\/span>[\s\S]*第二条完整证据[\s\S]*<strong>17:10<\/strong><span>记录 01<\/span>[\s\S]*第一条完整证据/,
     );
@@ -109,6 +118,17 @@ describe('Codex App 完整过程 HTML', () => {
     expect(html.indexOf('<h2>最终结论</h2>')).toBeLessThan(
       html.indexOf('>产物与链接<'),
     );
+  });
+
+  it('旧状态缺少摘要索引时不隐藏任何历史记录', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'botmux-progress-report-legacy-state-'));
+    roots.push(dataDir);
+
+    const report = writeCodexAppProgressReport(completedState(), { dataDir });
+    const html = readFileSync(report.filePath, 'utf8');
+
+    expect(html).toContain('for="timeline-mode-summary">展示摘要 <span>3</span>');
+    expect(html).not.toContain('timeline-item timeline-detail-event');
   });
 
   it('只把固定格式的报告路由映射到数据目录', () => {

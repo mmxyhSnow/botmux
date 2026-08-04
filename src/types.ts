@@ -155,6 +155,8 @@ export interface CodexAppProgressCardSessionState {
   updatedAtMs?: number;
   /** AI 显式上报的当前任务看板。 */
   overview?: CodexAppProgressOverview;
+  /** 完整记录中应进入摘要视图的零基索引；缺失表示旧状态，保守展示全部。 */
+  summaryEntryIndexes?: number[];
   /** 当前任务对应的最终 assistant 回复；完整过程页据此保留结论和产物链接。 */
   finalResponse?: string;
   /** 主卡是否展开更多近期证据；完整历史仍使用独立分页卡。 */
