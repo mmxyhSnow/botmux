@@ -7,6 +7,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'nod
 import { isAbsolute, join } from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { appendReleaseTimeline } from '../core/custom-release-timeline.js';
+import type { CustomReleaseChangeKind } from './custom-release-change-kind.js';
 
 export interface CustomReleaseChangeStats {
   commits: number;
@@ -19,6 +20,8 @@ export interface CustomReleaseItem {
   title: string;
   mergeCommit: string;
   sourceHead: string;
+  /** 可审计的源分支或 Conventional Commit 类型；旧事件允许缺省。 */
+  kind?: CustomReleaseChangeKind;
 }
 
 export interface CustomReleaseEvent {
@@ -150,7 +153,13 @@ function parseEvent(value: unknown): CustomReleaseEvent {
     || value.cumulative.length > 100
   ) throw new Error('自定义发版事件字段无效');
   for (const item of value.cumulative) {
-    if (!plain(item) || !shortText(item.title, 160) || !sha(item.mergeCommit) || !sha(item.sourceHead)) {
+    if (
+      !plain(item)
+      || !shortText(item.title, 160)
+      || !sha(item.mergeCommit)
+      || !sha(item.sourceHead)
+      || (item.kind !== undefined && !['feat', 'bugfix', 'opt'].includes(String(item.kind)))
+    ) {
       throw new Error('自定义发版累计项无效');
     }
   }

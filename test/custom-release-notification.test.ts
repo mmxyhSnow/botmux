@@ -81,6 +81,18 @@ describe('custom release event store', () => {
     }))).toThrow(/事件 ID 冲突/);
   });
 
+  it('拒绝累计项中的未知类型标签', () => {
+    const { store } = storeWithEvent();
+    expect(() => store.enqueue(event('2', {
+      cumulative: [{
+        title: '未知改动',
+        mergeCommit: '2'.repeat(40),
+        sourceHead: '3'.repeat(40),
+        kind: 'other',
+      } as any],
+    }))).toThrow(/累计项无效/);
+  });
+
   it('同一事件重放时忽略新的采集时间并保留首次时间', () => {
     const { store } = storeWithEvent();
     const replayed = store.enqueue(event('1', { createdAt: '2026-07-31T09:00:00.000Z' }));
@@ -113,6 +125,41 @@ describe('custom release event store', () => {
 });
 
 describe('custom release summary card', () => {
+  it('在累计改动标题前渲染 feat、bugfix、opt 小标签', () => {
+    const { record } = storeWithEvent();
+    const card = buildCustomReleaseSummaryCard({
+      ...record,
+      event: {
+        ...record.event,
+        cumulative: [
+          { title: '新增能力', mergeCommit: '1'.repeat(40), sourceHead: '1'.repeat(40), kind: 'feat' },
+          { title: '修复问题', mergeCommit: '2'.repeat(40), sourceHead: '2'.repeat(40), kind: 'bugfix' },
+          { title: '优化体验', mergeCommit: '3'.repeat(40), sourceHead: '3'.repeat(40), kind: 'opt' },
+        ],
+      },
+    });
+    const table = JSON.parse(card).body.elements.find((element: any) => element.tag === 'table');
+    expect(table.columns).toEqual([
+      expect.objectContaining({ name: 'kind', data_type: 'options', width: '80px' }),
+      expect.objectContaining({ name: 'change', data_type: 'lark_md' }),
+    ]);
+    expect(table.rows).toEqual([
+      { kind: [{ text: 'feat', color: 'blue' }], change: expect.stringContaining('新增能力') },
+      { kind: [{ text: 'bugfix', color: 'red' }], change: expect.stringContaining('修复问题') },
+      { kind: [{ text: 'opt', color: 'green' }], change: expect.stringContaining('优化体验') },
+    ]);
+  });
+
+  it('旧事件缺少 kind 时按当前 source ref 补判标签', () => {
+    const { record } = storeWithEvent();
+    const card = JSON.parse(buildCustomReleaseSummaryCard(record));
+    const table = card.body.elements.find((element: any) => element.tag === 'table');
+    expect(table.rows[0]).toEqual({
+      kind: [{ text: 'opt', color: 'green' }],
+      change: expect.stringContaining('接入版本制与 Tag 发版流'),
+    });
+  });
+
   it('使用 JSON 2.0 回调按钮并把冻结放在卡片末尾', () => {
     const { record } = storeWithEvent();
     const card = JSON.parse(buildCustomReleaseSummaryCard({

@@ -1,5 +1,13 @@
 /** 自定义待发版私聊汇总卡：展示本次合入、版本累计和 HEAD 绑定冻结入口。 */
-import type { CustomReleaseEventRecord } from '../../services/custom-release-event.js';
+import { execFileSync } from 'node:child_process';
+import type {
+  CustomReleaseEventRecord,
+  CustomReleaseItem,
+} from '../../services/custom-release-event.js';
+import {
+  classifyCustomReleaseChange,
+  type CustomReleaseChangeKind,
+} from '../../services/custom-release-change-kind.js';
 import { releaseTimelineDurations } from '../../core/custom-release-timeline.js';
 
 function code(value: string, length = value.length): string {
@@ -70,13 +78,82 @@ function statusLines(record: CustomReleaseEventRecord): string[] {
   return ['尚未冻结、未推进生产、未部署。'];
 }
 
-function cumulativeLines(record: CustomReleaseEventRecord): string[] {
-  const items = record.event.cumulative.slice(0, 10).map((item, index) =>
-    `${index + 1}. ${text(item.title)} · ${code(item.mergeCommit, 8)}`);
-  if (record.event.cumulative.length > 10) {
-    items.push(`…另有 ${record.event.cumulative.length - 10} 项，请查看完整差异。`);
+const CHANGE_TAGS: Record<CustomReleaseChangeKind, { label: string; color: string }> = {
+  feat: { label: 'feat', color: 'blue' },
+  bugfix: { label: 'bugfix', color: 'red' },
+  opt: { label: 'opt', color: 'green' },
+};
+const legacyKindCache = new Map<string, CustomReleaseChangeKind | null>();
+
+function sourceSubject(record: CustomReleaseEventRecord, item: CustomReleaseItem): string | undefined {
+  try {
+    return execFileSync('git', ['show', '-s', '--format=%s', item.sourceHead], {
+      cwd: record.event.repoRoot,
+      encoding: 'utf8',
+      timeout: 1_000,
+      maxBuffer: 16 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return undefined;
   }
-  return items.length > 0 ? items : ['当前窗口没有可识别的 merge 项。'];
+}
+
+function changeKind(record: CustomReleaseEventRecord, item: CustomReleaseItem): CustomReleaseChangeKind | undefined {
+  if (item.kind) return item.kind;
+  const key = `${record.event.repoRoot}\0${item.sourceHead}`;
+  const cached = legacyKindCache.get(key);
+  if (cached !== undefined) return cached ?? undefined;
+  let inferred = classifyCustomReleaseChange({
+    sourceRef: item.sourceHead === record.event.source.head ? record.event.source.ref : undefined,
+  });
+  if (!inferred) {
+    inferred = classifyCustomReleaseChange({
+      sourceSubject: sourceSubject(record, item),
+      title: item.title,
+    });
+  }
+  // 旧事件只在首次绘制时读取 Git；缓存有界，避免状态回写反复启动子进程。
+  if (legacyKindCache.size >= 512) legacyKindCache.clear();
+  legacyKindCache.set(key, inferred ?? null);
+  return inferred;
+}
+
+/**
+ * 正文 Markdown 不支持 text_tag；使用 JSON 2.0 table 的 options 列渲染官方小标签。
+ * 第二列继续使用 lark_md，保留编号、标题和短 SHA 的原有信息密度。
+ */
+function cumulativeTable(record: CustomReleaseEventRecord): Record<string, unknown> | undefined {
+  const rows = record.event.cumulative.slice(0, 10).map((item, index) => {
+    const kind = changeKind(record, item);
+    const tag = kind ? CHANGE_TAGS[kind] : undefined;
+    return {
+      kind: tag ? [{ text: tag.label, color: tag.color }] : [],
+      change: `${index + 1}. ${text(item.title)} · ${code(item.mergeCommit, 8)}`,
+    };
+  });
+  if (rows.length === 0) return undefined;
+  return {
+    tag: 'table',
+    element_id: 'release_change_types',
+    page_size: rows.length,
+    row_height: 'auto',
+    row_max_height: '88px',
+    margin: '0px',
+    header_style: {
+      text_align: 'left',
+      text_size: 'normal',
+      background_style: 'none',
+      text_color: 'grey',
+      bold: false,
+      lines: 1,
+    },
+    columns: [
+      { name: 'kind', data_type: 'options', width: '80px', vertical_align: 'top' },
+      { name: 'change', data_type: 'lark_md', width: 'auto', vertical_align: 'top' },
+    ],
+    rows,
+  };
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -146,7 +223,7 @@ export function buildCustomReleaseSummaryCard(record: CustomReleaseEventRecord):
   const current = event.current;
   const totals = event.totals;
   const compareUrl = `https://github.com/${event.repository}/compare/${event.release.baseHead}...${event.integration.head}`;
-  const body = [
+  const intro = [
     '**本次合入**',
     `- ${text(event.source.title)}`,
     `- 来源：${code(event.source.ref)} @ ${code(event.source.head, 8)}`,
@@ -154,7 +231,14 @@ export function buildCustomReleaseSummaryCard(record: CustomReleaseEventRecord):
     `- 规模：${current.commits} commits，${current.files} files，${signed(current.insertions)}/${signed(-current.deletions)}`,
     '',
     '**当前版本累计改动**',
-    ...cumulativeLines(record),
+  ].join('\n');
+  const table = cumulativeTable(record);
+  const status = [
+    ...(table
+      ? record.event.cumulative.length > 10
+        ? [`…另有 ${record.event.cumulative.length - 10} 项，请查看完整差异。`]
+        : []
+      : ['当前窗口没有可识别的 merge 项。']),
     '',
     '**发布状态**',
     `- 基线：${code(event.release.baseRef)} @ ${code(event.release.baseHead, 8)}`,
@@ -164,7 +248,9 @@ export function buildCustomReleaseSummaryCard(record: CustomReleaseEventRecord):
     ...timelineLines(record),
     `[查看完整差异](${compareUrl})`,
   ].join('\n');
-  const elements: Record<string, unknown>[] = [{ tag: 'markdown', content: body }];
+  const elements: Record<string, unknown>[] = [{ tag: 'markdown', content: intro }];
+  if (table) elements.push(table);
+  elements.push({ tag: 'markdown', content: status });
   const button = actionButton(record);
   if (button) elements.push(button);
   const template = record.state.status === 'frozen' || record.state.status === 'promoted' || record.state.status === 'deployed'

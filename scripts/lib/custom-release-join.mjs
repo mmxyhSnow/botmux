@@ -235,19 +235,49 @@ function taggedHeads(repoRoot) {
   return tags.map(ref => ({ ref, head: gitText(repoRoot, ['rev-parse', `${ref}^{commit}`]) }));
 }
 
+/** 脚本侧按源分支与 Conventional Commit 归一化卡片小标签。 */
+export function customReleaseChangeKind({ sourceRef = '', sourceSubject = '', title = '' }) {
+  const mapping = {
+    feat: 'feat', feature: 'feat',
+    fix: 'bugfix', bugfix: 'bugfix', hotfix: 'bugfix',
+    opt: 'opt', perf: 'opt', refactor: 'opt',
+  };
+  const branchToken = String(sourceRef).toLowerCase().match(
+    /(?:^|\/)(feat|feature|fix|bugfix|hotfix|opt|perf|refactor)(?:[\/_-]|$)/,
+  )?.[1];
+  const subjectToken = [sourceSubject, title]
+    .map(value => String(value).trim().toLowerCase().match(
+      /^(feat|feature|fix|bugfix|hotfix|opt|perf|refactor)(?:\([^)]*\))?!?:/,
+    )?.[1])
+    .find(Boolean);
+  return mapping[branchToken || subjectToken] || undefined;
+}
+
+function sourceRefFromMerge(repoRoot, mergeCommit, current) {
+  if (mergeCommit === current.mergeCommit) return `origin/${current.sourceBranch}`;
+  return gitText(repoRoot, ['log', '-1', '--format=%B', mergeCommit])
+    .match(/^Source-Ref:\s*(\S+)\s*$/m)?.[1] || '';
+}
+
 function changeItems(repoRoot, baseHead, integrationHead, current) {
   const commits = gitText(repoRoot, ['rev-list', '--first-parent', '--merges', '--reverse', `${baseHead}..${integrationHead}`])
     .split(/\r?\n/).filter(Boolean);
   return commits.slice(-100).map(mergeCommit => {
     const parents = gitText(repoRoot, ['rev-list', '--parents', '-n', '1', mergeCommit]).split(/\s+/).slice(1);
     const sourceHead = parents[1] || mergeCommit;
+    const sourceSubject = gitText(repoRoot, ['log', '-1', '--format=%s', sourceHead]);
     let title = mergeCommit === current.mergeCommit
       ? current.title
       : gitText(repoRoot, ['log', '-1', '--format=%s', mergeCommit]).replace(/^merge\(release\):\s*/, '');
     if (/^merge: 加入待发版/.test(title) && parents[1]) {
       title = gitText(repoRoot, ['log', '-1', '--format=%s', parents[1]]);
     }
-    return { title: title.slice(0, 160), mergeCommit, sourceHead };
+    const kind = customReleaseChangeKind({
+      sourceRef: sourceRefFromMerge(repoRoot, mergeCommit, current),
+      sourceSubject,
+      title,
+    });
+    return { title: title.slice(0, 160), mergeCommit, sourceHead, ...(kind ? { kind } : {}) };
   });
 }
 
