@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   customReleaseEventId,
+  customReleaseChangeKind,
   executeCustomReleaseJoin,
   inheritReleaseJoinTransportConfig,
   joinCustomRelease,
@@ -81,6 +82,13 @@ describe('custom release join helpers', () => {
     });
   });
 
+  it('按源分支与 Conventional Commit 归一化累计改动类型', () => {
+    expect(customReleaseChangeKind({ sourceRef: 'origin/feat/card-tag' })).toBe('feat');
+    expect(customReleaseChangeKind({ sourceRef: 'origin/bugfix/card-tag' })).toBe('bugfix');
+    expect(customReleaseChangeKind({ sourceSubject: 'refactor(card): 调整标签' })).toBe('opt');
+    expect(customReleaseChangeKind({ title: '无法判断的中文标题' })).toBeUndefined();
+  });
+
   it('同仓库同 integration HEAD 生成稳定幂等键', () => {
     const first = customReleaseEventId('mmxyhSnow/botmux', 'a'.repeat(40));
     expect(first).toBe(customReleaseEventId('mmxyhSnow/botmux', 'a'.repeat(40)));
@@ -134,6 +142,9 @@ describe('custom release join helpers', () => {
       title: '增加待发版私聊汇总卡',
     });
     expect(record.event.current).toMatchObject({ commits: 2, files: 1, insertions: 1, deletions: 0 });
+    expect(record.event.cumulative).toEqual([
+      expect.objectContaining({ sourceHead: fixture.sourceHead, kind: 'opt' }),
+    ]);
 
     record.event.createdAt = '2020-01-01T00:00:00.000Z';
     writeFileSync(join(
