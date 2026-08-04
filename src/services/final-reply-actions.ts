@@ -20,14 +20,15 @@ const MAX_LABEL_LENGTH = 20;
 const MAX_PROMPT_LENGTH = 300;
 const FORBIDDEN_ACTION_PATTERN =
   /(?:删除|清空|强推|强制推送|重置|回滚|授权|提权|管理员权限|支付|付款|转账|rm\s+-rf|git\s+reset\s+--hard|push\s+--force|force[- ]?push|delete|drop\s+(?:table|database)|truncate|rollback|grant\s+permission|payment)/i;
-// 状态变更关键词：合入、部署、上线、发布、重启及其英文形式。用 `g` 逐个定位以便判定否定语境。
+// 状态变更关键词：冻结、合入、部署、上线、发布、重启及其英文形式。用 `g` 逐个定位以便判定否定语境。
 const AUTHORIZATION_KEYWORD_PATTERN =
-  /合入|部署|上线|发布|重启|\bmerge\b|\bdeploy\b|\brelease\b|\brestart\b/gi;
+  /冻结|合入|部署|上线|发布|重启|\bfreeze\b|\bmerge\b|\bdeploy\b|\brelease\b|\brestart\b/gi;
 // 子句强分隔符：跨过它就不再算同一句，避免否定词误跨句作用到后面的肯定关键词。
-const CLAUSE_DELIMITER = /[。！？!?；;，,、\n\r：:]/;
+// 顿号是同一否定列表内的连接符，不能切断“不冻结、部署或重启”里的否定范围。
+const CLAUSE_DELIMITER = /[。！？!?；;，,\n\r：:]/;
 // 关键词紧邻前缀里的“连接词/其它关键词/空白”噪声；剥掉后才能露出真正的否定词尾。
 const AUTHORIZATION_TAIL_NOISE =
-  /(?:合入|部署|上线|发布|重启|merge|deploy|release|restart|and|or|[、，,和与及或\/\s])+$/i;
+  /(?:冻结|合入|部署|上线|发布|重启|freeze|merge|deploy|release|restart|and|or|[、，,和与及或\/\s])+$/i;
 // 否定词尾：命中说明该关键词处于“暂不/不/无需…”等否定语境，不构成真正的状态变更意图。
 const NEGATION_SUFFIX =
   /(?:暂缓|暂停|暂不|先不|不再|不会|不予|不用|不要|无需|无须|勿|别|未|非|不|no|not|without|never|do(?:es)?\s*n['’]?t|do\s+not|won['’]?t)\s*$/i;
@@ -73,7 +74,7 @@ function keywordOccurrenceIsNegated(prefix: string): boolean {
 }
 
 /**
- * 是否存在“肯定语气”的状态变更（合入/部署/上线/发布/重启）。
+ * 是否存在“肯定语气”的状态变更（冻结/合入/部署/上线/发布/重启）。
  * 逐个关键词判定：只要有一处不在否定语境里，就需要显式授权；
  * 全部处于否定语境（如“暂不合入 custom/dev，不部署或重启”）时返回 false，普通动作即可放行。
  */

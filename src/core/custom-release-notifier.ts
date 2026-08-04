@@ -95,6 +95,7 @@ export class CustomReleaseNotifier {
           messageId,
           lastError: undefined,
         });
+        await this.resultNotifier.refreshDeliveredCard(delivered);
         await this.expirePreviousCard(delivered, previous);
         this.log(`delivered ${attempt.event.eventId.slice(0, 12)} message=${messageId}`);
       } catch (error) {

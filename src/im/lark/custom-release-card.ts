@@ -149,8 +149,8 @@ function cumulativeTable(record: CustomReleaseEventRecord): Record<string, unkno
       lines: 1,
     },
     columns: [
-      { name: 'kind', data_type: 'options', width: '80px', vertical_align: 'top' },
-      { name: 'change', data_type: 'lark_md', width: 'auto', vertical_align: 'top' },
+      { name: 'kind', display_name: '类型', data_type: 'options', width: '80px', vertical_align: 'top' },
+      { name: 'change', display_name: '改动', data_type: 'lark_md', width: 'auto', vertical_align: 'top' },
     ],
     rows,
   };
@@ -164,7 +164,8 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 function timelineLines(record: CustomReleaseEventRecord): string[] {
-  const entries = releaseTimelineDurations(record.state.timeline, record.state.updatedAt).slice(-8);
+  // 最后一项是当前阶段，没有结束时间；只展示已完成阶段，避免把“待冻结”等当前状态误写成 0s。
+  const entries = releaseTimelineDurations(record.state.timeline, record.state.updatedAt).slice(0, -1).slice(-8);
   if (entries.length === 0) return [];
   return [
     '',
@@ -244,8 +245,10 @@ export function buildCustomReleaseSummaryCard(record: CustomReleaseEventRecord):
     `- 基线：${code(event.release.baseRef)} @ ${code(event.release.baseHead, 8)}`,
     `- 待发：${code(event.integration.branch)} @ ${code(event.integration.head, 8)}`,
     `- 累计：${totals.commits} commits，${totals.files} files，${signed(totals.insertions)}/${signed(-totals.deletions)}`,
+    '',
     ...statusLines(record),
     ...timelineLines(record),
+    '',
     `[查看完整差异](${compareUrl})`,
   ].join('\n');
   const elements: Record<string, unknown>[] = [{ tag: 'markdown', content: intro }];

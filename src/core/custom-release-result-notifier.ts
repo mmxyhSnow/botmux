@@ -30,6 +30,17 @@ export class CustomReleaseResultNotifier {
     await this.syncCard(record);
   }
 
+  /** 首次发送完成后用真实投递终点重绘；失败只影响展示，不能降级已经可靠送达的状态。 */
+  async refreshDeliveredCard(record: CustomReleaseEventRecord): Promise<void> {
+    const messageId = record.state.messageId;
+    if (record.state.status !== 'delivered' || !messageId) return;
+    try {
+      await this.deps.updateCard(messageId, buildCustomReleaseSummaryCard(record));
+    } catch (error) {
+      this.deps.log(`delivered card refresh failed ${record.event.eventId.slice(0, 12)}: ${errorText(error)}`);
+    }
+  }
+
   private async syncCard(record: CustomReleaseEventRecord, force = false): Promise<void> {
     const { status, messageId } = record.state;
     if (!messageId || (!force && record.state.notifiedStatus === status)) return;
