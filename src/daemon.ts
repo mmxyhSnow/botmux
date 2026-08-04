@@ -19453,7 +19453,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
           intent.expectedHead,
         ),
         sendCard: (openId, card) => ownerNoticeTransport.sendCard(openId, card).then(() => undefined),
-        upsertCard: (openId, card) => deliverOwnerNotice({
+        deliverCard: (openId, card) => deliverOwnerNotice({
           dataDir: config.session.dataDir,
           larkAppId: cfg.larkAppId,
           recipientOpenId: openId,

@@ -143,8 +143,8 @@ export interface RestartReportWiring {
   dashboardLocalUrl?: string | undefined;
   /** Send the interactive card as a p2p DM to the owner. */
   sendCard: (openId: string, cardJson: string) => Promise<void>;
-  /** 生产 wiring 用持久化槽位更新上一张重启卡；测试或旧调用可继续只提供 sendCard。 */
-  upsertCard?: (openId: string, cardJson: string) => Promise<void>;
+  /** 生产 wiring 通过已登记的 owner 通知策略投递；测试或旧调用可继续只提供 sendCard。 */
+  deliverCard?: (openId: string, cardJson: string) => Promise<void>;
   /** 源码同步重启后的运行态验收；缺省时明确告警且不创建 deploy 标签。 */
   finalizeSourceDeployment?: (intent: SourceDeploymentIntent) => Promise<{ deployTag: string }>;
   githubAuth?: GithubAuthResolveOptions;
@@ -199,7 +199,7 @@ export async function sendRestartReportIfPending(w: RestartReportWiring): Promis
     changelog,
   }, locale);
   try {
-    await (w.upsertCard ?? w.sendCard)(w.ownerOpenId, card);
+    await (w.deliverCard ?? w.sendCard)(w.ownerOpenId, card);
     log(`restart-report sent (kind=${intent.kind}, sessions=${sessionCount})`);
   } catch (e) {
     log(`restart-report send failed: ${e instanceof Error ? e.message : e}`);

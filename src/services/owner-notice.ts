@@ -2,7 +2,8 @@
  * Owner/admin 主动通知唯一生产入口。
  *
  * 业务模块只能选择已登记的通知策略并提交标准内容或完整交互卡；本服务统一完成
- * 卡片校验、同类 messageId 复用、跨进程串行化和飞书传输，避免新增旁路退化成文本气泡。
+ * 卡片校验、按策略选择逐次新发或同类 messageId 复用、跨进程串行化和飞书传输，
+ * 避免新增旁路退化成文本气泡。
  */
 import { createHash } from 'node:crypto';
 import { sendUserMessage, updateMessage } from '../im/lark/client.js';
@@ -17,24 +18,40 @@ import {
 
 type OwnerNoticeCardMode = 'standard' | 'raw';
 type OwnerNoticeScopeMode = 'global' | 'scoped';
+type OwnerNoticeDeliveryMode = 'fresh' | 'upsert';
 
 interface OwnerNoticePolicy {
   kind: string;
   cardMode: OwnerNoticeCardMode;
   scopeMode: OwnerNoticeScopeMode;
+  deliveryMode: OwnerNoticeDeliveryMode;
 }
 
 /** 新增主动通知必须先在这里登记卡片形态和复用粒度。 */
 export const OWNER_NOTICE_POLICIES = {
-  'allowed-users-resolve': { kind: 'allowed-users-resolve', cardMode: 'standard', scopeMode: 'scoped' },
-  'permission-health': { kind: 'permission-health', cardMode: 'standard', scopeMode: 'scoped' },
-  'group-join-permission': { kind: 'group-join-permission', cardMode: 'standard', scopeMode: 'scoped' },
-  'production-skill-sync': { kind: 'production-skill-sync', cardMode: 'standard', scopeMode: 'global' },
-  restart: { kind: 'restart', cardMode: 'raw', scopeMode: 'global' },
-  'host-overload': { kind: 'host-overload', cardMode: 'raw', scopeMode: 'global' },
-  'daemon-offline': { kind: 'daemon-offline', cardMode: 'standard', scopeMode: 'global' },
-  'cli-runtime-update': { kind: 'cli-runtime-update', cardMode: 'raw', scopeMode: 'scoped' },
-  'doc-comment-audit': { kind: 'doc-comment-audit', cardMode: 'standard', scopeMode: 'scoped' },
+  'allowed-users-resolve': {
+    kind: 'allowed-users-resolve', cardMode: 'standard', scopeMode: 'scoped', deliveryMode: 'upsert',
+  },
+  'permission-health': {
+    kind: 'permission-health', cardMode: 'standard', scopeMode: 'scoped', deliveryMode: 'upsert',
+  },
+  'group-join-permission': {
+    kind: 'group-join-permission', cardMode: 'standard', scopeMode: 'scoped', deliveryMode: 'upsert',
+  },
+  'production-skill-sync': {
+    kind: 'production-skill-sync', cardMode: 'standard', scopeMode: 'global', deliveryMode: 'upsert',
+  },
+  restart: { kind: 'restart', cardMode: 'raw', scopeMode: 'global', deliveryMode: 'fresh' },
+  'host-overload': { kind: 'host-overload', cardMode: 'raw', scopeMode: 'global', deliveryMode: 'upsert' },
+  'daemon-offline': {
+    kind: 'daemon-offline', cardMode: 'standard', scopeMode: 'global', deliveryMode: 'upsert',
+  },
+  'cli-runtime-update': {
+    kind: 'cli-runtime-update', cardMode: 'raw', scopeMode: 'scoped', deliveryMode: 'upsert',
+  },
+  'doc-comment-audit': {
+    kind: 'doc-comment-audit', cardMode: 'standard', scopeMode: 'scoped', deliveryMode: 'upsert',
+  },
 } as const satisfies Record<string, OwnerNoticePolicy>;
 
 export type OwnerNoticePolicyId = keyof typeof OWNER_NOTICE_POLICIES;
@@ -158,16 +175,30 @@ export function createOwnerNoticeTransport(
   };
 }
 
-/** 按策略更新同类原卡；旧卡不可更新时才创建替代卡并原子保存新 messageId。 */
+/** 按策略逐次新发，或更新同类原卡并在失败时创建替代卡。 */
 export async function deliverOwnerNotice(
   input: DeliverOwnerNoticeInput,
 ): Promise<DeliverOwnerNoticeResult> {
+  const policy = OWNER_NOTICE_POLICIES[input.policy];
   const kind = scopedKind(input.policy, input.scope);
   const cardJson = resolveCard(input.policy, input.card);
   const transport = input.transport ?? createOwnerNoticeTransport(
     input.larkAppId,
     { timeoutMs: input.sendTimeoutMs },
   );
+  if (policy.deliveryMode === 'fresh') {
+    // 重启 intent 已保证每次真实重启最多消费一次；这里不传稳定 uuid，避免飞书把两次
+    // 内容相同的真实重启误判成重复投递，同时确保新卡出现在聊天最新位置。
+    const messageId = await transport.sendCard(input.recipientOpenId, cardJson);
+    const result: DeliverOwnerNoticeResult = {
+      action: 'sent',
+      messageId,
+      policy: input.policy,
+      kind,
+    };
+    input.log?.(`policy=${input.policy} kind=${kind} action=${result.action} message=${result.messageId}`);
+    return result;
+  }
   const result = await upsertOwnerNoticeCard({
     dataDir: input.dataDir,
     kind,
