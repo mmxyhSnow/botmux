@@ -3,8 +3,13 @@ import type {
   CodexAppProgressCardPhase,
   CodexAppProgressCardSessionState,
 } from '../types.js';
-import { countProgressCardEntries } from './codex-app-progress-pagination.js';
 import { renderCodexAppProgressCard } from './codex-app-progress-card-renderer.js';
+import {
+  appendCodexAppProgressEntry,
+  cloneCodexAppProgressState,
+  isCodexAppProgressSummaryEvent,
+  restoreCodexAppProgressState,
+} from './codex-app-progress-state.js';
 import { parseCodexAppProgress } from './codex-app-progress-structure.js';
 
 export { renderCodexAppProgressCard } from './codex-app-progress-card-renderer.js';
@@ -37,33 +42,6 @@ function timestampedContent(content: string, now: Date): string {
   return `[${PROGRESS_TIME_FORMATTER.format(now)}] ${content}`;
 }
 
-function cloneState(state: CodexAppProgressCardSessionState): CodexAppProgressCardSessionState {
-  return {
-    ...state,
-    acceptedTurnIds: [...state.acceptedTurnIds],
-    pendingTurns: state.pendingTurns.map(turn => ({ ...turn })),
-    archivedPages: state.archivedPages?.map(page => ({ ...page })),
-    overview: state.overview
-      ? {
-          ...state.overview,
-          completed: [...state.overview.completed],
-          evidence: state.overview.evidence ? [...state.overview.evidence] : undefined,
-          delivery: state.overview.delivery ? [...state.overview.delivery] : undefined,
-          risks: state.overview.risks ? [...state.overview.risks] : undefined,
-        }
-      : undefined,
-  };
-}
-
-/** 把旧单页状态补成可继续写入的第 1 页，不要求离线迁移。 */
-function restoreState(state: CodexAppProgressCardSessionState): CodexAppProgressCardSessionState {
-  const restored = cloneState(state);
-  restored.pageNumber ??= 1;
-  restored.currentEntryCount ??= countProgressCardEntries(restored.content);
-  restored.archivedPages ??= [];
-  return restored;
-}
-
 function terminalText(phase: Exclude<CodexAppProgressCardPhase, 'running'>): string {
   if (phase === 'completed') return '本轮已完成。';
   if (phase === 'failed') return '本轮处理失败。';
@@ -86,14 +64,14 @@ export class CodexAppProgressCard {
     private readonly operations: CodexAppProgressCardOperations,
     initialState?: CodexAppProgressCardSessionState,
   ) {
-    this.state = initialState ? restoreState(initialState) : undefined;
+    this.state = initialState ? restoreCodexAppProgressState(initialState) : undefined;
     if (this.state && operations.sessionId && !this.state.sessionId) {
       this.state.sessionId = operations.sessionId;
     }
   }
 
   snapshot(): CodexAppProgressCardSessionState | undefined {
-    return this.state ? cloneState(this.state) : undefined;
+    return this.state ? cloneCodexAppProgressState(this.state) : undefined;
   }
 
   /** 收到消息时先持久化 running，再立即创建卡片；失败时保留待重试状态。 */
@@ -126,7 +104,11 @@ export class CodexAppProgressCard {
       if (!pending) return;
       if (current.phase === 'running') {
         current.phase = 'completed';
-        this.appendEntry(timestampedContent(terminalText('completed'), this.now()));
+        appendCodexAppProgressEntry(
+          current,
+          timestampedContent(terminalText('completed'), this.now()),
+          true,
+        );
         this.persist();
         await this.syncCard();
       }
@@ -167,9 +149,16 @@ export class CodexAppProgressCard {
       if (this.state.lastFingerprint === nextFingerprint) return;
       this.state.lastFingerprint = nextFingerprint;
       const now = this.now();
+      const summaryEvent = parsed.overview
+        ? isCodexAppProgressSummaryEvent(this.state.overview, parsed.overview)
+        : false;
       if (parsed.title) this.state.title = parsed.title;
       if (parsed.overview) this.state.overview = parsed.overview;
-      if (trimmed) this.appendEntry(timestampedContent(trimmed, now));
+      if (trimmed) appendCodexAppProgressEntry(
+        this.state,
+        timestampedContent(trimmed, now),
+        summaryEvent,
+      );
       this.state.updatedAtMs = now.getTime();
       this.persist();
       await this.syncCard();
@@ -199,7 +188,11 @@ export class CodexAppProgressCard {
       ) return;
       this.state.phase = phase;
       const now = this.now();
-      this.appendEntry(timestampedContent(terminalText(phase), now));
+      appendCodexAppProgressEntry(
+        this.state,
+        timestampedContent(terminalText(phase), now),
+        true,
+      );
       this.state.updatedAtMs = now.getTime();
       this.persist();
       await this.syncCard();
@@ -241,23 +234,12 @@ export class CodexAppProgressCard {
       content: timestampedContent(INITIAL_CONTENT, now),
       startedAtMs: now.getTime(),
       updatedAtMs: now.getTime(),
+      summaryEntryIndexes: [],
       pageNumber: 1,
       currentEntryCount: 1,
       archivedPages: [],
     };
     this.persist();
-  }
-
-  /** 主卡只保存完整历史文本并复用同一消息；展示和历史分页由渲染层负责。 */
-  private appendEntry(entry: string): void {
-    if (!this.state) return;
-    const entryCount = this.state.currentEntryCount
-      ?? countProgressCardEntries(this.state.content);
-    this.state.content = this.state.content
-      ? `${this.state.content}\n\n${entry}`
-      : entry;
-    this.state.pageNumber = 1;
-    this.state.currentEntryCount = entryCount + 1;
   }
 
   /** 每个新增事件只读取一次时钟，保证持久化与卡片展示一致。 */
@@ -266,14 +248,14 @@ export class CodexAppProgressCard {
   }
 
   private persist(): void {
-    if (this.state) this.operations.persist(cloneState(this.state));
+    if (this.state) this.operations.persist(cloneCodexAppProgressState(this.state));
   }
 
   /** 报告失败不能阻断主卡；稳定 URL 会在下一次状态同步时再次覆盖刷新。 */
   private async publishCurrentReport(): Promise<string | undefined> {
     if (!this.state) return;
     try {
-      return await this.operations.publishReport?.(cloneState(this.state));
+      return await this.operations.publishReport?.(cloneCodexAppProgressState(this.state));
     } catch {
       // 报告是主卡的增强入口，写入失败不得阻断用户看到最新任务状态。
       return undefined;
