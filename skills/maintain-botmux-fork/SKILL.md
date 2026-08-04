@@ -34,7 +34,8 @@ description: Maintain the mmxyhSnow/botmux custom/dev integration and custom/pro
   这是合入状态变更，`botmux-actions` 必须带 `"authorization":"explicit"`。
 - `暂不加入`：保持 `custom/dev`、`custom/prod` 和版本标签不变，继续保留独立开发分支。
 
-两个 action 的 prompt 必须包含开发分支、commit、目标 `custom/dev` 和待发版本，不能只写“继续”。
+两个 action 必须使用 v2 互斥选项协议；各自的 `target`、`scope`、`acceptance` 必须包含开发分支、
+commit、目标 `custom/dev`、待发版本及完成后的回读条件，不能只写“继续”。
 用户没有选择前，不得默认加入待发版。
 
 用户授权加入后必须走 `pnpm release:join` 统一入口。远端 `custom/dev` push 并回读成功后，primary daemon
@@ -43,7 +44,7 @@ description: Maintain the mmxyhSnow/botmux custom/dev integration and custom/pro
 部署和重启仍是各自独立授权。
 
 ```html
-<!--botmux-actions:{"actions":[{"label":"加入待发版 3.7.1-custom.3","prompt":"请核对开发分支 refactor/example 的远端 HEAD 仍为 <commit>，将该提交正常合入 custom/dev，push 后回读远端 HEAD 和待发版本；不要推进 custom/prod 或部署。","authorization":"explicit"},{"label":"暂不加入","prompt":"请保持 refactor/example@<commit> 为独立开发分支，确认 custom/dev、custom/prod 和版本标签均不变。"}]}-->
+<!--botmux-actions:{"version":2,"relationship":"alternatives","actions":[{"label":"加入待发版 3.7.1-custom.3","target":"核对 refactor/example 的远端 HEAD 仍为 <commit>，再将该提交正常合入 custom/dev","scope":"仅处理 refactor/example@<commit>、custom/dev 和待发版 3.7.1-custom.3，不推进 custom/prod 或部署","acceptance":"push 后回读 origin/custom/dev HEAD 和待发版本，并报告私聊通知排队状态","authorization":"explicit"},{"label":"暂不加入","target":"保留 refactor/example@<commit> 为独立开发分支","scope":"保持 custom/dev、custom/prod 和版本标签不变","acceptance":"回读开发分支远端 HEAD 仍为 <commit>，并确认待发版 3.7.1-custom.3 未变化"}]}-->
 ```
 
 ## 固定边界

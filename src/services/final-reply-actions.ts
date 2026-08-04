@@ -34,6 +34,27 @@ const NEGATION_SUFFIX =
 const CUSTOM_RELEASE_FREEZE_ACTION_PATTERN =
   /(?:冻结|freeze)[^<>\r\n]{0,40}(?:release\/v)?\d+\.\d+\.\d+-custom\.\d+/i;
 
+/** 读取 v2 动作契约字段；空白或非字符串字段视为缺失。 */
+function actionContractPart(raw: unknown): string | undefined {
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+}
+
+/**
+ * 把 v2 的目标、范围和验收条件组装成可直接回灌的新用户回合。
+ * 中文契约使用中文字段名，其余语言使用英文，避免生成依赖额外 locale 状态。
+ */
+function actionPromptFromContract(raw: Record<string, unknown>): string | undefined {
+  const target = actionContractPart(raw.target);
+  const scope = actionContractPart(raw.scope);
+  const acceptance = actionContractPart(raw.acceptance);
+  if (!target || !scope || !acceptance) return undefined;
+
+  const usesChinese = /[\u3400-\u9fff]/.test(`${target}${scope}${acceptance}`);
+  return usesChinese
+    ? `目标：${target}\n范围：${scope}\n验收：${acceptance}`
+    : `Target: ${target}\nScope: ${scope}\nAcceptance: ${acceptance}`;
+}
+
 /**
  * 判断某个状态变更关键词是否落在否定语境里。
  * 只在同一子句内向前看：先截到最近的强分隔符之后，再剥掉紧邻的连接词/其它关键词/空白，
@@ -101,12 +122,21 @@ export function extractFinalReplyActions(text: string): ExtractedFinalReplyActio
   const rawActions = (parsed as { actions?: unknown })?.actions;
   if (!Array.isArray(rawActions)) return { content, actions: [] };
 
+  // v2 默认只保留最可能的一个动作；只有明确声明为互斥选项时才允许最多三个。
+  const isVersionTwo = (parsed as { version?: unknown }).version === 2;
+  const maxActions = isVersionTwo
+    && (parsed as { relationship?: unknown }).relationship !== 'alternatives'
+    ? 1
+    : MAX_ACTIONS;
+
   const actions: FinalReplyAction[] = [];
   const labels = new Set<string>();
   for (const raw of rawActions) {
     if (!raw || typeof raw !== 'object') continue;
     const label = typeof (raw as any).label === 'string' ? (raw as any).label.trim() : '';
-    const prompt = typeof (raw as any).prompt === 'string' ? (raw as any).prompt.trim() : '';
+    const prompt = isVersionTwo
+      ? actionPromptFromContract(raw as Record<string, unknown>) ?? ''
+      : typeof (raw as any).prompt === 'string' ? (raw as any).prompt.trim() : '';
     const rawAuthorization = (raw as any).authorization;
     if (rawAuthorization !== undefined && rawAuthorization !== 'explicit') continue;
     const authorization = rawAuthorization === 'explicit' ? 'explicit' as const : undefined;
@@ -118,7 +148,7 @@ export function extractFinalReplyActions(text: string): ExtractedFinalReplyActio
       prompt,
       ...(authorization ? { authorization } : {}),
     });
-    if (actions.length >= MAX_ACTIONS) break;
+    if (actions.length >= maxActions) break;
   }
   return { content, actions };
 }

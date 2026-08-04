@@ -72,8 +72,9 @@ pnpm release:status
 origin/upstream 时才运行 `pnpm release:status -- --remote`。输出必须标明 `source=local|remote`，
 不要把离线机器上的本地状态误报成远端已确认。
 
-最终卡片末尾必须给出“加入待发版 `<pendingVersion>`”和“暂不加入”两个动作。加入动作的 prompt
-必须写明准确开发分支、commit、目标 `custom/dev` 和待发版本，并带显式授权；用户未选择前不得合入。
+最终卡片末尾必须用 v2 `relationship: alternatives` 协议给出“加入待发版 `<pendingVersion>`”和
+“暂不加入”两个互斥动作。每个动作的 `target`、`scope`、`acceptance` 必须写明准确开发分支、
+commit、目标 `custom/dev`、待发版本和回读条件；加入动作还要带显式授权，用户未选择前不得合入。
 
 收到加入授权后，在专用 `custom/dev` checkout 使用统一入口。命令会在一次性隔离 clone 中重新 fetch，
 确认用户点选的 commit 仍是开发分支远端 HEAD，再把它合入最新 `origin/custom/dev`；push 竞态会从新

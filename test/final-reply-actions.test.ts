@@ -40,6 +40,74 @@ describe('extractFinalReplyActions', () => {
     expect(result.actions.map(action => action.label)).toEqual(['执行 push', '创建 MR', '查看 diff']);
   });
 
+  it('uses one schema-v2 action by default and composes its complete contract', () => {
+    const marker = {
+      version: 2,
+      actions: [
+        {
+          label: '清理无效代码',
+          target: '清理 useLiteV2Style 相关无效代码',
+          scope: '仅处理已确认的声明和引用，不做其它重构',
+          acceptance: '完成定向静态检查并汇报差异和结果',
+        },
+        {
+          label: '查看引用',
+          target: '查看 useLiteV2Style 的全部引用',
+          scope: '仅做只读检索',
+          acceptance: '列出引用位置并说明是否仍然生效',
+        },
+      ],
+    };
+
+    expect(extractFinalReplyActions(`结论\n<!--botmux-actions:${JSON.stringify(marker)}-->`))
+      .toEqual({
+        content: '结论',
+        actions: [{
+          label: '清理无效代码',
+          prompt: [
+            '目标：清理 useLiteV2Style 相关无效代码',
+            '范围：仅处理已确认的声明和引用，不做其它重构',
+            '验收：完成定向静态检查并汇报差异和结果',
+          ].join('\n'),
+        }],
+      });
+  });
+
+  it('keeps up to three schema-v2 actions only for explicit alternatives', () => {
+    const action = (label: string) => ({
+      label,
+      target: `采用${label}`,
+      scope: '仅处理当前问题',
+      acceptance: '给出验证结果',
+    });
+    const marker = {
+      version: 2,
+      relationship: 'alternatives',
+      actions: [action('方案一'), action('方案二'), action('方案三'), action('方案四')],
+    };
+
+    const result = extractFinalReplyActions(`请选择\n<!--botmux-actions:${JSON.stringify(marker)}-->`);
+
+    expect(result.actions.map(item => item.label)).toEqual(['方案一', '方案二', '方案三']);
+  });
+
+  it('rejects schema-v2 actions with an incomplete target, scope, or acceptance contract', () => {
+    const marker = {
+      version: 2,
+      relationship: 'alternatives',
+      actions: [
+        { label: '缺少验收', target: '处理问题', scope: '当前模块' },
+        { label: '完整动作', target: '定位问题', scope: '当前模块', acceptance: '给出根因证据' },
+      ],
+    };
+
+    expect(extractFinalReplyActions(`结果\n<!--botmux-actions:${JSON.stringify(marker)}-->`).actions)
+      .toEqual([{
+        label: '完整动作',
+        prompt: '目标：定位问题\n范围：当前模块\n验收：给出根因证据',
+      }]);
+  });
+
   it('strips a malformed terminal marker without rendering an action', () => {
     expect(extractFinalReplyActions('结果\n<!--botmux-actions:{bad json}-->')).toEqual({
       content: '结果',
