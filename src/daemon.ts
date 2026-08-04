@@ -18751,6 +18751,8 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     }
   };
   // Initialise worker pool with daemon callbacks
+  let reconcileRestartTurnsForSession:
+    ((sessionId: string) => Promise<void>) | undefined;
   initWorkerPool({
     sessionReply,
     turnDeliveryLedger,
@@ -18818,6 +18820,9 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     },
     onDurableExpiryReady(_ds, context) {
       vcMeetingRuntimeLeaseRecovery.acknowledge(context);
+    },
+    onRestartRecoveryIdle(ds) {
+      return reconcileRestartTurnsForSession?.(ds.session.sessionId);
     },
   });
   // Expose the activeSessions Map (owned by daemon) to worker-pool readers,
@@ -19179,14 +19184,30 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   // Restore active sessions from previous run
   await restoreActiveSessions(activeSessions);
 
-  const runRestartTurnReconcile = async (settleUnconfirmed: boolean): Promise<void> => {
+  const runRestartTurnReconcile = async (
+    settleUnconfirmed: boolean,
+    sessionId?: string,
+  ): Promise<void> => {
     const summary = await reconcileOutstandingTurns({
       dataDir: config.session.dataDir,
       larkAppId: cfg.larkAppId,
       ledger: turnDeliveryLedger,
       sessions: activeSessions.values(),
       settleUnconfirmed,
+      ...(sessionId ? { sessionId } : {}),
       lookupSessionStatus: sessionId => sessionStore.getSession(sessionId)?.status,
+      resume: async (record, content) => {
+        const ds = findActiveBySessionId(record.id.sessionId);
+        if (!ds || ds.larkAppId !== record.id.larkAppId) return false;
+        await beginCodexAppProgressTurn(ds, record.id.turnId, record.promptSummary);
+        return sendWorkerInput(ds, {
+          content,
+          codexAppInput: {
+            text: content,
+            clientUserMessageId: record.id.turnId,
+          },
+        }, record.id.turnId, { dispatchAttempt: record.id.dispatchAttempt });
+      },
       send: (record, content, uuid) => sessionReply(
         record.anchor,
         content,
@@ -19200,12 +19221,14 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     if (summary.scanned > 0) {
       logger.info(
         `[turn-reconcile:${cfg.larkAppId}] scanned=${summary.scanned} `
-        + `delivered=${summary.delivered} following=${summary.following} `
+        + `delivered=${summary.delivered} resumed=${summary.resumed} `
+        + `following=${summary.following} `
         + `suppressed=${summary.suppressed} deferred=${summary.deferred} `
         + `skipped=${summary.skipped} failed=${summary.failed}`,
       );
     }
   };
+  reconcileRestartTurnsForSession = sessionId => runRestartTurnReconcile(true, sessionId);
   await runRestartTurnReconcile(false);
   setTimeout(() => {
     void runRestartTurnReconcile(true).catch(error => {

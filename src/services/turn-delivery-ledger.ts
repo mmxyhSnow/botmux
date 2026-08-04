@@ -44,9 +44,10 @@ export interface TurnDeliveryRecord {
     atMs: number;
   };
   recovery?: {
-    state: 'required' | 'failed' | 'suppressed';
+    state: 'required' | 'resumed' | 'failed' | 'suppressed';
     atMs: number;
     reason?: string;
+    workerGeneration?: number;
   };
 }
 
@@ -60,6 +61,7 @@ type LedgerEvent =
   | { type: 'delivery_pending'; id: TurnDeliveryId; uuid: string; atMs: number; writtenAtMs: number }
   | { type: 'delivered'; id: TurnDeliveryId; messageId: string; deliveredAtMs: number; writtenAtMs: number }
   | { type: 'recovery_required'; id: TurnDeliveryId; atMs: number; writtenAtMs: number }
+  | { type: 'recovery_resumed'; id: TurnDeliveryId; atMs: number; workerGeneration: number; writtenAtMs: number }
   | { type: 'recovery_suppressed'; id: TurnDeliveryId; atMs: number; reason: string; writtenAtMs: number }
   | { type: 'recovery_failed'; id: TurnDeliveryId; atMs: number; reason: string; writtenAtMs: number };
 
@@ -99,6 +101,11 @@ function parseEvent(line: string): LedgerEvent | undefined {
     if (event.type === 'delivery_pending' && typeof event.uuid === 'string') return event as LedgerEvent;
     if (event.type === 'delivered' && typeof event.messageId === 'string') return event as LedgerEvent;
     if (event.type === 'recovery_required') return event as LedgerEvent;
+    if (
+      event.type === 'recovery_resumed'
+      && Number.isSafeInteger(event.workerGeneration)
+      && Number(event.workerGeneration) > 0
+    ) return event as LedgerEvent;
     if (event.type === 'recovery_suppressed' && typeof event.reason === 'string') return event as LedgerEvent;
     if (event.type === 'recovery_failed' && typeof event.reason === 'string') return event as LedgerEvent;
   } catch {
@@ -139,6 +146,13 @@ function applyEvent(records: Map<string, TurnDeliveryRecord>, event: LedgerEvent
       break;
     case 'recovery_required':
       record.recovery = { state: 'required', atMs: event.atMs };
+      break;
+    case 'recovery_resumed':
+      record.recovery = {
+        state: 'resumed',
+        atMs: event.atMs,
+        workerGeneration: event.workerGeneration,
+      };
       break;
     case 'recovery_suppressed':
       record.recovery = { state: 'suppressed', atMs: event.atMs, reason: event.reason };
@@ -186,6 +200,19 @@ export class TurnDeliveryLedger {
 
   recordRecoveryRequired(id: TurnDeliveryId, atMs: number): void {
     this.append(id.larkAppId, { type: 'recovery_required', id, atMs, writtenAtMs: this.now() });
+  }
+
+  /** 续跑指令发送前持久化接管 generation，防止同一 worker 空闲重绘时重复注入。 */
+  recordRecoveryResumed(
+    id: TurnDeliveryId,
+    input: { atMs: number; workerGeneration: number },
+  ): void {
+    this.append(id.larkAppId, {
+      type: 'recovery_resumed',
+      id,
+      ...input,
+      writtenAtMs: this.now(),
+    });
   }
 
   /** 将没有执行中证据的历史轮次静默结算，避免每次 daemon 重启再次扫到并刷屏。 */
@@ -270,6 +297,14 @@ export class TurnDeliveryLedger {
     }
     if (recovery?.state === 'required') {
       events.push({ type: 'recovery_required', id: record.id, atMs: recovery.atMs, writtenAtMs });
+    } else if (recovery?.state === 'resumed' && recovery.workerGeneration) {
+      events.push({
+        type: 'recovery_resumed',
+        id: record.id,
+        atMs: recovery.atMs,
+        workerGeneration: recovery.workerGeneration,
+        writtenAtMs,
+      });
     } else if (recovery?.state === 'suppressed') {
       events.push({ type: 'recovery_suppressed', id: record.id, atMs: recovery.atMs, reason: recovery.reason ?? 'not_in_flight', writtenAtMs });
     } else if (recovery?.state === 'failed') {
