@@ -5009,6 +5009,23 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // PUT /api/bots/:appId/topic-status-display — 设置话题列表的任务状态呈现模式。
+    let mBotTopicStatusDisplay: RegExpMatchArray | null;
+    if (req.method === 'PUT' && (mBotTopicStatusDisplay = url.pathname.match(/^\/api\/bots\/([^/]+)\/topic-status-display$/))) {
+      const appId = decodeURIComponent(mBotTopicStatusDisplay[1]);
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const raw = Buffer.concat(chunks).toString('utf8') || '{}';
+      const upstream = await proxyToDaemon(appId, `/api/bot-topic-status-display`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: raw,
+      });
+      res.writeHead(upstream.status, { 'content-type': 'application/json' });
+      res.end(await upstream.text());
+      return;
+    }
+
     // PUT /api/bots/:appId/skill-injection — proxy to that bot's daemon. Body
     // `{ skillInjection: 'global'|'prompt'|'off'|'' }` (''/other clears back to
     // the machine default). Governs how botmux built-in skills reach global-

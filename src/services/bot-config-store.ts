@@ -87,6 +87,7 @@ export const CONFIG_FIELDS: readonly ConfigFieldSpec[] = [
   { key: 'codexAppImmediateProgressCard', configKey: 'codexAppImmediateProgressCard', kind: 'boolean', effect: 'immediate', clearable: false, booleanDefault: true, hint: '收到消息后立即创建单张状态卡，并用可用的 assistant 进展更新；所有 CLI 默认 on，显式 off 才关闭' },
   { key: 'restrictGrantCommands', configKey: 'restrictGrantCommands', kind: 'boolean', effect: 'immediate', clearable: false, hint: '被授权人仅能纯对话、拦截斜杠命令 on|off' },
   { key: 'p2pMode', configKey: 'p2pMode', kind: 'enum', effect: 'immediate', clearable: true, enumValues: ['thread', 'chat'], hint: '私聊单聊模式 thread|chat；默认 chat=扁平连续会话，thread=每条 DM 独立会话（chat/unset 回默认）' },
+  { key: 'topicStatusDisplay', configKey: 'topicStatusDisplay', kind: 'enum', effect: 'immediate', clearable: true, enumValues: ['off', 'reply-preview', 'bot-root'], hint: '话题列表状态：off=保持现状（默认）｜reply-preview=第二行状态摘要｜bot-root=机器人根消息首行状态；仅新任务使用 bot-root' },
   { key: 'maxLiveWorkers', configKey: 'maxLiveWorkers', kind: 'number', effect: 'immediate', clearable: true, hint: '最大常驻会话数；超过后最久未用的会话自动休眠（退出后台进程和 CLI、回收内存，下条消息冷恢复）；unset=默认 30' },
   { key: 'customPassthroughCommands', configKey: 'customPassthroughCommands', kind: 'stringList', effect: 'immediate', clearable: true, hint: '额外放行透传给 CLI 的 slash 命令（逗号/空格分隔，如 /goal /export）；unset 回仅内置白名单' },
   { key: 'canTalkDaemonCommands', configKey: 'canTalkDaemonCommands', kind: 'stringList', effect: 'immediate', clearable: true, parseList: parseCanTalkDaemonCommandsInput, hint: '把列出的 daemon 命令权限从 canOperate（仅管理员）降到 canTalk（对话放行即可用），如 /status /help；仅认 daemon 命令，透传命令无效；unset 回全部仅管理员' },
@@ -214,8 +215,11 @@ export async function applyConfigField(
   try { bot = getBot(larkAppId); } catch { return { ok: false, reason: 'bot_not_registered' }; }
   const oldText = formatFieldValue(spec, (bot.config as any)[spec.configKey]);
 
-  // 空数组（stringList 全被过滤）等价清除，bots.json 保持干净。
-  const effective = spec.kind === 'stringList' && Array.isArray(value) && value.length === 0 ? null : value;
+  // 空数组（stringList 全被过滤）和话题状态默认档等价清除，bots.json 保持干净。
+  const effective = (spec.kind === 'stringList' && Array.isArray(value) && value.length === 0)
+    || (spec.configKey === 'topicStatusDisplay' && value === 'off')
+    ? null
+    : value;
 
   const r = await rmwBotEntry<null>(larkAppId, (entry) => {
     if (effective === null) {

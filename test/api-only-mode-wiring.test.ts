@@ -152,7 +152,7 @@ describe('API-only bot mode — bot-level primitive boundary (source lock)', () 
     // The authoritative bot-level gate: no caller can reach Feishu for an apiOnly
     // bot, regardless of session context.
     for (const op of [
-      'sendMessage', 'replyMessage', 'updateMessage', 'deleteMessage',
+      'sendMessage', 'replyMessage', 'updateMessage', 'editTextMessage', 'deleteMessage',
       'addReaction', 'removeReaction', 'sendUserMessage', 'sendEphemeralCard',
       'deleteEphemeralCard', 'uploadImage', 'uploadFile',
     ]) {

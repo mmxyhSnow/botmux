@@ -63,6 +63,10 @@ export interface AskCardDispatcherDeps {
   updateMessage?: typeof updateMessage;
   /** ASK 提醒策略读取器；生产默认读取 bot 热配置，测试可定向覆盖。 */
   resolveAskReminderPolicy?: (larkAppId: string) => AskReminderPolicy;
+  /** 话题列表第二行模式的 ASK 卡片标题投影。 */
+  resolveTopicStatusTitle?: (ask: PendingAsk, waiting: boolean) => string | undefined;
+  /** 把 ASK 等待生命周期同步给机器人根消息。 */
+  onWaitingChange?: (ask: PendingAsk, waiting: boolean) => void | Promise<void>;
 }
 
 /** 用于判断一条外部机器人消息是否遮挡当前 ASK 的最小路由信息。 */
@@ -84,6 +88,19 @@ function buildMovedAskCard(): string {
       }],
     },
   });
+}
+
+/** 仅替换卡片标题，不改动 ASK 的按钮和回调语义。 */
+function withTopicStatusTitle(cardJson: string, title?: string): string {
+  if (!title) return cardJson;
+  try {
+    const card = JSON.parse(cardJson) as Record<string, any>;
+    card.header ??= {};
+    card.header.title = { tag: 'plain_text', content: title };
+    return JSON.stringify(card);
+  } catch {
+    return cardJson;
+  }
 }
 
 /**
@@ -114,7 +131,10 @@ export function noteAskCardBotActivity(
     const send = deps.sendMessage ?? sendMessage;
     const reply = deps.replyMessage ?? replyMessage;
     const update = deps.updateMessage ?? updateMessage;
-    const cardJson = buildAskCard(projected);
+    const cardJson = withTopicStatusTitle(
+      buildAskCard(projected),
+      deps.resolveTopicStatusTitle?.(projected, true),
+    );
     const canReplyToRoot = typeof current.rootMessageId === 'string'
       && current.rootMessageId.startsWith('om_');
     void (async () => {
@@ -158,7 +178,10 @@ export function createLarkAskCardDispatcher(
 
   return {
     async send(ask) {
-      const cardJson = buildAskCard(ask);
+      const cardJson = withTopicStatusTitle(
+        buildAskCard(ask),
+        deps.resolveTopicStatusTitle?.(ask, true),
+      );
       const previous = buildPreviousAskFlowSegmentCard(ask, FLOW_ACTIONS);
       if (previous) {
         try {
@@ -198,13 +221,22 @@ export function createLarkAskCardDispatcher(
         if (firstQuestion) await notifyAskApprovers(ask, noticeDeps);
         else scheduleAskApproverFollowups(ask, noticeDeps);
       }
+      if (deps.onWaitingChange) await deps.onWaitingChange(ask, true);
       return { messageId };
     },
     async onSettle(ask, result) {
       cancelAskApproverFollowups(ask.askId);
+      if (deps.onWaitingChange) await deps.onWaitingChange(ask, false);
       if (!ask.cardMessageId) return;
       try {
-        await update(ask.larkAppId, ask.cardMessageId, buildAskCard(ask, result));
+        await update(
+          ask.larkAppId,
+          ask.cardMessageId,
+          withTopicStatusTitle(
+            buildAskCard(ask, result),
+            deps.resolveTopicStatusTitle?.(ask, false),
+          ),
+        );
       } catch (err) {
         logger.warn(
           `[ask:${ask.askId}] failed to patch settled card: ${

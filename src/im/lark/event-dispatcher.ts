@@ -1963,6 +1963,8 @@ export interface EventHandlers {
   isSessionOwner?: (anchor: string, larkAppId: string) => boolean;
   /** Resolve a persisted topic reply alias back to its owning chat-scope session. */
   resolveReplyThreadAlias?: (rootId: string, chatId: string, larkAppId: string) => { chatId: string; sessionId: string; anchor?: string } | null;
+  /** 机器人根消息模式：把原用户话题 A 的后续回复定向到机器人话题 B。 */
+  resolveBotOwnedTopicAlias?: (rootId: string, chatId: string, larkAppId: string) => { chatId: string; sessionId: string; anchor: string } | null;
   /** 后续机器人消息可能遮挡待操作卡；daemon 据此为同会话安排一次防抖后置投影。 */
   onBotMessageActivity?: (activity: {
     larkAppId: string;
@@ -2941,6 +2943,17 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
       };
       let routingSource = decision.source;
       let replyRootId: string | undefined;
+      if (routing.scope === 'thread' && message.root_id && chatType === 'group') {
+        const alias = handlers.resolveBotOwnedTopicAlias?.(message.root_id, chatId, larkAppId) ?? null;
+        if (alias && alias.anchor !== routing.anchor) {
+          routing.anchor = alias.anchor;
+          routingSource = 'real-thread';
+          replyRootId = undefined;
+          logger.info(
+            `[topic-status] alias root=${message.root_id.substring(0, 12)} → bot-root=${alias.anchor.substring(0, 12)} session=${alias.sessionId.substring(0, 8)}`,
+          );
+        }
+      }
       // 私聊 chat 模式：会话是扁平连续的(整段 DM 一个 chat-scope 会话),但如果这条
       // 消息本身是在某个已存在的话题里回复的(root_id+thread_id),可见回复必须落回
       // 那个话题里,而不是漏到 DM 顶层。decideRouting 已把 scope 折成 chat(会话扁平

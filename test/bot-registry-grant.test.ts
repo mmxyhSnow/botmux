@@ -193,6 +193,21 @@ describe('bot-registry grant additions', () => {
     expect(cfgs[3].p2pMode).toBeUndefined();
   });
 
+  it('parses only the two opt-in topic status display modes', () => {
+    const cfgs = parseBotConfigsFromText(JSON.stringify([
+      { larkAppId: 't1', larkAppSecret: 's', topicStatusDisplay: 'off' },
+      { larkAppId: 't2', larkAppSecret: 's', topicStatusDisplay: 'reply-preview' },
+      { larkAppId: 't3', larkAppSecret: 's', topicStatusDisplay: 'bot-root' },
+      { larkAppId: 't4', larkAppSecret: 's', topicStatusDisplay: 'invalid' },
+    ]));
+    expect(cfgs.map(config => config.topicStatusDisplay)).toEqual([
+      undefined,
+      'reply-preview',
+      'bot-root',
+      undefined,
+    ]);
+  });
+
   it('parses summaryRange and preserves explicit unlimited settings', () => {
     const cfgs = parseBotConfigsFromText(JSON.stringify([
       { larkAppId: 'sr1', larkAppSecret: 's', summaryRange: { limit: 0, sinceHours: 0 } },

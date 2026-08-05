@@ -3346,6 +3346,22 @@ ipcRoute('PUT', '/api/bot-p2p-mode', async (req, res) => {
   jsonRes(res, 200, { ok: true, p2pMode: value ?? 'chat' });
 });
 
+// Per-bot 话题列表状态模式：off 清回默认，其它两档立即生效。
+ipcRoute('PUT', '/api/bot-topic-status-display', async (req, res) => {
+  if (!cachedLarkAppId) return jsonRes(res, 503, { error: 'larkAppId_not_set' });
+  let body: { topicStatusDisplay?: unknown };
+  try { body = await readJsonBody<{ topicStatusDisplay?: unknown }>(req); }
+  catch { return jsonRes(res, 400, { ok: false, error: 'bad_json' }); }
+
+  const spec = findConfigField('topicStatusDisplay');
+  if (!spec) return jsonRes(res, 500, { ok: false, error: 'spec_missing' });
+  const raw = body.topicStatusDisplay;
+  const value = raw === 'reply-preview' || raw === 'bot-root' ? raw : null;
+  const result = await applyConfigField(cachedLarkAppId, spec, value);
+  if (!result.ok) return jsonRes(res, 400, { ok: false, error: result.reason });
+  jsonRes(res, 200, { ok: true, topicStatusDisplay: value ?? 'off' });
+});
+
 // Per-bot 内置技能注入模式 skillInjection。Body `{ skillInjection: 'global'|'prompt'|'off'|'' }`:
 //   • 'global'|'prompt'|'off' → 显式覆盖本 bot
 //   • ''/其它                  → 清回机器级默认（config.json skills.builtinInjection）

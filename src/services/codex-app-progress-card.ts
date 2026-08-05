@@ -29,6 +29,8 @@ export interface CodexAppProgressCardOperations {
   patch(messageId: string, cardJson: string): Promise<void>;
   canRepostAfterPatchFailure?(error: unknown): boolean;
   persist(state: CodexAppProgressCardSessionState): void;
+  /** 可选的当前卡片标题投影；归档卡仍保留原有标题。 */
+  titleOverride?(state: CodexAppProgressCardSessionState): string | undefined;
   /** 发布当前完整过程并返回受保护的 HTML 链接；失败时主卡仍需正常更新。 */
   publishReport?(
     state: CodexAppProgressCardSessionState,
@@ -383,7 +385,10 @@ export class CodexAppProgressCard {
   private async syncCard(): Promise<void> {
     if (!this.state) return;
     const reportUrl = await this.publishCurrentReport();
-    const cardJson = renderCodexAppProgressCard(this.state, { reportUrl });
+    const cardJson = renderCodexAppProgressCard(this.state, {
+      reportUrl,
+      titleOverride: this.operations.titleOverride?.(cloneCodexAppProgressState(this.state)),
+    });
     if (this.state.messageId) {
       try {
         await this.operations.patch(this.state.messageId, cardJson);

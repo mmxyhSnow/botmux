@@ -152,6 +152,7 @@ import {
   findActiveBySessionId,
   getDaemonBootId,
   beginCodexAppProgressTurn,
+  setTopicStatusWaiting,
   recordAcceptedTurnDelivery,
   noteFinalReplyActionBotActivity,
   getDaemonStreamingCardUsageSnapshot,
@@ -367,6 +368,7 @@ import {
   clearAgentAttention,
 } from './core/session-activity.js';
 import { emitSessionLifecycleHook } from './services/session-lifecycle-hooks.js';
+import { findBotOwnedTopicAlias, formatTopicStatusLine, normalizeTopicStatusDisplayMode, progressStateTopicPhase } from './services/topic-status.js';
 import { botAutoWorktreeEnabled } from './services/default-worktree.js';
 import {
   setCardDispatcher as setAskCardDispatcher,
@@ -2673,6 +2675,17 @@ function findChatReplyAlias(rootId: string, chatId: string, larkAppId: string): 
   return hit
     ? { chatId: hit.chatId, sessionId: hit.sessionId, anchor: storedSessionAnchorId(hit) }
     : null;
+}
+
+/** 重启后仍可用持久化会话把用户话题 A 路由到机器人话题 B。 */
+function findManagedTopicAlias(rootId: string, chatId: string, larkAppId: string): { chatId: string; sessionId: string; anchor: string } | null {
+  const live = findBotOwnedTopicAlias(
+    Array.from(activeSessions.values(), session => session.session),
+    rootId,
+    chatId,
+    larkAppId,
+  );
+  return live ?? findBotOwnedTopicAlias(sessionStore.listSessions(), rootId, chatId, larkAppId);
 }
 
 function setDirectChatDisplayNameFromSender(
@@ -15721,6 +15734,7 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
   // routing into thread-scope so the bot's first reply seeds a Lark thread.
   let scope = ctx.scope;
   let anchor = ctx.anchor;
+  let effectiveReplyRootId = replyRootId;
   const numberer = createImgNumberer();
   let forwardSeedContent = '';
   let forwardSeedResources: MessageResource[] = [];
@@ -16117,6 +16131,57 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
   // and build the worktree off the critical path (willAutoWorktree / runAutoWorktreeCommit).
   const autoWt = willAutoWorktree(larkAppId, pinnedWorkingDir, pinnedFromBotDefault);
 
+  const initialTurnTitle = (messageListener?.replyCardTitle ?? (ctx.forwardSeedData ? followupContent : content)).substring(0, 50);
+  let topicStatusBinding: Session['topicStatusBinding'];
+  if (
+    normalizeTopicStatusDisplayMode(botCfg.topicStatusDisplay) === 'bot-root'
+    && chatType === 'group'
+    && scope === 'thread'
+  ) {
+    try {
+      const mode = await getChatMode(larkAppId, chatId);
+      if (mode === 'topic') {
+        const originalRootMessageId = anchor;
+        const suffix = messageId.replace(/[^a-zA-Z0-9_-]/g, '').slice(-32);
+        const botRootMessageId = await sendMessage(
+          larkAppId,
+          chatId,
+          formatTopicStatusLine('running', initialTurnTitle),
+          'text',
+          `tsr-${suffix}`,
+        );
+        anchor = botRootMessageId;
+        effectiveReplyRootId = undefined;
+        const createdAt = new Date().toISOString();
+        topicStatusBinding = {
+          mode: 'bot-root',
+          originalRootMessageId,
+          botRootMessageId,
+          title: initialTurnTitle,
+          phase: 'running',
+          waitingForUser: false,
+          createdAt,
+          updatedAt: createdAt,
+        };
+        const redirectText = `↪️ 已转入机器人话题：${formatTopicStatusLine('running', initialTurnTitle)}\n后续在原话题或新话题回复，都会由机器人在新话题继续。`;
+        await replyMessage(
+          larkAppId,
+          originalRootMessageId,
+          redirectText,
+          'text',
+          true,
+          `tsd-${suffix}`,
+        ).catch(err => logger.warn(
+          `[topic-status] redirect failed root=${originalRootMessageId.substring(0, 12)}: ${err instanceof Error ? err.message : String(err)}`,
+        ));
+      }
+    } catch (err) {
+      logger.warn(
+        `[topic-status] bot-root creation failed; keep original topic: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   // Create session in pending-repo state — don't spawn CLI yet.
   // For thread-scope, rootMessageId == anchor (the thread root). Critical
   // because sessionAnchorId() uses rootMessageId for thread-scope, and the
@@ -16127,7 +16192,6 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
   // For chat-scope, rootMessageId stores the seed message_id (audit only);
   // routing keys off chatId via sessionAnchorId(), so any value works.
   const rootIdForStore = scope === 'thread' ? anchor : messageId;
-  const initialTurnTitle = (messageListener?.replyCardTitle ?? (ctx.forwardSeedData ? followupContent : content)).substring(0, 50);
   const session = sessionStore.createSession(chatId, rootIdForStore, initialTurnTitle, chatType);
   const now = Date.now();
   setDirectChatDisplayNameFromSender(session, chatType, newTopicSender);
@@ -16146,6 +16210,7 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
   session.quoteTargetSenderIsBot = parsed.senderType === 'app' || parsed.senderType === 'bot';
   session.lastMessageAt = new Date(now).toISOString();
   session.scope = scope;
+  if (topicStatusBinding) session.topicStatusBinding = topicStatusBinding;
   session.nativeSessionTitle = buildBotmuxLarkNativeSessionTitle(
     parsed.content,
     parsed.mentions,
@@ -16198,7 +16263,7 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
   const substituteReplyMode = substituteTrigger
     ? (botCfg.substituteMode?.replyMode ?? 'thread')
     : 'thread';
-  beginReplyTargetTurn(ds, replyRootId, messageId, new Date().toISOString(), { quoteOnly: substituteReplyMode === 'quote', substitute: !!substituteTrigger });
+  beginReplyTargetTurn(ds, effectiveReplyRootId, messageId, new Date().toISOString(), { quoteOnly: substituteReplyMode === 'quote', substitute: !!substituteTrigger });
   sessionStore.updateSession(ds.session);
   const creationKey = sessionKey(anchor, larkAppId);
   if (!setActiveSessionIfActive(activeSessions, creationKey, ds)) {
@@ -18622,7 +18687,26 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   void migrateOverloadAlertAtStartup(botConfigs.map(b => ({ larkAppId: b.larkAppId, apiOnly: b.apiOnly })));
   scheduleStore.startExternalWriteWatcher();
   logger.info(`Bot ${idx}/${botConfigs.length}: ${cfg.larkAppId} (cli: ${cfg.cliId})`)
-  setAskCardDispatcher(createLarkAskCardDispatcher());
+  const askCardDispatcherDeps = {
+    resolveTopicStatusTitle: (ask: import('./core/ask-types.js').PendingAsk, waiting: boolean): string | undefined => {
+      const ds = findActiveBySessionId(ask.sessionId);
+      if (!ds
+          || ds.session.topicStatusBinding
+          || normalizeTopicStatusDisplayMode(getBot(ask.larkAppId).config.topicStatusDisplay) !== 'reply-preview') return undefined;
+      const title = ds.session.codexAppProgressCard?.title ?? ds.currentTurnTitle ?? ds.session.title;
+      const phase = waiting
+        ? 'waiting'
+        : ds.session.codexAppProgressCard
+          ? progressStateTopicPhase(ds.session.codexAppProgressCard)
+          : 'running';
+      return formatTopicStatusLine(phase, title);
+    },
+    onWaitingChange: (ask: import('./core/ask-types.js').PendingAsk, waiting: boolean): void => {
+      const ds = findActiveBySessionId(ask.sessionId);
+      if (ds) setTopicStatusWaiting(ds, waiting);
+    },
+  };
+  setAskCardDispatcher(createLarkAskCardDispatcher(askCardDispatcherDeps));
   // Honour the bot's canTalk gate for `botmux ask` answers: a clicker who may
   // address the bot in this chat may answer an implicit-approver ask.
   //
@@ -19127,9 +19211,10 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       handleVcMeetingPush: (ctx) => handleVcMeetingPush(ctx),
       beforeSessionTurn: (data, ctx) => maybeCatchUpVcMeetingConsumerBeforeTurn(data, ctx),
       isSessionOwner: (anchor, appId) => activeSessions.has(sessionKey(anchor, appId)),
+      resolveBotOwnedTopicAlias: (rootId, chatId, appId) => findManagedTopicAlias(rootId, chatId, appId),
       resolveReplyThreadAlias: (rootId, chatId, appId) => findChatReplyAlias(rootId, chatId, appId),
       onBotMessageActivity: activity => {
-        noteAskCardBotActivity(activity);
+        noteAskCardBotActivity(activity, askCardDispatcherDeps);
         for (const ds of activeSessions.values()) {
           if (ds.larkAppId !== activity.larkAppId || ds.chatId !== activity.chatId) continue;
           const sameConversation = ds.scope === 'chat'

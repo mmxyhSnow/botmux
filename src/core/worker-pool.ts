@@ -26,7 +26,7 @@ import {
 } from '../services/message-listener-run-preview-store.js';
 import { persistStreamCardState, rememberLastCliInput } from './session-manager.js';
 import { fallbackTurnId, isSubstituteTurn } from './reply-target.js';
-import { updateMessage, deleteMessage, sendEphemeralCard, sendUserMessage, addReaction, removeReaction, getMessageChatId, MessageWithdrawnError } from '../im/lark/client.js';
+import { updateMessage, editTextMessage, deleteMessage, sendEphemeralCard, sendUserMessage, addReaction, removeReaction, getMessageChatId, MessageWithdrawnError } from '../im/lark/client.js';
 import { buildStreamingCard, buildPrivateSnapshotCard, buildSessionCard, buildTuiPromptCard, buildTuiPromptResolvedCard, buildTuiPromptFailedCard, buildRelayedFrozenCard, getCliDisplayName } from '../im/lark/card-builder.js';
 import { loadFrozenCards, saveFrozenCards } from '../services/frozen-card-store.js';
 import { hashUrlForLog, cancelRiffTaskById } from '../adapters/backend/riff-backend.js';
@@ -48,6 +48,12 @@ import {
   writeCodexAppProgressReport,
 } from '../services/codex-app-progress-report.js';
 import { codexAppProgressCardTitle } from '../services/codex-app-progress.js';
+import {
+  formatTopicStatusLine,
+  normalizeTopicStatusDisplayMode,
+  progressStateTopicPhase,
+  type TopicTaskPhase,
+} from '../services/topic-status.js';
 import { generateCodexAppProgressSemanticSummary } from '../services/codex-app-progress-semantic-summary.js';
 import { buildDashboardUrls } from './dashboard-url.js';
 import { getSessionUsageSnapshot } from './cost-calculator.js';
@@ -86,6 +92,7 @@ import {
 const DAEMON_BOOT_ID = randomUUID();
 const restartCoordinator = new RestartCoordinator();
 const codexAppProgressCards = new WeakMap<DaemonSession, CodexAppProgressCard>();
+const topicStatusRootEdits = new Map<string, { desired: string; running: boolean }>();
 const lifecycleRetiringWorkers = new WeakMap<DaemonSession, Set<ChildProcess>>();
 const transferRetiringWorkers = new WeakSet<ChildProcess>();
 
@@ -635,6 +642,66 @@ function codexAppProgressReportUrl(reportId: string): string | undefined {
   }
 }
 
+/** 对同一根消息串行更新且合并中间态，防止慢请求覆盖新状态。 */
+function enqueueTopicStatusRootEdit(ds: DaemonSession, text: string): void {
+  const binding = ds.session.topicStatusBinding;
+  if (!binding || binding.mode !== 'bot-root') return;
+  const key = `${ds.larkAppId}:${binding.botRootMessageId}`;
+  const queue = topicStatusRootEdits.get(key) ?? { desired: text, running: false };
+  queue.desired = text;
+  topicStatusRootEdits.set(key, queue);
+  if (queue.running) return;
+  queue.running = true;
+  void (async () => {
+    try {
+      let sent = '';
+      while (sent !== queue.desired) {
+        const next = queue.desired;
+        await editTextMessage(ds.larkAppId, binding.botRootMessageId, next);
+        sent = next;
+      }
+    } catch (error) {
+      logger.warn(
+        `[topic-status] root edit failed session=${ds.session.sessionId.substring(0, 8)}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      queue.running = false;
+      if (topicStatusRootEdits.get(key) === queue) topicStatusRootEdits.delete(key);
+    }
+  })();
+}
+
+/** 更新持久化基础状态；待互动是临时覆盖，不丢失原阶段。 */
+function updateTopicStatusBinding(ds: DaemonSession, phase: TopicTaskPhase, title?: string): boolean {
+  const binding = ds.session.topicStatusBinding;
+  if (!binding || binding.mode !== 'bot-root') return false;
+  const nextTitle = codexAppProgressCardTitle(title ?? binding.title);
+  const changed = binding.phase !== phase || binding.title !== nextTitle;
+  binding.phase = phase;
+  binding.title = nextTitle;
+  binding.updatedAt = new Date().toISOString();
+  if (changed) {
+    enqueueTopicStatusRootEdit(
+      ds,
+      formatTopicStatusLine(binding.waitingForUser ? 'waiting' : binding.phase, binding.title),
+    );
+  }
+  return changed;
+}
+
+/** ASK 流程调用：开始等待时显示待互动，结束后恢复基础阶段。 */
+export function setTopicStatusWaiting(ds: DaemonSession, waiting: boolean): void {
+  const binding = ds.session.topicStatusBinding;
+  if (!binding || binding.mode !== 'bot-root' || binding.waitingForUser === waiting) return;
+  binding.waitingForUser = waiting;
+  binding.updatedAt = new Date().toISOString();
+  sessionStore.updateSession(ds.session);
+  enqueueTopicStatusRootEdit(
+    ds,
+    formatTopicStatusLine(waiting ? 'waiting' : binding.phase, binding.title),
+  );
+}
+
 function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
   let card = codexAppProgressCards.get(ds);
   if (card) return card;
@@ -653,6 +720,10 @@ function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
     ),
     patch: (messageId, cardJson) => updateMessage(ds.larkAppId, messageId, cardJson),
     canRepostAfterPatchFailure: error => error instanceof MessageWithdrawnError,
+    titleOverride: state => !ds.session.topicStatusBinding
+      && normalizeTopicStatusDisplayMode(botConfig.topicStatusDisplay) === 'reply-preview'
+      ? formatTopicStatusLine(progressStateTopicPhase(state), state.title)
+      : undefined,
     publishReport: state => {
       const report = writeCodexAppProgressReport(state);
       return codexAppProgressReportUrl(report.reportId);
@@ -675,6 +746,7 @@ function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
     } : {}),
     persist: state => {
       ds.session.codexAppProgressCard = state;
+      updateTopicStatusBinding(ds, progressStateTopicPhase(state), state.title);
       sessionStore.updateSession(ds.session);
     },
   }, ds.session.codexAppProgressCard);
@@ -701,11 +773,16 @@ export async function beginCodexAppProgressTurn(
   turnId: string,
   prompt?: string,
 ): Promise<void> {
-  if (!turnId.startsWith('om_') || !immediateProgressCardEnabled(ds)) return;
-  await codexAppProgressCardFor(ds).accept(
-    turnId,
-    codexAppProgressCardTitle(prompt ?? ds.lastUserPrompt ?? ds.session.title),
-  );
+  if (!turnId.startsWith('om_')) return;
+  const title = codexAppProgressCardTitle(prompt ?? ds.lastUserPrompt ?? ds.session.title);
+  const binding = ds.session.topicStatusBinding;
+  if (binding?.mode === 'bot-root') {
+    binding.waitingForUser = false;
+    updateTopicStatusBinding(ds, 'running', title);
+    sessionStore.updateSession(ds.session);
+  }
+  if (!immediateProgressCardEnabled(ds)) return;
+  await codexAppProgressCardFor(ds).accept(turnId, title);
 }
 
 // ─── Active session registry (daemon-owned, accessor for IPC) ───────────────
@@ -5900,12 +5977,16 @@ function setupWorkerHandlers(
           // never let a projection/store failure crash the worker IPC loop.
           logger.error(`[${t}] Failed to persist turn_terminal for ${msg.turnId.substring(0, 8)}: ${err.message}`);
         }
+        const phase = msg.status === 'completed'
+          ? 'completed'
+          : msg.status === 'failed'
+            ? 'failed'
+            : 'interrupted';
+        if (ds.session.topicStatusBinding?.mode === 'bot-root') {
+          updateTopicStatusBinding(ds, phase);
+          sessionStore.updateSession(ds.session);
+        }
         if (immediateProgressCardEnabled(ds)) {
-          const phase = msg.status === 'completed'
-            ? 'completed'
-            : msg.status === 'failed'
-              ? 'failed'
-              : 'interrupted';
           try {
             await codexAppProgressCardFor(ds).settle(msg.turnId, phase);
           } catch (error) {
@@ -6586,6 +6667,15 @@ function deliverFinalOutput(
           return;
         }
         visibleAssistantText = controlledOutput.content;
+      }
+      if (!ds.session.topicStatusBinding
+          && normalizeTopicStatusDisplayMode(getBot(ds.larkAppId).config.topicStatusDisplay) === 'reply-preview') {
+        const progress = ds.session.codexAppProgressCard;
+        const phase = progress
+          ? progressStateTopicPhase({ phase: 'completed', overview: progress.overview })
+          : 'completed';
+        const title = progress?.title ?? ds.currentTurnTitle ?? ds.session.title;
+        visibleAssistantText = `${formatTopicStatusLine(phase, title)}\n\n${visibleAssistantText}`;
       }
       // Meeting-derived text is untrusted card markdown. A model-authored
       // native <at> tag and the ordinary owner footer would both create a

@@ -17,7 +17,11 @@ const getBotMock = vi.fn();
 const fakeClient = {
   im: {
     v1: {
-      message: { create: vi.fn(async () => ({ code: 0, data: { message_id: 'om_x' } })), patch: vi.fn(async () => ({ code: 0 })) },
+      message: {
+        create: vi.fn(async () => ({ code: 0, data: { message_id: 'om_x' } })),
+        patch: vi.fn(async () => ({ code: 0 })),
+        update: vi.fn(async () => ({ code: 0 })),
+      },
       messageReaction: { create: vi.fn(async () => ({ code: 0, data: { reaction_id: 'r' } })), delete: vi.fn(async () => ({ code: 0 })) },
     },
   },
@@ -41,7 +45,7 @@ vi.mock('../src/bot-registry.js', async (importOriginal) => {
 });
 
 import {
-  sendMessage, replyMessage, updateMessage, deleteMessage,
+  sendMessage, replyMessage, updateMessage, editTextMessage, deleteMessage,
   addReaction, removeReaction, sendUserMessage, sendEphemeralCard,
   deleteEphemeralCard, uploadImage, uploadFile,
   LarkTransportDisabledError,
@@ -62,6 +66,7 @@ describe('assertLarkTransport — bot-level outbound gate', () => {
     await expect(sendMessage(APIONLY, 'oc', 'hi')).rejects.toBeInstanceOf(LarkTransportDisabledError);
     await expect(replyMessage(APIONLY, 'om', 'hi')).rejects.toBeInstanceOf(LarkTransportDisabledError);
     await expect(updateMessage(APIONLY, 'om', '{}')).rejects.toBeInstanceOf(LarkTransportDisabledError);
+    await expect(editTextMessage(APIONLY, 'om', 'status')).rejects.toBeInstanceOf(LarkTransportDisabledError);
     await expect(deleteMessage(APIONLY, 'om')).rejects.toBeInstanceOf(LarkTransportDisabledError);
     await expect(addReaction(APIONLY, 'om', 'THUMBSUP')).rejects.toBeInstanceOf(LarkTransportDisabledError);
     await expect(removeReaction(APIONLY, 'om', 'r')).rejects.toBeInstanceOf(LarkTransportDisabledError);
@@ -72,11 +77,15 @@ describe('assertLarkTransport — bot-level outbound gate', () => {
     await expect(uploadFile(APIONLY, '/tmp/none.bin')).rejects.toBeInstanceOf(LarkTransportDisabledError);
   });
 
-  it('a normal bot is unaffected — sendMessage/updateMessage proceed to the client', async () => {
+  it('a normal bot is unaffected — sendMessage/updateMessage/editTextMessage proceed to the client', async () => {
     getBotMock.mockReturnValue(bot(false));
     await expect(sendMessage(NORMAL, 'oc', 'hi')).resolves.toBeDefined();
     await expect(updateMessage(NORMAL, 'om', '{}')).resolves.toBeUndefined();
+    await expect(editTextMessage(NORMAL, 'om', 'status')).resolves.toBeUndefined();
     expect(fakeClient.im.v1.message.create).toHaveBeenCalled();
     expect(fakeClient.im.v1.message.patch).toHaveBeenCalled();
+    expect(fakeClient.im.v1.message.update).toHaveBeenCalledWith(expect.objectContaining({
+      path: { message_id: 'om' },
+    }));
   });
 });

@@ -112,6 +112,48 @@ afterEach(() => {
 });
 
 describe('Codex 连续提问卡片', () => {
+  it('把待互动标题和等待生命周期投影给话题状态', async () => {
+    const waitingChanges: boolean[] = [];
+    setCardDispatcher(createLarkAskCardDispatcher({
+      async replyMessage(_appId, _rootId, content) {
+        const messageId = `om_card_${sentCards.length + 1}`;
+        sentCards.push({ messageId, card: JSON.parse(content) });
+        return messageId;
+      },
+      async updateMessage(_appId, messageId, content) {
+        updatedCards.push({ messageId, card: JSON.parse(content) });
+      },
+      resolveTopicStatusTitle: (_ask, waiting) => waiting
+        ? '🙋 待互动｜选择方案'
+        : '⏳ 进行中｜选择方案',
+      onWaitingChange: (_ask, waiting) => waitingChanges.push(waiting),
+    }));
+    const result = registerAsk({
+      larkAppId: 'cli_ask',
+      chatId: 'oc_chat',
+      rootMessageId: 'om_root',
+      sessionId: 'sess-1',
+      questions: [question('是否使用方案 A？', '方案 A', '方案 B')],
+      timeoutMs: 10_000,
+    });
+    await flushDispatch();
+
+    expect(sentCards[0]!.card.header.title.content).toBe('🙋 待互动｜选择方案');
+    expect(waitingChanges).toEqual([true]);
+    const pending = _getPending(sentCards[0]!.card.elements
+      .flatMap((element: any) => element.actions ?? [])
+      .find((button: any) => button.value?.action === ASK_SELECT_ACTION).value.ask_id)!;
+    await handleAskCardAction({
+      operator: { open_id: 'ou_owner' },
+      action: { value: { action: ASK_SELECT_ACTION, ask_id: pending.askId, nonce: pending.nonce, key: '方案 A' } },
+    });
+    await result;
+    await flushDispatch();
+
+    expect(waitingChanges).toEqual([true, false]);
+    expect(updatedCards.at(-1)!.card.header.title.content).toBe('⏳ 进行中｜选择方案');
+  });
+
   it('同一 flow 只在首次发卡时 @ 提问对象，后续原卡更新不重复刷通知', async () => {
     await selectCurrent(
       'turn-notify-each-question',
