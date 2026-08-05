@@ -1,7 +1,7 @@
 /**
  * ASK 后续问题提醒策略测试。
  *
- * 通过真实 broker 与 Lark dispatcher 验证首次立即提醒、30 秒补提醒、
+ * 通过真实 broker 与 Lark dispatcher 验证卡内 @、无额外即时提醒、2 分钟补提醒、
  * 推荐项自动推进和循环提醒，外部飞书接口仅使用内存替身。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -48,7 +48,7 @@ function latestCard(): Record<string, any> {
   return updatedCards.at(-1)?.card ?? sentCards.at(-1)!.card;
 }
 
-async function answerFirst(flowId: string): Promise<void> {
+async function answerFirst(flowId: string): Promise<Record<string, any>> {
   const result = registerAsk({
     larkAppId: 'cli_ask',
     chatId: 'oc_chat',
@@ -60,7 +60,8 @@ async function answerFirst(flowId: string): Promise<void> {
     approvers: ['ou_owner'],
   });
   await flushDispatch();
-  const action = latestCard().elements
+  const initialCard = latestCard();
+  const action = initialCard.elements
     .flatMap((element: any) => element.actions ?? [])
     .find((button: any) => button.value?.action === ASK_SELECT_ACTION);
   const pending = _getPending(action.value.ask_id)!;
@@ -78,6 +79,7 @@ async function answerFirst(flowId: string): Promise<void> {
   });
   await result;
   await flushDispatch();
+  return initialCard;
 }
 
 function installDispatcher(policy: 'auto-recommend' | 'repeat-reminder'): void {
@@ -115,10 +117,11 @@ afterEach(() => {
 });
 
 describe('ASK 后续问题提醒策略', () => {
-  it('方案1默认：首问立即提醒，后续问题30秒提醒、60秒按明确推荐项自动推进', async () => {
+  it('方案1默认：卡内 @ 且不即时重复提醒，2 分钟提醒、4 分钟按明确推荐项自动推进', async () => {
     installDispatcher('auto-recommend');
-    await answerFirst('turn-auto');
-    expect(notices).toHaveLength(1);
+    const firstCard = await answerFirst('turn-auto');
+    expect(JSON.stringify(firstCard)).toContain('<at id=ou_owner></at>');
+    expect(notices).toHaveLength(0);
 
     const second = registerAsk({
       larkAppId: 'cli_ask',
@@ -126,16 +129,18 @@ describe('ASK 后续问题提醒策略', () => {
       rootMessageId: 'om_root',
       sessionId: 'sess-1',
       questions: [question('第二问')],
-      timeoutMs: 180_000,
+      timeoutMs: 270_000,
       flowId: 'turn-auto',
       approvers: ['ou_owner'],
     });
     await flushDispatch();
+    expect(JSON.stringify(latestCard())).toContain('<at id=ou_owner></at>');
+    expect(notices).toHaveLength(0);
 
     await vi.advanceTimersByTimeAsync(ASK_REMINDER_DELAY_MS - 1);
-    expect(notices).toHaveLength(1);
+    expect(notices).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(1);
-    expect(notices).toHaveLength(2);
+    expect(notices).toHaveLength(1);
 
     await vi.advanceTimersByTimeAsync(ASK_REMINDER_DELAY_MS);
     await expect(second).resolves.toMatchObject({
@@ -143,26 +148,27 @@ describe('ASK 后续问题提醒策略', () => {
       answers: [['a']],
       by: 'botmux-auto-recommend',
     });
-    expect(notices).toHaveLength(2);
+    expect(notices).toHaveLength(1);
   });
 
-  it('方案1遇到没有明确推荐项的问题时不擅自选择，并退化为每30秒提醒', async () => {
+  it('方案1遇到没有明确推荐项的问题时不擅自选择，并退化为每 2 分钟提醒', async () => {
     installDispatcher('auto-recommend');
     await answerFirst('turn-no-recommendation');
+    expect(notices).toHaveLength(0);
     const second = registerAsk({
       larkAppId: 'cli_ask',
       chatId: 'oc_chat',
       rootMessageId: 'om_root',
       sessionId: 'sess-1',
       questions: [question('第二问', '方案 A')],
-      timeoutMs: 180_000,
+      timeoutMs: 270_000,
       flowId: 'turn-no-recommendation',
       approvers: ['ou_owner'],
     });
     await flushDispatch();
 
     await vi.advanceTimersByTimeAsync(ASK_REMINDER_DELAY_MS * 2);
-    expect(notices).toHaveLength(3);
+    expect(notices).toHaveLength(2);
     const pending = _getPending(
       latestCard().elements
         .flatMap((element: any) => element.actions ?? [])
@@ -173,23 +179,24 @@ describe('ASK 后续问题提醒策略', () => {
     void second;
   });
 
-  it('方案2：后续问题从30秒开始每隔30秒提醒，回答前不自动推进', async () => {
+  it('方案2：从 2 分钟开始每隔 2 分钟提醒，回答前不自动推进', async () => {
     installDispatcher('repeat-reminder');
     await answerFirst('turn-repeat');
+    expect(notices).toHaveLength(0);
     const second = registerAsk({
       larkAppId: 'cli_ask',
       chatId: 'oc_chat',
       rootMessageId: 'om_root',
       sessionId: 'sess-1',
       questions: [question('第二问')],
-      timeoutMs: 180_000,
+      timeoutMs: 270_000,
       flowId: 'turn-repeat',
       approvers: ['ou_owner'],
     });
     await flushDispatch();
 
-    await vi.advanceTimersByTimeAsync(ASK_REMINDER_DELAY_MS * 3);
-    expect(notices).toHaveLength(4);
+    await vi.advanceTimersByTimeAsync(ASK_REMINDER_DELAY_MS * 2);
+    expect(notices).toHaveLength(2);
     expect(JSON.stringify(latestCard())).toContain('第二问');
     void second;
   });

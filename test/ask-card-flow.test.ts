@@ -20,6 +20,7 @@ import {
   createLarkAskCardDispatcher,
   handleAskCardAction,
 } from '../src/im/lark/ask-card.js';
+import { _resetAskReminderSchedulesForTest } from '../src/im/lark/ask-card-notification.js';
 
 const sentCards: Array<{ messageId: string; card: Record<string, any> }> = [];
 const updatedCards: Array<{ messageId: string; card: Record<string, any> }> = [];
@@ -108,6 +109,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  _resetAskReminderSchedulesForTest();
   _resetForTest();
 });
 
@@ -154,7 +156,7 @@ describe('Codex 连续提问卡片', () => {
     expect(updatedCards.at(-1)!.card.header.title.content).toBe('⏳ 进行中｜选择方案');
   });
 
-  it('同一 flow 只在首次发卡时 @ 提问对象，后续原卡更新不重复刷通知', async () => {
+  it('同一 flow 在卡内 @ 提问对象，首次发卡和后续原卡更新都不额外发即时通知', async () => {
     await selectCurrent(
       'turn-notify-each-question',
       '第一问：是否开始？',
@@ -175,11 +177,8 @@ describe('Codex 连续提问卡片', () => {
     });
     await flushDispatch();
 
-    expect(askNotices).toHaveLength(1);
-    for (const notice of askNotices) {
-      expect(notice).toContain('<at user_id="ou_owner"></at>');
-      expect(notice).toContain('ASK');
-    }
+    expect(askNotices).toHaveLength(0);
+    expect(JSON.stringify(latestCard())).toContain('<at id=ou_owner></at>');
     void second;
   });
 

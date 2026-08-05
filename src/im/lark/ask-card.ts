@@ -25,7 +25,6 @@ import {
 import { buildAskAnswerableContent } from './ask-card-meta.js';
 import {
   cancelAskApproverFollowups,
-  notifyAskApprovers,
   scheduleAskApproverFollowups,
 } from './ask-card-notification.js';
 
@@ -207,19 +206,16 @@ export function createLarkAskCardDispatcher(
           ? await reply(ask.larkAppId, ask.rootMessageId!, cardJson, 'interactive', true)
           : await send(ask.larkAppId, ask.chatId, cardJson, 'interactive');
       }
-      // 普通 ASK 和连续提问第一问立即提醒；后续问题进入 30 秒策略节拍。
-      // questionOffset 同时覆盖跨卡分段，避免第 6 问被误判成新的第一问。
+      // 卡片内已直接 @ 本轮提问对象，发卡后不再重复发送独立即时 @。
+      // 普通 ASK 与连续提问统一从发卡成功后开始延后提醒节拍。
       if (ask.approvers?.length) {
-        const firstQuestion = !ask.flow
-          || (ask.flow.questionOffset === 0 && ask.flow.steps.length === 0);
         const noticeDeps = {
           canReplyToRoot,
           reply,
           send,
           resolvePolicy: deps.resolveAskReminderPolicy,
         };
-        if (firstQuestion) await notifyAskApprovers(ask, noticeDeps);
-        else scheduleAskApproverFollowups(ask, noticeDeps);
+        scheduleAskApproverFollowups(ask, noticeDeps);
       }
       if (deps.onWaitingChange) await deps.onWaitingChange(ask, true);
       return { messageId };
