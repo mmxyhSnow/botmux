@@ -89,4 +89,19 @@ describe('custom release card action', () => {
     expect(result).toEqual({ ok: true });
     expect(customReleaseCardAction).toHaveBeenCalledWith(data, 'h1');
   });
+
+  it('把冻结并部署点击交给同一受控发布处理器', async () => {
+    const handler = await fresh();
+    const customReleaseCardAction = vi.fn(async () => ({ ok: true }));
+    const data = action('ou_owner', 'custom_release_freeze_and_deploy');
+    const result = await handler.handleCardAction(data, {
+      activeSessions: new Map(),
+      sessionReply: vi.fn(async () => 'om_reply'),
+      lastRepoScan: new Map(),
+      customReleaseCardAction,
+    }, 'h1');
+
+    expect(result).toEqual({ ok: true });
+    expect(customReleaseCardAction).toHaveBeenCalledWith(data, 'h1');
+  });
 });

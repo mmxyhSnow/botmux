@@ -184,17 +184,25 @@ function actionButton(record: CustomReleaseEventRecord): Record<string, unknown>
     || record.state.status === 'promoted'
     || record.state.status === 'deploy_failed';
   if (!canFreeze && !canPromote) return undefined;
-  const action = canPromote ? 'custom_release_promote' : 'custom_release_freeze';
-  const label = canPromote
-    ? record.state.status === 'promoted'
-      ? `部署并重启 ${record.event.release.pendingVersion}`
-      : `${record.state.status === 'promote_failed' || record.state.status === 'deploy_failed' ? '重新' : ''}推进并部署 ${record.event.release.pendingVersion}`
-    : `${record.state.status === 'freeze_failed' ? '重新' : ''}冻结 ${record.event.release.pendingVersion}`;
+  const version = record.event.release.pendingVersion;
+  const retry = record.state.status === 'freeze_failed' ? '重新' : '';
+  const actions = canFreeze
+    ? [
+        { action: 'custom_release_freeze', label: `${retry}冻结 ${version}`, type: 'default' },
+        { action: 'custom_release_freeze_and_deploy', label: `${retry}冻结并部署 ${version}`, type: 'primary' },
+      ]
+    : [{
+        action: 'custom_release_promote',
+        label: record.state.status === 'promoted'
+          ? `部署并重启 ${version}`
+          : `${record.state.status === 'promote_failed' || record.state.status === 'deploy_failed' ? '重新' : ''}推进并部署 ${version}`,
+        type: 'primary',
+      }];
   return {
     tag: 'column_set',
     flex_mode: 'none',
     horizontal_spacing: 'default',
-    columns: [{
+    columns: actions.map(item => ({
       tag: 'column',
       width: 'weighted',
       weight: 1,
@@ -203,18 +211,18 @@ function actionButton(record: CustomReleaseEventRecord): Record<string, unknown>
         tag: 'button',
         text: {
           tag: 'plain_text',
-          content: label,
+          content: item.label,
         },
-        type: 'primary',
+        type: item.type,
         behaviors: [{
           type: 'callback',
           value: {
-            action,
+            action: item.action,
             event_id: record.event.eventId,
           },
         }],
       }],
-    }],
+    })),
   };
 }
 

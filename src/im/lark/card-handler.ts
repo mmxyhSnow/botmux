@@ -1293,7 +1293,9 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
   }
 
   if (
-    (value?.action === 'custom_release_freeze' || value?.action === 'custom_release_promote')
+    (value?.action === 'custom_release_freeze'
+      || value?.action === 'custom_release_freeze_and_deploy'
+      || value?.action === 'custom_release_promote')
     && larkAppId
   ) {
     if (!operatorOpenId) {

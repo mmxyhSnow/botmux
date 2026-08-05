@@ -40,7 +40,7 @@ export interface CustomReleaseNotifierDeps {
 }
 
 export interface CustomReleaseCardActionInput {
-  action?: 'custom_release_freeze' | 'custom_release_promote';
+  action?: 'custom_release_freeze' | 'custom_release_freeze_and_deploy' | 'custom_release_promote';
   operatorOpenId?: string;
   messageId?: string;
   eventId?: string;

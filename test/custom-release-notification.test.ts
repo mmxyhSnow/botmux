@@ -161,7 +161,7 @@ describe('custom release summary card', () => {
     });
   });
 
-  it('使用 JSON 2.0 回调按钮并把冻结放在卡片末尾', () => {
+  it('使用 JSON 2.0 回调按钮并把冻结与冻结部署放在卡片末尾', () => {
     const { record } = storeWithEvent();
     const card = JSON.parse(buildCustomReleaseSummaryCard({
       ...record,
@@ -172,8 +172,16 @@ describe('custom release summary card', () => {
     expect(encoded).toContain('本次合入');
     expect(encoded).toContain('当前版本累计改动');
     expect(encoded).toContain('冻结 3.7.1-custom.3');
+    expect(encoded).toContain('冻结并部署 3.7.1-custom.3');
     expect(encoded).toContain('custom_release_freeze');
-    expect(card.body.elements.at(-1).tag).toBe('column_set');
+    expect(encoded).toContain('custom_release_freeze_and_deploy');
+    expect(card.body.elements.at(-1)).toMatchObject({
+      tag: 'column_set',
+      columns: [
+        { elements: [{ type: 'default' }] },
+        { elements: [{ type: 'primary' }] },
+      ],
+    });
   });
 
   it('用空行隔开发版状态、阶段说明和完整差异链接', () => {
@@ -336,6 +344,74 @@ describe('custom release notifier', () => {
     });
     expect(patched.at(-1)).toContain('已冻结');
     expect(patched.at(-1)).toContain('custom_release_promote');
+  });
+
+  it('owner 选择冻结并部署后，冻结成功才衔接现有部署门禁', async () => {
+    const { store } = storeWithEvent();
+    const calls: string[] = [];
+    const notifier = new CustomReleaseNotifier({
+      store,
+      ownerOpenId: () => 'ou_owner',
+      sendCard: async () => 'om_release',
+      updateCard: async () => undefined,
+      freeze: async () => {
+        calls.push('freeze');
+        return { candidateTag: 'release/v3.7.1-custom.3' };
+      },
+      deploy: async record => {
+        calls.push(`deploy:${record.state.candidateTag}`);
+      },
+      finalizeDeploy: async () => ({
+        productionHead: event().integration.head,
+        deployTag: 'deploy/v3.7.1-custom.3',
+      }),
+    });
+    await notifier.flush();
+
+    const accepted = await notifier.handleCardAction({
+      action: 'custom_release_freeze_and_deploy',
+      operatorOpenId: 'ou_owner',
+      messageId: 'om_release',
+      eventId: event().eventId,
+    });
+    expect(JSON.stringify(accepted)).toContain('已授权冻结并部署 3.7.1-custom.3');
+    await notifier.waitForIdle();
+    expect(calls).toEqual(['freeze', 'deploy:release/v3.7.1-custom.3']);
+    expect(store.get(event().eventId)?.state).toMatchObject({
+      status: 'deploying',
+      candidateTag: 'release/v3.7.1-custom.3',
+    });
+  });
+
+  it('冻结并部署在冻结失败时停止，不调用部署门禁', async () => {
+    const { store } = storeWithEvent();
+    let deployed = false;
+    const notifier = new CustomReleaseNotifier({
+      store,
+      ownerOpenId: () => 'ou_owner',
+      sendCard: async () => 'om_release',
+      updateCard: async () => undefined,
+      freeze: async () => { throw new Error('冻结验证失败'); },
+      deploy: async () => { deployed = true; },
+      finalizeDeploy: async () => ({
+        productionHead: event().integration.head,
+        deployTag: 'deploy/v3.7.1-custom.3',
+      }),
+    });
+    await notifier.flush();
+
+    await notifier.handleCardAction({
+      action: 'custom_release_freeze_and_deploy',
+      operatorOpenId: 'ou_owner',
+      messageId: 'om_release',
+      eventId: event().eventId,
+    });
+    await notifier.waitForIdle();
+    expect(deployed).toBe(false);
+    expect(store.get(event().eventId)?.state).toMatchObject({
+      status: 'freeze_failed',
+      lastError: '冻结验证失败',
+    });
   });
 
   it('冻结期间远端 HEAD 改变时只让旧卡过期，不创建候选结果', async () => {

@@ -101,11 +101,14 @@ primary daemon 只向当前 Bot 的 primary owner 维护一张当前待发私聊
 - 投递以仓库与 `custom/dev` HEAD 为幂等键；失败保留在持久化队列，由 daemon 重试。
 - 卡片状态变化会保留有界阶段时间线和每阶段耗时；重复写同一状态不新增节点，避免重启恢复时膨胀。
 - 冻结、推进、部署成功或失败都只回写这张发版卡，不再补发独立文本通知。
+- 卡片末尾同时提供“冻结”和“冻结并部署”：前者只创建不可变候选，后者是冻结成功后继续完整部署的
+  显式授权；两者都绑定当前 eventId、messageId、owner、`custom/dev` HEAD 和待发版本。
 
 ## 冻结候选版本
 
-冻结入口默认只出现在每次合入后的 owner 私聊汇总卡末尾，不在各任务线程重复发送。用户点击后，
-daemon 立即把卡片改成“正在冻结”，后台在 clean 且与远端一致的 `custom/dev` checkout 执行：
+冻结入口默认只出现在每次合入后的 owner 私聊汇总卡末尾，不在各任务线程重复发送。用户点击“冻结”或
+“冻结并部署”后，daemon 立即把卡片改成“正在冻结”，后台在 clean 且与远端一致的 `custom/dev`
+checkout 执行：
 
 ```bash
 pnpm release:prepare -- \
@@ -128,12 +131,14 @@ Node 必须满足 `package.json.engines`，pnpm 必须与 `packageManager` 精�
 
 候选 tag 创建后内容不可再修改。后续新需求继续加入 `custom/dev` 时自然进入下一个 `custom.N`。
 测试和构建结束、创建 tag 之前必须再次 fetch 并核对 HEAD 与版本；期间若有新合入，只把旧卡标为过期，
-不得为旧 HEAD 创建候选标签。
+不得为旧 HEAD 创建候选标签。“冻结并部署”只有在这里成功取得准确候选 Tag 后才进入下一节的部署门禁；
+冻结失败、HEAD 过期或版本被占用时必须停止，不能推进 `custom/prod`。
 
 ## 推进生产与部署
 
-owner 收到 HEAD 绑定的私聊汇总卡后，点击“推进并部署 X.Y.Z-custom.N”本身就是针对该候选 Tag 的
-完整显式授权，不再要求回到任务对话补发“授权”。卡片回调按顺序完成：
+owner 点击冻结后卡片的“推进并部署 X.Y.Z-custom.N”，或直接点击待发卡的“冻结并部署
+X.Y.Z-custom.N”，本身就是针对该卡绑定 HEAD 和候选 Tag 的完整显式授权，不再要求回到任务对话补发
+“授权”。组合入口先通过上一节全部冻结门禁，再按顺序完成：
 
 1. 再次核对卡片 messageId、owner、候选 Tag 与远端 HEAD。
 2. 在 `~/.botmux/releases/<版本>/` 创建精确候选 tag 的 detached worktree，独立安装、构建和 smoke；

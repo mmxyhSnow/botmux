@@ -40,8 +40,8 @@ commit、目标 `custom/dev`、待发版本及完成后的回读条件，不能�
 
 用户授权加入后必须走 `pnpm release:join` 统一入口。远端 `custom/dev` push 并回读成功后，primary daemon
 会给 Bot owner 新发一张私聊汇总卡，展示本次合入和当前待发版累计改动，卡片末尾提供 HEAD 绑定的
-“冻结 `<version>`”按钮。原任务线程只报告合入和通知排队结果，不得再附冻结按钮；冻结、推进生产、
-部署和重启仍是各自独立授权。
+“冻结 `<version>`”和“冻结并部署 `<version>`”按钮。前者只冻结候选；后者的点击是对该 HEAD 冻结、
+推进生产、部署和重启的完整显式授权。原任务线程只报告合入和通知排队结果，不得再附冻结按钮。
 
 ```html
 <!--botmux-actions:{"version":2,"relationship":"alternatives","actions":[{"label":"加入待发版 3.7.1-custom.3","target":"核对 refactor/example 的远端 HEAD 仍为 <commit>，再将该提交正常合入 custom/dev","scope":"仅处理 refactor/example@<commit>、custom/dev 和待发版 3.7.1-custom.3，不推进 custom/prod 或部署","acceptance":"push 后回读 origin/custom/dev HEAD 和待发版本，并报告私聊通知排队状态","authorization":"explicit"},{"label":"暂不加入","target":"保留 refactor/example@<commit> 为独立开发分支","scope":"保持 custom/dev、custom/prod 和版本标签不变","acceptance":"回读开发分支远端 HEAD 仍为 <commit>，并确认待发版 3.7.1-custom.3 未变化"}]}-->
@@ -68,6 +68,8 @@ commit、目标 `custom/dev`、待发版本及完成后的回读条件，不能�
   升级、部署、重启或回滚时执行。
 - owner 点击 HEAD 绑定私聊发版卡上的“推进并部署候选版本”按钮，就是对该卡候选 Tag 的完整显式授权；
   回调必须直接完成推进、构建、wrapper 切换、重启与运行态验收，不得再要求用户补发一条授权消息。
+- owner 点击待发卡上的“冻结并部署候选版本”按钮，就是对该卡绑定 HEAD 的冻结和后续完整部署的显式授权；
+  只有冻结成功并取得准确候选 Tag 后才能衔接既有部署门禁，冻结失败不得推进生产。
 
 ## 先做身份与状态校验
 

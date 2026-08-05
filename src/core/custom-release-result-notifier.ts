@@ -41,6 +41,11 @@ export class CustomReleaseResultNotifier {
     }
   }
 
+  /** 组合动作进入部署阶段时立即刷新原卡；刷新失败不阻断已授权的发布门禁。 */
+  async refreshRunningCard(record: CustomReleaseEventRecord): Promise<void> {
+    await this.syncCard(record, true);
+  }
+
   private async syncCard(record: CustomReleaseEventRecord, force = false): Promise<void> {
     const { status, messageId } = record.state;
     if (!messageId || (!force && record.state.notifiedStatus === status)) return;

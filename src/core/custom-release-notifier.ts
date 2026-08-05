@@ -7,10 +7,10 @@ import { customReleaseMessageUuid } from '../services/custom-release-event.js';
 import { buildCustomReleaseSummaryCard } from '../im/lark/custom-release-card.js';
 import { CustomReleaseResultNotifier } from './custom-release-result-notifier.js';
 import {
-  StaleCustomReleaseHeadError,
   type CustomReleaseCardActionInput,
   type CustomReleaseNotifierDeps,
 } from './custom-release-notifier-types.js';
+import { runCustomReleaseFreeze } from './custom-release-freeze-runner.js';
 
 function errorText(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim().slice(0, 1000);
@@ -146,12 +146,11 @@ export class CustomReleaseNotifier {
     if (!record || !record.state.messageId || record.state.messageId !== input.messageId) {
       return { toast: { type: 'error', content: '这张发版卡片已失效或来源不匹配' } };
     }
-    return input.action === 'custom_release_promote'
-      ? this.handlePromoteAction(record)
-      : this.handleFreezeAction(record);
+    if (input.action === 'custom_release_promote') return this.handlePromoteAction(record);
+    return this.handleFreezeAction(record, input.action === 'custom_release_freeze_and_deploy');
   }
 
-  private handleFreezeAction(record: CustomReleaseEventRecord): any {
+  private handleFreezeAction(record: CustomReleaseEventRecord, deployAfterFreeze = false): any {
     if (record.state.status === 'stale' || record.state.status === 'frozen' || record.state.status === 'freezing') {
       return rawCard(record, {
         type: 'info',
@@ -168,10 +167,15 @@ export class CustomReleaseNotifier {
       lastError: undefined,
       notifiedStatus: undefined,
     });
-    const job = this.freezeInBackground(claimed);
+    const job = this.freezeInBackground(claimed, deployAfterFreeze);
     this.jobs.add(job);
     void job.finally(() => this.jobs.delete(job));
-    return rawCard(claimed, { type: 'success', content: '已开始冻结验证' });
+    return rawCard(claimed, {
+      type: 'success',
+      content: deployAfterFreeze
+        ? `已授权冻结并部署 ${record.event.release.pendingVersion}`
+        : '已开始冻结验证',
+    });
   }
 
   private handlePromoteAction(record: CustomReleaseEventRecord): any {
@@ -205,22 +209,14 @@ export class CustomReleaseNotifier {
     });
   }
 
-  private async freezeInBackground(record: CustomReleaseEventRecord): Promise<void> {
-    let settled: CustomReleaseEventRecord;
-    try {
-      const result = await this.deps.freeze(record);
-      settled = this.deps.store.updateState(record.event.eventId, {
-        status: 'frozen',
-        candidateTag: result.candidateTag,
-        lastError: undefined,
-      });
-    } catch (error) {
-      settled = this.deps.store.updateState(record.event.eventId, {
-        status: error instanceof StaleCustomReleaseHeadError ? 'stale' : 'freeze_failed',
-        lastError: errorText(error),
-      });
-    }
-    await this.resultNotifier.notifySettled(settled);
+  private async freezeInBackground(record: CustomReleaseEventRecord, deployAfterFreeze = false): Promise<void> {
+    await runCustomReleaseFreeze(record, deployAfterFreeze, {
+      store: this.deps.store,
+      freeze: this.deps.freeze,
+      notifySettled: settled => this.resultNotifier.notifySettled(settled),
+      refreshRunning: running => this.resultNotifier.refreshRunningCard(running),
+      startDeploy: deploying => this.deployInBackground(deploying),
+    });
   }
 
   private async deployInBackground(record: CustomReleaseEventRecord): Promise<void> {

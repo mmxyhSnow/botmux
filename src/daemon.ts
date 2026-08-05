@@ -4763,7 +4763,9 @@ const cardDeps: CardHandlerDeps = {
       return Promise.resolve({ toast: { type: 'error', content: '这张发版卡片不属于当前 Bot' } });
     }
     const rawAction = data.action?.value?.action;
-    const action = rawAction === 'custom_release_freeze' || rawAction === 'custom_release_promote'
+    const action = rawAction === 'custom_release_freeze'
+      || rawAction === 'custom_release_freeze_and_deploy'
+      || rawAction === 'custom_release_promote'
       ? rawAction
       : undefined;
     return customReleaseNotifier.handleCardAction({
