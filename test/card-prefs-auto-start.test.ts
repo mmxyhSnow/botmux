@@ -65,6 +65,7 @@ describe('card-prefs store — 主动开工 fields', () => {
     expect(prefs.autoStartOnGroupJoinPrompt).toBe('');
     expect(prefs.regularGroupReplyMode).toBe('chat-topic');
     expect(prefs.regularGroupMentionMode).toBe('always');
+    expect(prefs.askReminderPolicy).toBe('auto-recommend');
   });
 
   it('persists toggles + prompt to bots.json and syncs in-memory config (FR-9)', async () => {
@@ -78,6 +79,7 @@ describe('card-prefs store — 主动开工 fields', () => {
       autoStartOnNewTopic: true,
       regularGroupReplyMode: 'shared',
       regularGroupMentionMode: 'never',
+      askReminderPolicy: 'repeat-reminder',
     });
 
     expect(r.ok).toBe(true);
@@ -87,6 +89,7 @@ describe('card-prefs store — 主动开工 fields', () => {
       expect(r.prefs.autoStartOnGroupJoinPrompt).toBe('  先做代码审查再回答 ');
       expect(r.prefs.regularGroupReplyMode).toBe('shared');
       expect(r.prefs.regularGroupMentionMode).toBe('never');
+      expect(r.prefs.askReminderPolicy).toBe('repeat-reminder');
     }
 
     // On disk
@@ -96,6 +99,7 @@ describe('card-prefs store — 主动开工 fields', () => {
     expect(disk.autoStartOnGroupJoinPrompt).toBe('  先做代码审查再回答 ');
     expect(disk.regularGroupReplyMode).toBe('shared');
     expect(disk.regularGroupMentionMode).toBe('never');
+    expect(disk.askReminderPolicy).toBe('repeat-reminder');
 
     // In-memory registry synced (routing reads bot.config directly, no restart)
     const cfg = registry.getBot('app_default').config;
@@ -104,6 +108,7 @@ describe('card-prefs store — 主动开工 fields', () => {
     expect(cfg.autoStartOnGroupJoinPrompt).toBe('  先做代码审查再回答 ');
     expect(cfg.regularGroupReplyMode).toBe('shared');
     expect(cfg.regularGroupMentionMode).toBe('never');
+    expect(cfg.askReminderPolicy).toBe('repeat-reminder');
   });
 
   it('silentTurnReactions round-trips through the dashboard card-prefs store', async () => {

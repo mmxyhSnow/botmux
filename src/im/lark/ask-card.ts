@@ -5,6 +5,7 @@ import type {
   AskResult,
   PendingAsk,
 } from '../../core/ask-types.js';
+import type { AskReminderPolicy } from '../../bot-registry.js';
 import {
   findPendingAskByAnchor,
   getAskSnapshot,
@@ -22,7 +23,11 @@ import {
   buildPreviousAskFlowSegmentCard,
 } from './ask-card-flow.js';
 import { buildAskAnswerableContent } from './ask-card-meta.js';
-import { notifyAskApprovers } from './ask-card-notification.js';
+import {
+  cancelAskApproverFollowups,
+  notifyAskApprovers,
+  scheduleAskApproverFollowups,
+} from './ask-card-notification.js';
 
 /** 旧单选即答动作（保留兼容旧卡片回调；Task 5 新增 ask_submit 路径）。 */
 export const ASK_SELECT_ACTION = 'ask_select';
@@ -56,6 +61,8 @@ export interface AskCardDispatcherDeps {
   sendMessage?: typeof sendMessage;
   replyMessage?: typeof replyMessage;
   updateMessage?: typeof updateMessage;
+  /** ASK 提醒策略读取器；生产默认读取 bot 热配置，测试可定向覆盖。 */
+  resolveAskReminderPolicy?: (larkAppId: string) => AskReminderPolicy;
 }
 
 /** 用于判断一条外部机器人消息是否遮挡当前 ASK 的最小路由信息。 */
@@ -169,7 +176,6 @@ export function createLarkAskCardDispatcher(
       const canReplyToRoot = typeof ask.rootMessageId === 'string'
         && ask.rootMessageId.startsWith('om_');
       let messageId: string;
-      const reusedFlowCard = !!ask.flow?.cardMessageId;
       if (ask.flow?.cardMessageId) {
         await update(ask.larkAppId, ask.flow.cardMessageId, cardJson);
         messageId = ask.flow.cardMessageId;
@@ -178,14 +184,24 @@ export function createLarkAskCardDispatcher(
           ? await reply(ask.larkAppId, ask.rootMessageId!, cardJson, 'interactive', true)
           : await send(ask.larkAppId, ask.chatId, cardJson, 'interactive');
       }
-      // 普通 ASK 没有锁定对象，保持原有发卡时序，不引入无意义的异步等待。
-      // 连续提问复用同一张卡时不重复发送独立 @ 文本；卡内问题已原地更新。
-      if (ask.approvers?.length && !reusedFlowCard) {
-        await notifyAskApprovers(ask, { canReplyToRoot, reply, send });
+      // 普通 ASK 和连续提问第一问立即提醒；后续问题进入 30 秒策略节拍。
+      // questionOffset 同时覆盖跨卡分段，避免第 6 问被误判成新的第一问。
+      if (ask.approvers?.length) {
+        const firstQuestion = !ask.flow
+          || (ask.flow.questionOffset === 0 && ask.flow.steps.length === 0);
+        const noticeDeps = {
+          canReplyToRoot,
+          reply,
+          send,
+          resolvePolicy: deps.resolveAskReminderPolicy,
+        };
+        if (firstQuestion) await notifyAskApprovers(ask, noticeDeps);
+        else scheduleAskApproverFollowups(ask, noticeDeps);
       }
       return { messageId };
     },
     async onSettle(ask, result) {
+      cancelAskApproverFollowups(ask.askId);
       if (!ask.cardMessageId) return;
       try {
         await update(ask.larkAppId, ask.cardMessageId, buildAskCard(ask, result));

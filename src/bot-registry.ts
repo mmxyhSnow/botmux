@@ -983,6 +983,9 @@ export interface VcMeetingRealtimeVoiceConfig {
   testSpeakOnStartText?: string;
 }
 
+/** ASK 后续问题的提醒与自动推进策略。 */
+export type AskReminderPolicy = 'auto-recommend' | 'repeat-reminder';
+
 export interface BotConfig {
   larkAppId: string;
   larkAppSecret: string;
@@ -1061,6 +1064,8 @@ export interface BotConfig {
    * `additionalContext`, so the desktop user bubble stays clean. Missing/false
    * preserves the legacy XML-ish prompt byte-for-byte. Codex App only. */
   codexAppCleanInput?: boolean;
+  /** ASK 后续问题策略；缺省为 auto-recommend（方案 1）。 */
+  askReminderPolicy?: AskReminderPolicy;
   /** Codex App 专用即时进度卡。缺省开启，仅显式 false 关闭。 */
   codexAppImmediateProgressCard?: boolean;
   /**
@@ -2458,6 +2463,8 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
         : undefined,
       disableCliBypass: entry.disableCliBypass === true,
       codexAppCleanInput: entry.codexAppCleanInput === true || undefined,
+      // 方案 1 是默认值，只有方案 2 需要显式落盘。
+      askReminderPolicy: entry.askReminderPolicy === 'repeat-reminder' ? 'repeat-reminder' : undefined,
       codexAppImmediateProgressCard: typeof entry.codexAppImmediateProgressCard === 'boolean'
         ? entry.codexAppImmediateProgressCard
         : undefined,

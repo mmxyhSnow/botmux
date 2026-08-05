@@ -332,6 +332,54 @@ describe('PUT /api/bot-card-prefs — Codex App clean history', () => {
   });
 });
 
+describe('PUT /api/bot-card-prefs — ASK 提醒策略', () => {
+  it('默认返回方案1，并能即时切换方案2后恢复默认', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dashboard-ipc-ask-reminder-'));
+    const configPath = join(dir, 'bots.json');
+    const appId = 'test-ask-reminder-app';
+    const prevBotsConfig = process.env.BOTS_CONFIG;
+    try {
+      process.env.BOTS_CONFIG = configPath;
+      writeFileSync(configPath, JSON.stringify([{
+        larkAppId: appId,
+        larkAppSecret: 'secret',
+        cliId: 'codex-app',
+      }], null, 2));
+      loadBotConfigs().forEach((c: any) => registerBot(c));
+      setLarkAppId(appId);
+      handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+      const base = `http://127.0.0.1:${handle.port}`;
+
+      expect(await (await fetch(`${base}/api/bot-default-oncall`)).json())
+        .toMatchObject({ askReminderPolicy: 'auto-recommend' });
+
+      const repeat = await fetch(`${base}/api/bot-card-prefs`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ askReminderPolicy: 'repeat-reminder' }),
+      });
+      expect(repeat.status).toBe(200);
+      expect(await repeat.json()).toMatchObject({ ok: true, askReminderPolicy: 'repeat-reminder' });
+      expect(JSON.parse(readFileSync(configPath, 'utf-8'))[0].askReminderPolicy).toBe('repeat-reminder');
+
+      const automatic = await fetch(`${base}/api/bot-card-prefs`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ askReminderPolicy: 'auto-recommend' }),
+      });
+      expect(automatic.status).toBe(200);
+      expect(await automatic.json()).toMatchObject({ ok: true, askReminderPolicy: 'auto-recommend' });
+      expect(JSON.parse(readFileSync(configPath, 'utf-8'))[0].askReminderPolicy).toBeUndefined();
+    } finally {
+      if (handle) await handle.close();
+      handle = null;
+      if (prevBotsConfig === undefined) delete process.env.BOTS_CONFIG;
+      else process.env.BOTS_CONFIG = prevBotsConfig;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('PUT /api/bot-card-prefs — reply-card usage display mode', () => {
   it('defaults to streaming and persists explicit footer/off changes immediately', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dashboard-ipc-usage-display-'));

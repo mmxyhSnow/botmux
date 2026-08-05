@@ -436,6 +436,7 @@ function patchCardPrefsFromBody(bot: BotDefaultsRow, body: any): BotDefaultsRow 
     disableStreamingCard: body.disableStreamingCard,
     silentTurnReactions: body.silentTurnReactions,
     codexAppCleanInput: body.codexAppCleanInput,
+    askReminderPolicy: body.askReminderPolicy,
     writableTerminalLinkInCard: body.writableTerminalLinkInCard,
     privateCard: body.privateCard,
     botToBotSameDir: body.botToBotSameDir,
@@ -2205,6 +2206,9 @@ export function CardBehaviorSection(props: { bot: BotDefaultsRow; putCardPref(pa
   const tr = useT();
   const { bot, putCardPref } = props;
   const [usageDisplay, setUsageDisplay] = useState<'streaming' | 'footer' | 'off'>(bot.usageDisplay ?? 'streaming');
+  const [askReminderPolicy, setAskReminderPolicy] = useState<'auto-recommend' | 'repeat-reminder'>(
+    bot.askReminderPolicy === 'repeat-reminder' ? 'repeat-reminder' : 'auto-recommend',
+  );
   const [disableStreaming, setDisableStreaming] = useState(bot.disableStreamingCard === true);
   const [silentReactions, setSilentReactions] = useState(bot.silentTurnReactions === true);
   const [writableLink, setWritableLink] = useState(bot.writableTerminalLinkInCard === true);
@@ -2214,11 +2218,12 @@ export function CardBehaviorSection(props: { bot: BotDefaultsRow; putCardPref(pa
 
   useEffect(() => {
     setUsageDisplay(bot.usageDisplay ?? 'streaming');
+    setAskReminderPolicy(bot.askReminderPolicy === 'repeat-reminder' ? 'repeat-reminder' : 'auto-recommend');
     setDisableStreaming(bot.disableStreamingCard === true);
     setSilentReactions(bot.silentTurnReactions === true);
     setWritableLink(bot.writableTerminalLinkInCard === true);
     setPrivateCard(bot.privateCard === true);
-  }, [bot.disableStreamingCard, bot.privateCard, bot.usageDisplay, bot.silentTurnReactions, bot.writableTerminalLinkInCard]);
+  }, [bot.askReminderPolicy, bot.disableStreamingCard, bot.privateCard, bot.usageDisplay, bot.silentTurnReactions, bot.writableTerminalLinkInCard]);
 
   async function savePatch(patch: CardPrefPatch, key: string, rollback?: () => void): Promise<void> {
     setBusy(key);
@@ -2243,6 +2248,10 @@ export function CardBehaviorSection(props: { bot: BotDefaultsRow; putCardPref(pa
     { value: 'streaming', label: tr('botDefaults.usageDisplayStreaming') },
     { value: 'footer', label: tr('botDefaults.usageDisplayFooter') },
     { value: 'off', label: tr('botDefaults.usageDisplayOff') },
+  ];
+  const askReminderPolicyOptions: DropdownFieldOption<'auto-recommend' | 'repeat-reminder'>[] = [
+    { value: 'auto-recommend', label: tr('botDefaults.askReminderPolicyAuto') },
+    { value: 'repeat-reminder', label: tr('botDefaults.askReminderPolicyRepeat') },
   ];
 
   return (
@@ -2271,6 +2280,27 @@ export function CardBehaviorSection(props: { bot: BotDefaultsRow; putCardPref(pa
           </div>
         </div>
       )}
+      <div className="bd-row">
+        <div className="bd-field">
+          <FieldTitle help={tr('botDefaults.askReminderPolicyHelp')}>{tr('botDefaults.askReminderPolicy')}</FieldTitle>
+          <DropdownField
+            dataInput="askReminderPolicy"
+            ariaLabel={tr('botDefaults.askReminderPolicy')}
+            value={askReminderPolicy}
+            disabled={busy === 'ask-reminder'}
+            options={askReminderPolicyOptions}
+            onChange={next => {
+              const previous = askReminderPolicy;
+              setAskReminderPolicy(next);
+              void savePatch(
+                { askReminderPolicy: next },
+                'ask-reminder',
+                () => setAskReminderPolicy(previous),
+              );
+            }}
+          />
+        </div>
+      </div>
       <div className="bd-toggle-grid bd-card-behavior-grid">
         <ToggleRow
           checked={disableStreaming}
