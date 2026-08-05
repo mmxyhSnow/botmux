@@ -271,6 +271,8 @@ export interface Session {
     mode: 'bot-root';
     originalRootMessageId: string;
     botRootMessageId: string;
+    /** 新会话使用 CardKit 2.0；缺省表示升级前的文本根消息。 */
+    rootMessageType?: 'interactive';
     title: string;
     phase: 'running' | 'waiting' | 'completed' | 'failed' | 'blocked' | 'interrupted';
     waitingForUser?: boolean;

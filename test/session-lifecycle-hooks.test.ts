@@ -446,6 +446,38 @@ describe('worker-pool lifecycle hook integration', () => {
     });
   });
 
+  it('keeps the first task summary stable while updating a CardKit root status', async () => {
+    botConfigState.value = {
+      larkAppId: 'app_test',
+      larkAppSecret: 'secret',
+      cliId: 'codex-app',
+      codexAppImmediateProgressCard: false,
+    };
+    const ds = makeDs({ worker: makeFakeWorker() });
+    ds.session.cliId = 'codex-app';
+    ds.session.topicStatusBinding = {
+      mode: 'bot-root',
+      originalRootMessageId: 'om_original',
+      botRootMessageId: 'om_root',
+      rootMessageType: 'interactive',
+      title: '根卡片状态模型优化',
+      phase: 'completed',
+      waitingForUser: false,
+      createdAt: '2026-08-05T00:00:00.000Z',
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    };
+
+    await beginCodexAppProgressTurn(ds, 'om_followup', '这是后续进度概括');
+    await flush();
+
+    expect(ds.session.topicStatusBinding.title).toBe('根卡片状态模型优化');
+    const rootPatch = updateMessageMock.mock.calls.find(call => call[1] === 'om_root');
+    expect(rootPatch).toBeDefined();
+    const card = JSON.parse(String(rootPatch?.[2]));
+    expect(card.header.title.content).toBe(':Typing: 进行中｜根卡片状态模型优化');
+    expect(card.header.title.content).not.toContain('后续进度概括');
+  });
+
   it('TraeX defaults progress cards on without switching the session CLI', async () => {
     botConfigState.value = {
       larkAppId: 'app_test',
