@@ -28,6 +28,7 @@ import {
   normalizeUsageDisplay,
   DEFAULT_USAGE_DISPLAY,
   type ChatReplyMode,
+  type AskReminderPolicy,
   type UsageDisplayMode,
 } from '../bot-registry.js';
 import { logger } from '../utils/logger.js';
@@ -43,6 +44,8 @@ export interface BotCardPrefs {
    * legacy full-prompt UserMessage; true moves Botmux metadata to hidden
    * app-server context for newly dispatched turns. */
   codexAppCleanInput: boolean;
+  /** ASK 后续问题策略；缺省为方案 1。 */
+  askReminderPolicy: AskReminderPolicy;
   writableTerminalLinkInCard: boolean;
   privateCard: boolean;
   /** When true, this bot's daemon watches host load/mem and DMs the owner on
@@ -77,6 +80,7 @@ export function getBotCardPrefs(larkAppId: string): BotCardPrefs {
       disableStreamingCard: c.disableStreamingCard === true,
       silentTurnReactions: c.silentTurnReactions === true,
       codexAppCleanInput: c.codexAppCleanInput === true,
+      askReminderPolicy: c.askReminderPolicy === 'repeat-reminder' ? 'repeat-reminder' : 'auto-recommend',
       writableTerminalLinkInCard: c.writableTerminalLinkInCard === true,
       privateCard: c.privateCard === true,
       overloadAlert: c.overloadAlert === true,
@@ -95,6 +99,7 @@ export function getBotCardPrefs(larkAppId: string): BotCardPrefs {
       disableStreamingCard: false,
       silentTurnReactions: false,
       codexAppCleanInput: false,
+      askReminderPolicy: 'auto-recommend',
       writableTerminalLinkInCard: false,
       privateCard: false,
       overloadAlert: false,
@@ -167,12 +172,19 @@ export async function updateBotCardPrefs(
     if (val === 'footer' || val === 'off') entry[key] = val;
     else delete entry[key];
   };
+  // ASK 策略：只存方案 2；缺省即方案 1，兼容既有 bots.json。
+  const applyAskReminderPolicy = (entry: any, key: keyof BotCardPrefs, val: AskReminderPolicy | undefined) => {
+    if (val === undefined) return;
+    if (val === 'repeat-reminder') entry[key] = val;
+    else delete entry[key];
+  };
 
   const r = await rmwBotEntry<BotCardPrefs>(larkAppId, (entry) => {
     applyUsageDisplay(entry, 'usageDisplay', patch.usageDisplay);
     apply(entry, 'disableStreamingCard', patch.disableStreamingCard);
     apply(entry, 'silentTurnReactions', patch.silentTurnReactions);
     apply(entry, 'codexAppCleanInput', patch.codexAppCleanInput);
+    applyAskReminderPolicy(entry, 'askReminderPolicy', patch.askReminderPolicy);
     apply(entry, 'writableTerminalLinkInCard', patch.writableTerminalLinkInCard);
     apply(entry, 'privateCard', patch.privateCard);
     apply(entry, 'overloadAlert', patch.overloadAlert);
@@ -190,6 +202,7 @@ export async function updateBotCardPrefs(
         disableStreamingCard: entry.disableStreamingCard === true,
         silentTurnReactions: entry.silentTurnReactions === true,
         codexAppCleanInput: entry.codexAppCleanInput === true,
+        askReminderPolicy: entry.askReminderPolicy === 'repeat-reminder' ? 'repeat-reminder' : 'auto-recommend',
         writableTerminalLinkInCard: entry.writableTerminalLinkInCard === true,
         privateCard: entry.privateCard === true,
         overloadAlert: entry.overloadAlert === true,
@@ -224,6 +237,11 @@ export async function updateBotCardPrefs(
   }
   if (patch.codexAppCleanInput !== undefined) {
     bot.config.codexAppCleanInput = patch.codexAppCleanInput || undefined;
+  }
+  if (patch.askReminderPolicy !== undefined) {
+    bot.config.askReminderPolicy = patch.askReminderPolicy === 'repeat-reminder'
+      ? 'repeat-reminder'
+      : undefined;
   }
   if (patch.writableTerminalLinkInCard !== undefined) {
     bot.config.writableTerminalLinkInCard = patch.writableTerminalLinkInCard || undefined;
@@ -265,6 +283,7 @@ export async function updateBotCardPrefs(
     `disableStreamingCard=${r.result.disableStreamingCard} ` +
     `silentTurnReactions=${r.result.silentTurnReactions} ` +
     `codexAppCleanInput=${r.result.codexAppCleanInput} ` +
+    `askReminderPolicy=${r.result.askReminderPolicy} ` +
     `writableTerminalLinkInCard=${r.result.writableTerminalLinkInCard} privateCard=${r.result.privateCard} ` +
     `overloadAlert=${r.result.overloadAlert} ` +
     `autoStartOnGroupJoin=${r.result.autoStartOnGroupJoin} autoStartOnNewTopic=${r.result.autoStartOnNewTopic} ` +
