@@ -45,7 +45,7 @@ describe('topic status display', () => {
       expect(card.schema).toBe('2.0');
       expect(card.header.template).toBe(template);
       expect(card.header.title).toEqual({
-        tag: 'lark_md',
+        tag: 'plain_text',
         content: `${prefix}｜根卡片状态模型优化`,
       });
       expect(card.body.elements[0].content).toBe('**任务概括**\n根卡片状态模型优化');
@@ -54,7 +54,10 @@ describe('topic status display', () => {
 
   it('escapes user-controlled task summaries in CardKit markdown', () => {
     const card = JSON.parse(buildTopicStatusRootCard('running', '<at id=all></at> *任务*'));
-    expect(card.header.title.content).toContain('&lt;at id=all&gt;&lt;/at&gt; \\*任务\\*');
+    expect(card.header.title).toEqual({
+      tag: 'plain_text',
+      content: ':Typing: 进行中｜<at id=all></at> *任务*',
+    });
     expect(card.body.elements[0].content).not.toContain('<at id=all>');
   });
 

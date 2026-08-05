@@ -67,7 +67,7 @@ function rootCardPhase(phase: TopicTaskPhase): TopicRootCardPhase {
   return phase === 'blocked' || phase === 'interrupted' ? 'failed' : phase;
 }
 
-/** 防止任务概括在 lark_md 标题或正文里注入 @ 与格式标签。 */
+/** 防止任务概括在 lark_md 正文里注入 @ 与格式标签。 */
 function escapeRootCardMarkdown(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -94,8 +94,9 @@ export function buildTopicStatusRootCard(phase: TopicTaskPhase, title: unknown):
     header: {
       template: status.template,
       title: {
-        tag: 'lark_md',
-        content: `${status.emoji} ${status.label}｜${escapedTitle}`,
+        // 实测消息 PATCH 会裁掉 lark_md 标题；plain_text 保留标题且仍支持飞书表情文案。
+        tag: 'plain_text',
+        content: `${status.emoji} ${status.label}｜${stableTitle}`,
       },
     },
     body: {
