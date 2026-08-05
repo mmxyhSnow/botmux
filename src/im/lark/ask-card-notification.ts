@@ -1,7 +1,7 @@
 /**
  * ASK 新问题通知发送器。
  *
- * 卡片更新不会触发飞书的新消息提醒，因此按当前策略由这里单独发送真实 @。
+ * 卡片本身已展示真实 @；持续未回答时，按当前策略由这里延后发送提醒。
  */
 import { getAskSnapshot, submitAskFromDesktop } from '../../core/ask-broker.js';
 import type { AskQuestion, PendingAsk } from '../../core/ask-types.js';
@@ -20,8 +20,8 @@ interface AskNoticeDeps {
   resolvePolicy?: (larkAppId: string) => AskReminderPolicy;
 }
 
-/** 后续问题的统一提醒间隔。 */
-export const ASK_REMINDER_DELAY_MS = 30_000;
+/** ASK 未回答时的统一提醒间隔。 */
+export const ASK_REMINDER_DELAY_MS = 2 * 60_000;
 
 const askReminderTimers = new Map<string, NodeJS.Timeout>();
 
@@ -51,7 +51,8 @@ function resolvePolicy(ask: PendingAsk, deps: AskNoticeDeps): AskReminderPolicy 
 }
 
 /**
- * 为连续提问的后续问题安排 30 秒节拍。
+ * 为每轮 ASK 安排 2 分钟节拍。发卡时不另外发送即时 @，
+ * 避免与卡片内的提问对象 @ 重复。
  *
  * 方案 1 的首个节拍只提醒，第二个节拍尝试按每题唯一推荐项推进；缺少明确
  * 推荐时安全退化为持续提醒。方案 2 每个节拍都只提醒。
