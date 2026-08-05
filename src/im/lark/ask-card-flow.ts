@@ -1,12 +1,11 @@
 /**
  * Codex 连续提问卡片渲染。
  *
- * 历史答案由 ask broker 提供只读快照；本模块只负责把已完成问题绘制为
- * 高亮且不可点击的按钮，并把当前问题追加在同一卡片下方。
+ * 历史答案由 ask broker 提供只读快照；本模块把已完成问题压缩为有界摘要，
+ * 只完整绘制当前问题，避免连续追问让飞书客户端自动折叠整张卡片。
  */
 import type {
   AskFlowStep,
-  AskQuestion,
   AskResult,
   PendingAsk,
 } from '../../core/ask-types.js';
@@ -21,26 +20,21 @@ export interface AskFlowActions {
 }
 
 const MAX_BUTTONS_PER_ACTION_ROW = 4;
+const MAX_VISIBLE_HISTORY_QUESTIONS = 3;
 
-/** 自动分段时构造上一张卡片的只读完成态。 */
+/**
+ * 兼容原分段调用入口，但不再生成上一张完成卡。
+ * broker 会把旧 messageId 暂存在 previousSegment；将它复制到本次只读快照后，
+ * dispatcher 会走原有 updateMessage 分支，从而继续复用同一张 ASK 卡片。
+ */
 export function buildPreviousAskFlowSegmentCard(
   ask: PendingAsk,
-  actions: AskFlowActions,
+  _actions: AskFlowActions,
 ): { messageId: string; cardJson: string } | undefined {
   const previous = ask.flow?.previousSegment;
-  if (!previous) return undefined;
-  const previousAsk: PendingAsk = {
-    ...ask,
-    settled: true,
-    flow: {
-      flowId: ask.flow!.flowId,
-      cardMessageId: previous.cardMessageId,
-      questionOffset: previous.questionOffset,
-      steps: previous.steps,
-    },
-  };
-  const cardJson = buildAskFlowCard(previousAsk, actions, undefined, true);
-  return cardJson ? { messageId: previous.cardMessageId, cardJson } : undefined;
+  if (!previous || !ask.flow) return undefined;
+  ask.flow.cardMessageId = previous.cardMessageId;
+  return undefined;
 }
 
 /** 存在 flow 时返回完整卡片；普通单次 ask 返回 undefined 走旧渲染。 */
@@ -52,12 +46,15 @@ export function buildAskFlowCard(
 ): string | undefined {
   if (!ask.flow) return undefined;
   const locale = localeForBot(ask.larkAppId);
-  const elements: Array<Record<string, unknown>> = [buildMeta(ask, locale), { tag: 'hr' }];
+  const elements: Array<Record<string, unknown>> = [buildMeta(ask, locale)];
   let questionNumber = ask.flow.questionOffset + 1;
 
-  for (const step of ask.flow.steps) {
-    questionNumber = appendCompletedStep(elements, step, questionNumber, locale);
-  }
+  appendHistorySummary(elements, ask, locale);
+  elements.push({ tag: 'hr' });
+  questionNumber += ask.flow.steps.reduce(
+    (total, step) => total + step.questions.length,
+    0,
+  );
 
   if (!ask.settled) {
     appendActiveQuestions(elements, ask, questionNumber, actions, locale);
@@ -89,54 +86,74 @@ export function buildAskFlowCard(
   });
 }
 
-/** 已完成步骤保留原问题，选中项高亮，所有按钮禁用。 */
-function appendCompletedStep(
+/**
+ * 把历史答案压成单个文本组件，最多展示最近三问，其余只保留完成数量。
+ * broker 的 previousSegment 只在跨越五问边界时短暂存在；这里同时读取它，
+ * 让边界上的下一问仍更新原 cardMessageId，而不新发第二张卡片。
+ */
+function appendHistorySummary(
   elements: Array<Record<string, unknown>>,
-  step: AskFlowStep,
+  ask: PendingAsk,
+  locale: Locale,
+): void {
+  const flow = ask.flow;
+  if (!flow) return;
+  const currentQuestionCount = countQuestions(flow.steps);
+  const totalCompleted = flow.previousSegment
+    ? flow.questionOffset
+    : flow.questionOffset + currentQuestionCount;
+  if (totalCompleted === 0) return;
+
+  const source = flow.previousSegment ?? {
+    questionOffset: flow.questionOffset,
+    steps: flow.steps,
+  };
+  const entries = historyEntries(source.steps, source.questionOffset + 1, locale);
+  const visible = entries.slice(-MAX_VISIBLE_HISTORY_QUESTIONS);
+  const omitted = totalCompleted - visible.length;
+  const lines = [
+    `**历史回答（${totalCompleted}）**`,
+    ...(omitted > 0 ? [`另有 ${omitted} 问已完成`] : []),
+    ...visible,
+  ];
+  elements.push({
+    tag: 'div',
+    text: { tag: 'lark_md', content: lines.join('\n') },
+  });
+}
+
+/** 将 broker 历史步骤转换为单行答案；不重复问题正文和未选选项。 */
+function historyEntries(
+  steps: ReadonlyArray<AskFlowStep>,
   startNumber: number,
   locale: Locale,
-): number {
+): string[] {
+  const entries: string[] = [];
   let number = startNumber;
-  for (let index = 0; index < step.questions.length; index++) {
-    if (number > startNumber || elements.length > 2) elements.push({ tag: 'hr' });
-    const question = step.questions[index]!;
-    appendQuestionTitle(elements, number, question.prompt, locale);
-    const selected = step.result.kind === 'answered'
-      ? new Set(step.result.answers[index] ?? [])
-      : new Set<string>();
-    appendActionRows(elements, question.options.map(option => ({
-      tag: 'button',
-      text: {
-        tag: 'plain_text',
-        content: `${selected.has(option.key) ? '✅' : '○'} ${option.label}`,
-      },
-      type: selected.has(option.key) ? 'primary' : 'default',
-      disabled: true,
-    })));
-    const selectedLabels = question.options
-      .filter(option => selected.has(option.key))
-      .map(option => option.label);
-    if (selectedLabels.length > 0) {
-      elements.push({
-        tag: 'note',
-        elements: [{
-          tag: 'plain_text',
-          content: `你的选择：${selectedLabels.join('、')}`,
-        }],
-      });
+  for (const step of steps) {
+    for (let index = 0; index < step.questions.length; index++) {
+      entries.push(`问题 ${number}：${answerSummary(step, index, locale)}`);
+      number++;
     }
-    number++;
   }
-  if (step.result.kind === 'answered' && step.result.comment?.trim()) {
-    elements.push({
-      tag: 'note',
-      elements: [{
-        tag: 'plain_text',
-        content: `文字回复：${truncate(step.result.comment.trim(), 256, locale)}`,
-      }],
-    });
-  }
-  return number;
+  return entries;
+}
+
+/** 为单个历史问题生成稳定、紧凑的结果文本。 */
+function answerSummary(step: AskFlowStep, questionIndex: number, locale: Locale): string {
+  if (step.result.kind === 'timedOut') return '已超时';
+  if (step.result.kind === 'invalidated') return '已失效';
+  const question = step.questions[questionIndex];
+  const selected = step.result.answers[questionIndex] ?? [];
+  const labels = selected.map(key => question?.options.find(option => option.key === key)?.label ?? key);
+  if (labels.length > 0) return truncate(labels.join('、'), 96, locale);
+  if (step.result.comment?.trim()) return truncate(step.result.comment.trim(), 96, locale);
+  return '已作答';
+}
+
+/** 统计一个连续提问片段中已完成的问题数。 */
+function countQuestions(steps: ReadonlyArray<AskFlowStep>): number {
+  return steps.reduce((total, step) => total + step.questions.length, 0);
 }
 
 /** 当前步骤继续沿用原按钮协议，确保点击能 settle 当前 ask。 */
@@ -150,7 +167,7 @@ function appendActiveQuestions(
   const requiresSubmit = ask.questions.length > 1 || ask.questions.some(question => question.multiSelect);
   const selections = ask.selections ?? ask.questions.map(() => []);
   for (let index = 0; index < ask.questions.length; index++) {
-    if (elements.length > 2) elements.push({ tag: 'hr' });
+    if (index > 0) elements.push({ tag: 'hr' });
     const question = ask.questions[index]!;
     appendQuestionTitle(elements, startNumber + index, question.prompt, locale);
     const selected = new Set(selections[index] ?? []);
