@@ -22,7 +22,7 @@ import {
   buildAskFlowCard,
   buildPreviousAskFlowSegmentCard,
 } from './ask-card-flow.js';
-import { buildAskAnswerableContent } from './ask-card-meta.js';
+import { renderAskCard } from './ask-card-render.js';
 import {
   cancelAskApproverFollowups,
   scheduleAskApproverFollowups,
@@ -45,7 +45,6 @@ const FLOW_ACTIONS = {
   toggle: ASK_TOGGLE_ACTION,
   undo: ASK_UNDO_ACTION,
 };
-const MAX_BUTTONS_PER_ACTION_ROW = 4;
 const ASK_CARD_REPROJECT_DELAY_MS = 1_200;
 const askCardProjectionTimers = new Map<string, NodeJS.Timeout>();
 export interface AskCardActionData {
@@ -89,13 +88,22 @@ function buildMovedAskCard(): string {
   });
 }
 
-/** 仅替换卡片标题，不改动 ASK 的按钮和回调语义。 */
+/** 在话题状态标题中保留 ASK 身份，不改动按钮和回调语义。 */
 function withTopicStatusTitle(cardJson: string, title?: string): string {
   if (!title) return cardJson;
   try {
     const card = JSON.parse(cardJson) as Record<string, any>;
+    const [rawStatus, ...taskParts] = title.split('｜');
+    const status = rawStatus?.trim() ?? '';
+    const statusMatch = status.match(/^(\S+)\s+(.+)$/u);
+    const icon = statusMatch?.[1] ?? '🙋';
+    const label = statusMatch?.[2] ?? status;
+    const task = taskParts.join('｜').trim();
     card.header ??= {};
-    card.header.title = { tag: 'plain_text', content: title };
+    card.header.title = {
+      tag: 'plain_text',
+      content: `${icon} ASK｜${label}${task ? ` · ${task}` : ''}`,
+    };
     return JSON.stringify(card);
   } catch {
     return cardJson;
@@ -371,128 +379,9 @@ function settledCardResponse(askId: string, result: AskResult): Record<string, u
   return JSON.parse(buildAskCard(updated, result)) as Record<string, unknown>;
 }
 
-/**
- * 构建 ask 卡片 JSON 字符串。
- *
- * 未 settle 时：
- *   - 单问单选：每个选项一个按钮，点击即 settle（旧 ask_select 语义）
- *   - 多问或多选：每个选项一个按钮用于累积勾选，最后用 Submit settle
- *
- * 注意：飞书服务端会 silent-drop `form` 内的 select_static / multi_select_static，
- * 所以这里只使用稳定的 `action` + `button` 结构。
- *
- * 已 settle 时：渲染状态摘要，展示每问的选中标签（answered），或超时/失效信息。
- */
+/** 对外保留旧渲染入口，具体卡片结构由纯渲染模块生成。 */
 export function buildAskCard(ask: PendingAsk, result?: AskResult): string {
-  const flowCard = buildAskFlowCard(ask, FLOW_ACTIONS, result);
-  if (flowCard) return flowCard;
-  const locale = localeForBot(ask.larkAppId);
-  const deadline = new Date(ask.deadlineAt).toLocaleString('zh-CN');
-  const status = result ? settleStatus(result, ask, locale) : undefined;
-
-  // 截止时间 + 可答复人 字段行（settled 与 unsettled 均展示）
-  const metaDiv = {
-    tag: 'div',
-    fields: [
-      { is_short: true, text: { tag: 'lark_md', content: `**${t('card.ask.field.deadline', undefined, locale)}**\n${escapeMd(deadline)}` } },
-      { is_short: true, text: { tag: 'lark_md', content: `**${t('card.ask.field.answerable', undefined, locale)}**\n${buildAskAnswerableContent(ask, locale)}` } },
-    ],
-  };
-
-  const elements: Array<Record<string, unknown>> = [metaDiv];
-
-  if (status) {
-    // 已 settle：展示状态摘要，无可交互组件
-    elements.push({ tag: 'hr' });
-    elements.push({
-      tag: 'div',
-      text: { tag: 'lark_md', content: status },
-    });
-  } else {
-    // 未 settle：只用 action/buttons，避免 form+select 被飞书服务端静默丢弃。
-    elements.push({ tag: 'hr' });
-
-    const requiresSubmit = ask.questions.length > 1 || ask.questions.some((q) => q.multiSelect);
-    const selections = ask.selections ?? ask.questions.map(() => []);
-
-    for (let i = 0; i < ask.questions.length; i++) {
-      const q = ask.questions[i]!;
-
-      // 问题标题
-      elements.push({
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `**${t('card.ask.question_n', { n: i + 1 }, locale)}**\n${escapeMd(truncate(q.prompt, 512, locale))}`,
-        },
-      });
-
-      const selected = new Set(selections[i] ?? []);
-      const optionButtons = q.options.map((opt) => ({
-        tag: 'button',
-        text: {
-          tag: 'plain_text',
-          content: requiresSubmit ? optionLabel(q.multiSelect, selected.has(opt.key), opt.label) : opt.label,
-        },
-        type: selected.has(opt.key) ? 'primary' : 'default',
-        value: requiresSubmit
-          ? {
-              action: ASK_TOGGLE_ACTION,
-              ask_id: ask.askId,
-              nonce: ask.nonce,
-              projection_id: ask.projectionId,
-              question_index: String(i),
-              key: opt.key,
-            }
-          : {
-              action: ASK_SELECT_ACTION,
-              ask_id: ask.askId,
-              nonce: ask.nonce,
-              projection_id: ask.projectionId,
-              key: opt.key,
-            },
-      }));
-      appendActionRows(elements, optionButtons);
-    }
-
-    if (requiresSubmit) {
-      elements.push({ tag: 'hr' });
-      elements.push({
-        tag: 'action',
-        actions: [
-          {
-            tag: 'button',
-            text: { tag: 'plain_text', content: t('card.ask.submit', undefined, locale) },
-            type: 'primary',
-            value: {
-              action: ASK_SUBMIT_ACTION,
-              ask_id: ask.askId,
-              nonce: ask.nonce,
-              projection_id: ask.projectionId,
-            },
-          },
-        ],
-      });
-    }
-
-    // 自定义回复提示：选项都不满意时，直接在话题里回复一句文字即可当答案。
-    elements.push({ tag: 'hr' });
-    elements.push({
-      tag: 'note',
-      elements: [
-        { tag: 'plain_text', content: t('card.ask.custom_reply_hint', undefined, locale) },
-      ],
-    });
-  }
-
-  return JSON.stringify({
-    config: { wide_screen_mode: true },
-    header: {
-      template: result ? templateForResult(result) : 'blue',
-      title: { tag: 'plain_text', content: result ? t('card.ask.title_done', undefined, locale) : t('card.ask.title', undefined, locale) },
-    },
-    elements,
-  });
+  return renderAskCard(ask, FLOW_ACTIONS, result);
 }
 
 /**
@@ -567,44 +456,6 @@ function staleToast(locale?: Locale): { toast: { type: string; content: string }
   return { toast: { type: 'warning', content: t('card.ask.toast.stale', undefined, locale) } };
 }
 
-/**
- * 生成已结束状态的摘要文本。
- *
- * answered：遍历每个问题，把选中的 key 映射为 label 并渲染。
- * timedOut / invalidated：展示对应说明。
- */
-function settleStatus(result: AskResult, ask: PendingAsk, locale?: Locale): string {
-  if (result.kind === 'answered') {
-    // 自定义回复（替代语义）：没有任何选中项、只有一段自定义文字 → 单独渲染。
-    const hasSelection = result.answers.some((keys) => keys.length > 0);
-    if (result.comment && !hasSelection) {
-      return `**${t('card.ask.custom_reply', undefined, locale)}**\n${escapeMd(result.comment)}\n${t('common.operator', { by: escapeMd(short(result.by, 28)) }, locale)}`;
-    }
-    // 每问一行：问题N：<选中标签>
-    const lines = result.answers.map((keys, i) => {
-      const q = ask.questions[i];
-      if (!q) return t('card.ask.q_unparseable', { n: i + 1 }, locale);
-      const labels = keys.map((key) => q.options.find((o) => o.key === key)?.label ?? key);
-      return t('card.ask.q_summary_line', { n: i + 1, labels: labels.join(', ') }, locale);
-    });
-    const summary = lines.join('\n');
-    const commentLine = result.comment ? `\n${t('card.ask.supplement', { comment: escapeMd(result.comment) }, locale)}` : '';
-    return `**${t('card.ask.selected', undefined, locale)}**\n${escapeMd(summary)}${commentLine}\n${t('common.operator', { by: escapeMd(short(result.by, 28)) }, locale)}`;
-  }
-  if (result.kind === 'timedOut') {
-    return `**${t('card.ask.timed_out', undefined, locale)}**`;
-  }
-  return `**${t('card.ask.invalidated', undefined, locale)}**\n${escapeMd(result.reason)}`;
-}
-
-function templateForResult(result: AskResult): string {
-  switch (result.kind) {
-    case 'answered': return 'green';
-    case 'timedOut': return 'orange';
-    case 'invalidated': return 'grey';
-  }
-}
-
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
@@ -613,31 +464,4 @@ function asNumber(value: unknown): number {
   if (typeof value === 'number') return value;
   if (typeof value === 'string' && value.trim() !== '') return Number(value);
   return Number.NaN;
-}
-
-function optionLabel(multiSelect: boolean, selected: boolean, label: string): string {
-  if (multiSelect) return `${selected ? '☑' : '☐'} ${label}`;
-  return `${selected ? '◉' : '○'} ${label}`;
-}
-
-function appendActionRows(elements: Array<Record<string, unknown>>, actions: Array<Record<string, unknown>>): void {
-  for (let i = 0; i < actions.length; i += MAX_BUTTONS_PER_ACTION_ROW) {
-    elements.push({
-      tag: 'action',
-      actions: actions.slice(i, i + MAX_BUTTONS_PER_ACTION_ROW),
-    });
-  }
-}
-
-function truncate(s: string, maxChars: number, locale?: Locale): string {
-  if (s.length <= maxChars) return s || t('common.empty_paren', undefined, locale);
-  return `${s.slice(0, maxChars)}\n\n${t('common.truncated_short', undefined, locale)}`;
-}
-
-function escapeMd(s: string): string {
-  return s.replace(/[*_~`\[\]\\]/g, (c) => `\\${c}`);
-}
-
-function short(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n)}…` : s;
 }
