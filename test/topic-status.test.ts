@@ -3,6 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  buildTopicStatusRootCard,
   findBotOwnedTopicAlias,
   formatTopicStatusLine,
   normalizeTopicStatusDisplayMode,
@@ -28,6 +29,36 @@ describe('topic status display', () => {
     const bounded = formatTopicStatusLine('running', '  '.padEnd(100, '长'));
     expect(bounded.length).toBeLessThanOrEqual(48);
     expect(bounded).toMatch(/…$/);
+  });
+
+  it('builds a CardKit 2.0 root card with exact Feishu emoji states', () => {
+    const cases = [
+      ['running', ':Typing: 进行中', 'blue'],
+      ['waiting', ':WHAT: 待互动', 'yellow'],
+      ['completed', ':DONE: 已完成', 'green'],
+      ['failed', ':TOASTED: 失败', 'red'],
+      ['blocked', ':TOASTED: 失败', 'red'],
+      ['interrupted', ':TOASTED: 失败', 'red'],
+    ] as const;
+    for (const [phase, prefix, template] of cases) {
+      const card = JSON.parse(buildTopicStatusRootCard(phase, '根卡片状态模型优化'));
+      expect(card.schema).toBe('2.0');
+      expect(card.header.template).toBe(template);
+      expect(card.header.title).toEqual({
+        tag: 'plain_text',
+        content: `${prefix}｜根卡片状态模型优化`,
+      });
+      expect(card.body.elements[0].content).toBe('**任务概括**\n根卡片状态模型优化');
+    }
+  });
+
+  it('escapes user-controlled task summaries in CardKit markdown', () => {
+    const card = JSON.parse(buildTopicStatusRootCard('running', '<at id=all></at> *任务*'));
+    expect(card.header.title).toEqual({
+      tag: 'plain_text',
+      content: ':Typing: 进行中｜<at id=all></at> *任务*',
+    });
+    expect(card.body.elements[0].content).not.toContain('<at id=all>');
   });
 
   it('keeps external jobs visible after the AI turn ends', () => {

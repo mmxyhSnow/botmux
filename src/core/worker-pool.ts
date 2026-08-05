@@ -49,6 +49,7 @@ import {
 } from '../services/codex-app-progress-report.js';
 import { codexAppProgressCardTitle } from '../services/codex-app-progress.js';
 import {
+  buildTopicStatusRootCard,
   formatTopicStatusLine,
   normalizeTopicStatusDisplayMode,
   progressStateTopicPhase,
@@ -643,12 +644,15 @@ function codexAppProgressReportUrl(reportId: string): string | undefined {
 }
 
 /** 对同一根消息串行更新且合并中间态，防止慢请求覆盖新状态。 */
-function enqueueTopicStatusRootEdit(ds: DaemonSession, text: string): void {
+function enqueueTopicStatusRootUpdate(ds: DaemonSession, phase: TopicTaskPhase): void {
   const binding = ds.session.topicStatusBinding;
   if (!binding || binding.mode !== 'bot-root') return;
   const key = `${ds.larkAppId}:${binding.botRootMessageId}`;
-  const queue = topicStatusRootEdits.get(key) ?? { desired: text, running: false };
-  queue.desired = text;
+  const desired = binding.rootMessageType === 'interactive'
+    ? buildTopicStatusRootCard(phase, binding.title)
+    : formatTopicStatusLine(phase, binding.title);
+  const queue = topicStatusRootEdits.get(key) ?? { desired, running: false };
+  queue.desired = desired;
   topicStatusRootEdits.set(key, queue);
   if (queue.running) return;
   queue.running = true;
@@ -657,7 +661,12 @@ function enqueueTopicStatusRootEdit(ds: DaemonSession, text: string): void {
       let sent = '';
       while (sent !== queue.desired) {
         const next = queue.desired;
-        await editTextMessage(ds.larkAppId, binding.botRootMessageId, next);
+        if (binding.rootMessageType === 'interactive') {
+          await updateMessage(ds.larkAppId, binding.botRootMessageId, next);
+        } else {
+          // 旧会话没有 rootMessageType，继续更新其文本根消息，避免升级后失效。
+          await editTextMessage(ds.larkAppId, binding.botRootMessageId, next);
+        }
         sent = next;
       }
     } catch (error) {
@@ -671,20 +680,15 @@ function enqueueTopicStatusRootEdit(ds: DaemonSession, text: string): void {
   })();
 }
 
-/** 更新持久化基础状态；待互动是临时覆盖，不丢失原阶段。 */
-function updateTopicStatusBinding(ds: DaemonSession, phase: TopicTaskPhase, title?: string): boolean {
+/** 更新持久化基础状态；首条任务概括在同一会话内永不被进度标题覆盖。 */
+function updateTopicStatusBinding(ds: DaemonSession, phase: TopicTaskPhase): boolean {
   const binding = ds.session.topicStatusBinding;
   if (!binding || binding.mode !== 'bot-root') return false;
-  const nextTitle = codexAppProgressCardTitle(title ?? binding.title);
-  const changed = binding.phase !== phase || binding.title !== nextTitle;
+  const changed = binding.phase !== phase;
   binding.phase = phase;
-  binding.title = nextTitle;
   binding.updatedAt = new Date().toISOString();
   if (changed) {
-    enqueueTopicStatusRootEdit(
-      ds,
-      formatTopicStatusLine(binding.waitingForUser ? 'waiting' : binding.phase, binding.title),
-    );
+    enqueueTopicStatusRootUpdate(ds, binding.waitingForUser ? 'waiting' : binding.phase);
   }
   return changed;
 }
@@ -696,10 +700,7 @@ export function setTopicStatusWaiting(ds: DaemonSession, waiting: boolean): void
   binding.waitingForUser = waiting;
   binding.updatedAt = new Date().toISOString();
   sessionStore.updateSession(ds.session);
-  enqueueTopicStatusRootEdit(
-    ds,
-    formatTopicStatusLine(waiting ? 'waiting' : binding.phase, binding.title),
-  );
+  enqueueTopicStatusRootUpdate(ds, waiting ? 'waiting' : binding.phase);
 }
 
 function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
@@ -746,7 +747,7 @@ function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
     } : {}),
     persist: state => {
       ds.session.codexAppProgressCard = state;
-      updateTopicStatusBinding(ds, progressStateTopicPhase(state), state.title);
+      updateTopicStatusBinding(ds, progressStateTopicPhase(state));
       sessionStore.updateSession(ds.session);
     },
   }, ds.session.codexAppProgressCard);
@@ -778,7 +779,7 @@ export async function beginCodexAppProgressTurn(
   const binding = ds.session.topicStatusBinding;
   if (binding?.mode === 'bot-root') {
     binding.waitingForUser = false;
-    updateTopicStatusBinding(ds, 'running', title);
+    updateTopicStatusBinding(ds, 'running');
     sessionStore.updateSession(ds.session);
   }
   if (!immediateProgressCardEnabled(ds)) return;

@@ -368,7 +368,14 @@ import {
   clearAgentAttention,
 } from './core/session-activity.js';
 import { emitSessionLifecycleHook } from './services/session-lifecycle-hooks.js';
-import { findBotOwnedTopicAlias, formatTopicStatusLine, normalizeTopicStatusDisplayMode, progressStateTopicPhase } from './services/topic-status.js';
+import {
+  buildTopicStatusRootCard,
+  findBotOwnedTopicAlias,
+  formatTopicStatusLine,
+  normalizeTopicStatusDisplayMode,
+  normalizeTopicStatusTitle,
+  progressStateTopicPhase,
+} from './services/topic-status.js';
 import { botAutoWorktreeEnabled } from './services/default-worktree.js';
 import {
   setCardDispatcher as setAskCardDispatcher,
@@ -16143,11 +16150,12 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
       if (mode === 'topic') {
         const originalRootMessageId = anchor;
         const suffix = messageId.replace(/[^a-zA-Z0-9_-]/g, '').slice(-32);
+        const stableTopicTitle = normalizeTopicStatusTitle(initialTurnTitle);
         const botRootMessageId = await sendMessage(
           larkAppId,
           chatId,
-          formatTopicStatusLine('running', initialTurnTitle),
-          'text',
+          buildTopicStatusRootCard('running', stableTopicTitle),
+          'interactive',
           `tsr-${suffix}`,
         );
         anchor = botRootMessageId;
@@ -16157,13 +16165,14 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
           mode: 'bot-root',
           originalRootMessageId,
           botRootMessageId,
-          title: initialTurnTitle,
+          rootMessageType: 'interactive',
+          title: stableTopicTitle,
           phase: 'running',
           waitingForUser: false,
           createdAt,
           updatedAt: createdAt,
         };
-        const redirectText = `↪️ 已转入机器人话题：${formatTopicStatusLine('running', initialTurnTitle)}\n后续在原话题或新话题回复，都会由机器人在新话题继续。`;
+        const redirectText = `↪️ 已转入机器人话题：${formatTopicStatusLine('running', stableTopicTitle)}\n后续在原话题或新话题回复，都会由机器人在新话题继续。`;
         await replyMessage(
           larkAppId,
           originalRootMessageId,
