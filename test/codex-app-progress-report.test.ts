@@ -109,7 +109,8 @@ describe('Codex App 完整过程 HTML', () => {
     expect(html).toContain('id="timeline-mode-summary" name="timeline-mode" type="radio" checked');
     expect(html).toContain('timeline-item timeline-detail-event');
     expect(html).toContain('timeline-item timeline-summary-event');
-    expect(html).toContain('#timeline-mode-summary:checked~.timeline .timeline-detail-event{display:none}');
+    expect(html).toContain('#timeline-mode-summary:checked~.timeline-complete{display:none}');
+    expect(html).toContain('#timeline-mode-all:checked~.timeline-semantic{display:none}');
     expect(html).toMatch(
       /<strong>17:28<\/strong><span>记录 03<\/span>[\s\S]*本轮已完成[\s\S]*<strong>17:12<\/strong><span>记录 02<\/span>[\s\S]*第二条完整证据[\s\S]*<strong>17:10<\/strong><span>记录 01<\/span>[\s\S]*第一条完整证据/,
     );
@@ -128,7 +129,9 @@ describe('Codex App 完整过程 HTML', () => {
     const html = readFileSync(report.filePath, 'utf8');
 
     expect(html).toContain('for="timeline-mode-summary">展示摘要 <span>3</span>');
-    expect(html).not.toContain('timeline-item timeline-detail-event');
+    expect(html).toContain('timeline-semantic');
+    expect(html).toContain('timeline-complete');
+    expect(html).toContain('timeline-item timeline-detail-event');
   });
 
   it('只把固定格式的报告路由映射到数据目录', () => {

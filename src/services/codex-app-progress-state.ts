@@ -24,6 +24,15 @@ export function cloneCodexAppProgressState(
     summaryMilestones: state.summaryMilestones
       ? state.summaryMilestones.map(milestone => ({ ...milestone }))
       : state.summaryMilestones,
+    semanticSummary: state.semanticSummary
+      ? {
+          ...state.semanticSummary,
+          items: state.semanticSummary.items.map(item => ({
+            ...item,
+            sourceEntryIndexes: [...item.sourceEntryIndexes],
+          })),
+        }
+      : state.semanticSummary,
     overview: state.overview
       ? {
           ...state.overview,

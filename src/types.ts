@@ -174,6 +174,23 @@ export interface CodexAppProgressMilestone {
   critical?: boolean;
 }
 
+/** 模型基于完整过程生成的一条综合事件，不复用某条原始进展正文。 */
+export interface CodexAppProgressSemanticSummaryItem {
+  title: string;
+  summary: string;
+  /** 支撑该结论的完整时间线零基索引，用于展示代表时间并保留可追溯性。 */
+  sourceEntryIndexes: number[];
+}
+
+/** 运行中语义摘要的持久化状态；刷新失败时继续保留最近一次成功内容。 */
+export interface CodexAppProgressSemanticSummary {
+  status: 'updating' | 'ready' | 'failed';
+  items: CodexAppProgressSemanticSummaryItem[];
+  /** 最近一次成功摘要覆盖到的完整记录数量。 */
+  sourceEntryCount: number;
+  updatedAtMs?: number;
+}
+
 /** Codex App 即时进度卡的会话级投影，进程重启后可继续更新原卡片。 */
 export interface CodexAppProgressCardSessionState {
   phase: CodexAppProgressCardPhase;
@@ -198,6 +215,8 @@ export interface CodexAppProgressCardSessionState {
    * 回退到「按记录文本推断标题 + 展示全部索引」的兼容路径。
    */
   summaryMilestones?: CodexAppProgressMilestone[];
+  /** 基于完整时间线综合生成的运行中摘要；缺失表示升级前的历史状态。 */
+  semanticSummary?: CodexAppProgressSemanticSummary;
   /** 当前任务对应的最终 assistant 回复；完整过程页据此保留结论和产物链接。 */
   finalResponse?: string;
   /** 主卡是否展开更多近期证据；完整历史仍使用独立分页卡。 */
