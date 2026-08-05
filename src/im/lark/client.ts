@@ -896,6 +896,31 @@ export async function updateMessage(larkAppId: string, messageId: string, cardJs
   }
 }
 
+/** 编辑机器人自己发出的文本消息，用于稳定刷新话题根摘要。 */
+export async function editTextMessage(larkAppId: string, messageId: string, text: string): Promise<void> {
+  assertLarkTransport(larkAppId, 'editTextMessage');
+  const c = getBotClient(larkAppId);
+  let res: any;
+  try {
+    res = await c.im.v1.message.update({
+      path: { message_id: messageId },
+      data: {
+        msg_type: 'text',
+        content: JSON.stringify({ text }),
+      },
+    });
+  } catch (err: any) {
+    if (getLarkErrorCode(err) === LARK_CODE_MESSAGE_WITHDRAWN) {
+      throw new MessageWithdrawnError(messageId);
+    }
+    throw err;
+  }
+  if (res.code !== 0) {
+    if (res.code === LARK_CODE_MESSAGE_WITHDRAWN) throw new MessageWithdrawnError(messageId);
+    throw new Error(`Failed to edit text message: ${res.msg} (code: ${res.code})`);
+  }
+}
+
 export async function getMessageDetail(
   larkAppId: string,
   messageId: string,

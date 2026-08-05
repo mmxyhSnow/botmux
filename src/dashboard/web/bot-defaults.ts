@@ -72,6 +72,7 @@ export type BotDefaultsRow = {
   botToBotSameDir?: boolean;
   summaryRange?: { limit?: number; sinceHours?: number };
   p2pMode?: string;
+  topicStatusDisplay?: 'off' | 'reply-preview' | 'bot-root';
   regularGroupReplyMode?: string;
   regularGroupMentionMode?: string;
   substituteMode?: BotSubstituteMode | null;

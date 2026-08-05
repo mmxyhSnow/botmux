@@ -211,6 +211,28 @@ describe('Codex App 即时进度卡', () => {
     expect(rendered.body.elements[0]).toMatchObject({ tag: 'markdown' });
   });
 
+  it('只在显式传入时覆盖当前卡标题', () => {
+    const state: CodexAppProgressCardSessionState = {
+      phase: 'running',
+      activeTurnId: 'om_turn',
+      acceptedTurnIds: ['om_turn'],
+      pendingTurns: [],
+      title: '原任务',
+      content: '处理中',
+    };
+    const current = JSON.parse(renderCodexAppProgressCard(state, {
+      titleOverride: '🙋 待互动｜原任务',
+    }));
+    const archived = JSON.parse(renderCodexAppProgressCard(state, {
+      archived: true,
+      titleOverride: '不应生效',
+    }));
+
+    expect(current.header.title.content).toBe('🙋 待互动｜原任务');
+    expect(archived.header.title.content).toContain('已归档');
+    expect(archived.header.title.content).not.toContain('不应生效');
+  });
+
   it('进行中卡只展示紧凑摘要和一条最新进展', () => {
     const rendered = JSON.parse(renderCodexAppProgressCard({
       phase: 'running',

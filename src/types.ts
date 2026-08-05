@@ -263,6 +263,20 @@ export interface Session {
    *  Chat-scope: the message id of the first message that started the
    *  session — kept for traceability, NOT used as the routing anchor. */
   rootMessageId: string;
+  /**
+   * 机器人根消息模式的持久化 A→B 路由与列表状态。
+   * 原用户话题 A 只保留迁移提示；会话和后续回复统一锚定机器人话题 B。
+   */
+  topicStatusBinding?: {
+    mode: 'bot-root';
+    originalRootMessageId: string;
+    botRootMessageId: string;
+    title: string;
+    phase: 'running' | 'waiting' | 'completed' | 'failed' | 'blocked' | 'interrupted';
+    waitingForUser?: boolean;
+    createdAt: string;
+    updatedAt: string;
+  };
   /** Conversation unit. 'thread' (default for legacy) routes by rootMessageId
    *  and replies via reply_in_thread=true. 'chat' routes by chatId and posts
    *  replies as plain chat messages. Sessions in 话题群 are normally 'thread';

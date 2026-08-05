@@ -88,6 +88,7 @@ describe('bot-config store', () => {
     expect(keys).toContain('silentTurnReactions');
     expect(keys).toContain('codexAppCleanInput');
     expect(keys).toContain('codexAppImmediateProgressCard');
+    expect(keys).toContain('topicStatusDisplay');
   });
 
   it('parseBooleanValue accepts on/off variants and rejects junk', async () => {
@@ -430,6 +431,20 @@ describe('bot-config store', () => {
     await store.applyConfigField('app_default', spec, null);
     expect(readConfig().usageDisplay).toBeUndefined();
     expect(registry.getBot('app_default').config.usageDisplay).toBeUndefined();
+  });
+
+  it('topicStatusDisplay persists opt-in modes and clears the default off mode', async () => {
+    const { registry, store } = await loaded();
+    const spec = store.findConfigField('topicStatusDisplay')!;
+    expect(spec.enumValues).toEqual(['off', 'reply-preview', 'bot-root']);
+
+    await store.applyConfigField('app_default', spec, 'bot-root');
+    expect(readConfig().topicStatusDisplay).toBe('bot-root');
+    expect(registry.getBot('app_default').config.topicStatusDisplay).toBe('bot-root');
+
+    await store.applyConfigField('app_default', spec, 'off');
+    expect(readConfig().topicStatusDisplay).toBeUndefined();
+    expect(registry.getBot('app_default').config.topicStatusDisplay).toBeUndefined();
   });
 
   it('codexAppCleanInput is immediate, default-off, and deletes its key when disabled', async () => {

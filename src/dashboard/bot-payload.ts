@@ -1,6 +1,7 @@
 import { defaultSummaryRangePrefs, summaryRangeFromLegacyContentTriggers } from '../services/summary-range-store.js';
 import { selectionKeyForBot } from '../setup/cli-selection.js';
 import { normalizeUsageDisplay } from '../bot-registry.js';
+import { normalizeTopicStatusDisplayMode } from '../services/topic-status.js';
 
 export interface DashboardBotDescriptor {
   larkAppId: string;
@@ -83,6 +84,7 @@ export function botDefaultsPayload(bot: DashboardBotDescriptor, j?: any, error?:
     autoGrantRequestCards: j?.autoGrantRequestCards !== false,
     messageQuotaDefaultLimit: typeof j?.messageQuotaDefaultLimit === 'number' ? j.messageQuotaDefaultLimit : null,
     p2pMode: j?.p2pMode === 'thread' ? 'thread' : 'chat',
+    topicStatusDisplay: normalizeTopicStatusDisplayMode(j?.topicStatusDisplay),
     skillInjection: (j?.skillInjection === 'global' || j?.skillInjection === 'prompt' || j?.skillInjection === 'off') ? j.skillInjection : null,
     skillInjectionDefault: (j?.skillInjectionDefault === 'global' || j?.skillInjectionDefault === 'off') ? j.skillInjectionDefault : 'prompt',
     skillInjectionSupport: (j?.skillInjectionSupport === 'dynamic' || j?.skillInjectionSupport === 'global') ? j.skillInjectionSupport : 'none',

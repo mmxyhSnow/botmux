@@ -850,6 +850,7 @@ function setupBotState(opts?: {
   handleCardAction: ReturnType<typeof vi.fn>;
   isSessionOwner: ReturnType<typeof vi.fn>;
   onChatModeConverted: ReturnType<typeof vi.fn>;
+  resolveBotOwnedTopicAlias: ReturnType<typeof vi.fn>;
   resolveReplyThreadAlias: ReturnType<typeof vi.fn>;
   handleVcMeetingPush: ReturnType<typeof vi.fn>;
   onBotMessageActivity: ReturnType<typeof vi.fn>;
@@ -860,6 +861,7 @@ function setupBotState(opts?: {
     handleThreadReply: vi.fn(async () => {}),
     handleVcMeetingPush: vi.fn(async () => {}),
     isSessionOwner: vi.fn(() => false),
+    resolveBotOwnedTopicAlias: vi.fn(() => null),
     resolveReplyThreadAlias: vi.fn(() => null),
     onChatModeConverted: vi.fn(),
     onBotMessageActivity: vi.fn(),
@@ -3195,6 +3197,41 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
       anchor: 'root-keep',
       larkAppId: MY_APP_ID,
     }));
+  });
+
+  it('routes replies in original topic A to the bot-owned topic B session', async () => {
+    setupBotState({ allowedUsers: [USER_OPEN_ID], regularGroupMentionMode: 'topic' });
+    mockGetChatMode.mockResolvedValue('topic');
+    handlers.resolveBotOwnedTopicAlias.mockReturnValue({
+      chatId: 'chat-managed-topic',
+      sessionId: 'sess-managed-topic',
+      anchor: 'om_bot_root_b',
+    });
+    handlers.isSessionOwner.mockImplementation((anchor: string) => anchor === 'om_bot_root_b');
+    const event = makeUserMessageEvent({
+      senderOpenId: USER_OPEN_ID,
+      content: JSON.stringify({ text: 'continue from the original topic' }),
+      rootId: 'om_user_root_a',
+      threadId: 'omt_user_root_a',
+      messageId: 'om_reply_in_a',
+      chatId: 'chat-managed-topic',
+      chatType: 'group',
+    });
+
+    await capturedHandlers['im.message.receive_v1'](event);
+    await flushEventWork();
+
+    expect(handlers.resolveBotOwnedTopicAlias).toHaveBeenCalledWith(
+      'om_user_root_a',
+      'chat-managed-topic',
+      MY_APP_ID,
+    );
+    expect(handlers.handleThreadReply).toHaveBeenCalledWith(event, expect.objectContaining({
+      scope: 'thread',
+      anchor: 'om_bot_root_b',
+      larkAppId: MY_APP_ID,
+    }));
+    expect(handlers.handleNewTopic).not.toHaveBeenCalled();
   });
 
   it('ignores unmentioned replies when another bot owns the thread', async () => {

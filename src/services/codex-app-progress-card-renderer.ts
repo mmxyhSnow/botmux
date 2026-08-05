@@ -20,6 +20,8 @@ export interface CodexAppProgressCardRenderOptions {
   archived?: boolean;
   nowMs?: number;
   reportUrl?: string;
+  /** 只覆盖当前主卡标题，供话题列表第二行预览投影。 */
+  titleOverride?: string;
 }
 
 const DEFAULT_RECENT_ENTRIES = 1;
@@ -176,7 +178,7 @@ export function renderCodexAppProgressCard(
   const pageNumber = options.pageNumber ?? state.pageNumber ?? 1;
   const title = options.archived
     ? `进度 ${pageNumber} · 已归档 · ${state.title}`
-    : `${titlePrefix(state.phase)} · ${state.title}`;
+    : options.titleOverride ?? `${titlePrefix(state.phase)} · ${state.title}`;
   const nowMs = options.nowMs ?? Date.now();
   const history = options.content
     ? splitProgressCardEntries(options.content)

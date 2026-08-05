@@ -2522,23 +2522,33 @@ function SessionModeSection(props: {
 }) {
   const tr = useT();
   const [p2p, setP2p] = useState(props.bot.p2pMode === 'thread' ? 'thread' : 'chat');
+  const [topicStatus, setTopicStatus] = useState<'off' | 'reply-preview' | 'bot-root'>(
+    props.bot.topicStatusDisplay === 'reply-preview' || props.bot.topicStatusDisplay === 'bot-root'
+      ? props.bot.topicStatusDisplay
+      : 'off',
+  );
   const [regular, setRegular] = useState(regularGroupMode(props.bot));
   const [mention, setMention] = useState(mentionMode(props.bot));
   const [docMode, setDocMode] = useState(props.bot.docSubscribeDefaultMode === 'all' ? 'all' : 'mention-only');
   const [busy, setBusy] = useState<string | null>(null);
   const [p2pStatus, setP2pStatus] = useState<StatusMessage>(null);
+  const [topicStatusSaveStatus, setTopicStatusSaveStatus] = useState<StatusMessage>(null);
   const [regularStatus, setRegularStatus] = useState<StatusMessage>(null);
   const [mentionStatus, setMentionStatus] = useState<StatusMessage>(null);
   const [docStatus, setDocStatus] = useState<StatusMessage>(null);
 
   useEffect(() => {
     setP2p(props.bot.p2pMode === 'thread' ? 'thread' : 'chat');
+    setTopicStatus(props.bot.topicStatusDisplay === 'reply-preview' || props.bot.topicStatusDisplay === 'bot-root'
+      ? props.bot.topicStatusDisplay
+      : 'off');
     setRegular(regularGroupMode(props.bot));
     setMention(mentionMode(props.bot));
     setDocMode(props.bot.docSubscribeDefaultMode === 'all' ? 'all' : 'mention-only');
   }, [
     props.bot.docSubscribeDefaultMode,
     props.bot.p2pMode,
+    props.bot.topicStatusDisplay,
     props.bot.regularGroupMentionMode,
     props.bot.regularGroupReplyMode,
   ]);
@@ -2563,6 +2573,33 @@ function SessionModeSection(props: {
     }
   }
 
+  async function saveTopicStatusDisplay(next: string): Promise<void> {
+    const mode = next === 'reply-preview' || next === 'bot-root' ? next : 'off';
+    setTopicStatus(mode);
+    setBusy('topic-status');
+    setTopicStatusSaveStatus(null);
+    try {
+      const res = await sendJson(
+        'PUT',
+        `/api/bots/${encodeURIComponent(props.bot.larkAppId)}/topic-status-display`,
+        { topicStatusDisplay: mode },
+      );
+      if (res.ok && res.body.ok) {
+        const saved = res.body.topicStatusDisplay === 'reply-preview' || res.body.topicStatusDisplay === 'bot-root'
+          ? res.body.topicStatusDisplay
+          : 'off';
+        props.patchBot(props.bot.larkAppId, { topicStatusDisplay: saved });
+        setTopicStatusSaveStatus({ text: `✓ ${tr('botDefaults.cardPrefSaved')}`, ok: true });
+      } else {
+        setTopicStatusSaveStatus({ text: `✗ ${responseErrorText(res)}` });
+      }
+    } catch (e: any) {
+      setTopicStatusSaveStatus({ text: `✗ ${caughtErrorText(e)}` });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function saveCardMode(key: string, patch: CardPrefPatch, setStatus: (status: StatusMessage) => void): Promise<void> {
     setBusy(key);
     setStatus(null);
@@ -2579,6 +2616,11 @@ function SessionModeSection(props: {
   const p2pOptions: DropdownFieldOption<'thread' | 'chat'>[] = [
     { value: 'thread', label: tr('botDefaults.p2pThread') },
     { value: 'chat', label: tr('botDefaults.p2pChat') },
+  ];
+  const topicStatusOptions: DropdownFieldOption<'off' | 'reply-preview' | 'bot-root'>[] = [
+    { value: 'off', label: tr('botDefaults.topicStatusOff') },
+    { value: 'reply-preview', label: tr('botDefaults.topicStatusReplyPreview') },
+    { value: 'bot-root', label: tr('botDefaults.topicStatusBotRoot') },
   ];
   const regularOptions: DropdownFieldOption<string>[] = [
     { value: 'chat', label: tr('botDefaults.regularGroupModeChat') },
@@ -2613,6 +2655,20 @@ function SessionModeSection(props: {
           />
         </div>
         <div className="actions"><StatusSpan status={p2pStatus} attr={{ 'data-p2p-status': '' }} /></div>
+      </div>
+      <div className="bd-row">
+        <div className="bd-field">
+          <FieldTitle help={tr('botDefaults.topicStatusDisplayHelp')}>{tr('botDefaults.topicStatusDisplay')}</FieldTitle>
+          <DropdownField
+            dataInput="topicStatusDisplay"
+            ariaLabel={tr('botDefaults.topicStatusDisplay')}
+            value={topicStatus}
+            disabled={busy === 'topic-status'}
+            options={topicStatusOptions}
+            onChange={next => void saveTopicStatusDisplay(next)}
+          />
+        </div>
+        <div className="actions"><StatusSpan status={topicStatusSaveStatus} attr={{ 'data-topic-status-display-status': '' }} /></div>
       </div>
       <div className="bd-row">
         <div className="bd-field">

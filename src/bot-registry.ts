@@ -985,6 +985,8 @@ export interface VcMeetingRealtimeVoiceConfig {
 
 /** ASK 后续问题的提醒与自动推进策略。 */
 export type AskReminderPolicy = 'auto-recommend' | 'repeat-reminder';
+/** 话题列表任务状态展示：缺省 off 保持既有对话形态。 */
+export type TopicStatusDisplayMode = 'reply-preview' | 'bot-root';
 
 export interface BotConfig {
   larkAppId: string;
@@ -1068,6 +1070,11 @@ export interface BotConfig {
   askReminderPolicy?: AskReminderPolicy;
   /** Codex App 专用即时进度卡。缺省开启，仅显式 false 关闭。 */
   codexAppImmediateProgressCard?: boolean;
+  /**
+   * 话题列表任务状态展示。reply-preview 保留用户根消息并装饰最新机器人回复；
+   * bot-root 为话题群新任务创建可编辑的机器人根消息。缺省保持现状。
+   */
+  topicStatusDisplay?: TopicStatusDisplayMode;
   /**
    * Codex only (opt-in, experimental): deliver user input via the app-server
    * JSON-RPC channel instead of a tmux paste. The pane runs `codex --remote`
@@ -2467,6 +2474,9 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
       askReminderPolicy: entry.askReminderPolicy === 'repeat-reminder' ? 'repeat-reminder' : undefined,
       codexAppImmediateProgressCard: typeof entry.codexAppImmediateProgressCard === 'boolean'
         ? entry.codexAppImmediateProgressCard
+        : undefined,
+      topicStatusDisplay: entry.topicStatusDisplay === 'reply-preview' || entry.topicStatusDisplay === 'bot-root'
+        ? entry.topicStatusDisplay
         : undefined,
       codexRpcInput: entry.codexRpcInput === true,
       sandbox: entry.sandbox === true,

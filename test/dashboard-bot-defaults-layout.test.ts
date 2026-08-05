@@ -17,6 +17,8 @@ describe('bot defaults focused layout', () => {
     expect(page).toContain('<SandboxSection');
     expect(page).toContain('<CardBehaviorSection');
     expect(page).toContain('dataInput="askReminderPolicy"');
+    expect(page).toContain('dataInput="topicStatusDisplay"');
+    expect(page).toContain('/topic-status-display');
     expect(page).toContain("askReminderPolicy: next");
     expect(page).toContain('<RuntimeEnvironmentSection');
   });
@@ -82,6 +84,8 @@ describe('bot defaults focused layout', () => {
   it('ships localized labels for every task category', () => {
     expect(i18n).toContain("'botDefaults.askReminderPolicy': 'ASK 提醒策略'");
     expect(i18n).toContain("'botDefaults.askReminderPolicy': 'ASK reminder policy'");
+    expect(i18n).toContain("'botDefaults.topicStatusDisplay': '话题列表任务状态'");
+    expect(i18n).toContain("'botDefaults.topicStatusDisplay': 'Topic-list task status'");
     for (const key of ['tabCommon', 'tabSessions', 'tabSecurity', 'tabCards', 'tabAdvanced']) {
       expect(i18n.match(new RegExp(`'botDefaults\\.${key}'`, 'g'))).toHaveLength(2);
     }

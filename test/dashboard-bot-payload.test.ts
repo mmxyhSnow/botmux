@@ -15,11 +15,20 @@ describe('dashboard bot payload helpers', () => {
       'defaultWorkingDirAutoWorktree', 'disableStreamingCard', 'docSubscribeDefaultMode',
       'env', 'launchShell', 'maxLiveWorkers', 'messageQuotaDefaultLimit', 'model',
       'overloadAlert', 'p2pMode', 'privateCard', 'regularGroupMentionMode',
+      'topicStatusDisplay',
       'regularGroupReplyMode', 'restrictGrantCommands', 'riff', 'sandbox', 'sandboxPaths',
       'silentTurnReactions', 'skillInjection', 'startupCommands', 'substituteMode',
       'summaryRange', 'writableTerminalLinkInCard',
     ];
     expect(Object.keys(row)).toEqual(expect.arrayContaining(editableFields));
+  });
+
+  it('defaults topic status display to off and preserves opt-in modes', () => {
+    expect(botDefaultsPayload({ larkAppId: 'cli_a' }, {}).topicStatusDisplay).toBe('off');
+    expect(botDefaultsPayload({ larkAppId: 'cli_a' }, { topicStatusDisplay: 'reply-preview' }).topicStatusDisplay)
+      .toBe('reply-preview');
+    expect(botDefaultsPayload({ larkAppId: 'cli_a' }, { topicStatusDisplay: 'bot-root' }).topicStatusDisplay)
+      .toBe('bot-root');
   });
 
   it('includes authoritative cliId in group roster bot summaries', () => {
