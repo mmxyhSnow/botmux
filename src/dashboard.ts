@@ -54,6 +54,7 @@ import {
 import { handleWebhookRoute } from './dashboard/webhook-routes.js';
 import { handleFederationApi } from './dashboard/federation-api.js';
 import { buildFederatedRoster } from './services/federation-roster.js';
+import { resolveLiveBotTransport } from './services/team-roster.js';
 import { handleFederationSpokeApi, syncAllMemberships, autoBindOwnerIfUnambiguous, type TeamSessionRowLike } from './dashboard/federation-spoke-api.js';
 import type { TeamGroupCreateResult, TeamGroupOwnerTransferResult } from './dashboard/federated-group-core.js';
 import { BotOnboardingManager } from './dashboard/bot-onboarding.js';
@@ -70,7 +71,11 @@ import { checkCliAvailability } from './setup/cli-availability.js';
 import { invalidWorkingDirs } from './utils/working-dir.js';
 import { invalidateGlobalConfigCache, mergeDashboardConfig, mergeGlobalConfig, readGlobalConfig, type MaintenanceConfig, type RepoPickerMode, type WhiteboardConfig } from './global-config.js';
 import { hostLocalTimeZone, scheduleTimeZone } from './utils/timezone.js';
-import { buildDashboardUrls, type DashboardUrls } from './core/dashboard-url.js';
+import {
+  buildDashboardUrls,
+  buildPlatformDashboardLoginUrl,
+  type DashboardUrls,
+} from './core/dashboard-url.js';
 import { resolveBotmuxDataDir } from './core/data-dir.js';
 import { dashboardSecretPath } from './core/dashboard-secret.js';
 import { getGitRepoInfo } from './core/session-row-enrichment.js';
@@ -102,7 +107,11 @@ import {
   UnsupportedGlobalInstallError,
   type GlobalInstallPlan,
 } from './utils/global-install.js';
-import { listCliRuntimeUpdateEntries } from './core/cli-runtime-update.js';
+import {
+  filterCliRuntimeUpdateEntriesForTargets,
+  listCliRuntimeUpdateEntries,
+  selectCodexRuntimeUpdateTargets,
+} from './core/cli-runtime-update.js';
 import {
   claimRestartLease,
   clearRestartIntent,
@@ -2125,10 +2134,15 @@ function configuredCliIds(): Map<string, string> {
   }
 }
 
-function configuredBotAgentFields(): Map<string, { cliId?: string; wrapperCli?: string; model?: string }> {
+function configuredBotAgentFields(): Map<string, { cliId?: string; cliRuntime?: BotConfig['cliRuntime']; cliPathOverride?: string; wrapperCli?: string; model?: string }> {
   try {
     return new Map(loadBotConfigs().map(b => [b.larkAppId, {
       cliId: b.cliId,
+      cliRuntime: b.cliRuntime,
+      // loadBotConfigs mirrors structured runtime.executable into this legacy
+      // field in memory. Only forward a genuine path-only config to the private
+      // Bot Defaults endpoint.
+      cliPathOverride: b.cliRuntime ? undefined : b.cliPathOverride,
       wrapperCli: b.wrapperCli,
       model: b.model,
     }]));
@@ -2137,26 +2151,40 @@ function configuredBotAgentFields(): Map<string, { cliId?: string; wrapperCli?: 
   }
 }
 
-function withConfiguredCliId<T extends { larkAppId: string; cliId?: string; wrapperCli?: string; model?: string }>(
+function withConfiguredCliId<T extends { larkAppId: string; cliId?: string; cliRuntime?: BotConfig['cliRuntime']; cliPathOverride?: string; wrapperCli?: string; model?: string }>(
   bot: T,
-  ids: Map<string, string> | Map<string, { cliId?: string; wrapperCli?: string; model?: string }>,
-): T & { cliId?: string; wrapperCli?: string; model?: string } {
+  ids: Map<string, string> | Map<string, { cliId?: string; cliRuntime?: BotConfig['cliRuntime']; cliPathOverride?: string; wrapperCli?: string; model?: string }>,
+): T & { cliId?: string; cliRuntime?: BotConfig['cliRuntime']; cliPathOverride?: string; wrapperCli?: string; model?: string } {
   const raw = ids.get(bot.larkAppId);
   const fallback = typeof raw === 'string' ? { cliId: raw } : raw;
   return {
     ...bot,
     cliId: bot.cliId || fallback?.cliId,
+    cliRuntime: bot.cliRuntime || fallback?.cliRuntime,
+    cliPathOverride: bot.cliPathOverride || fallback?.cliPathOverride,
     wrapperCli: bot.wrapperCli || fallback?.wrapperCli,
     model: bot.model || fallback?.model,
   };
 }
 
-function liveBots(): { larkAppId: string; botName: string; cliId?: string }[] {
+function liveBots(): { larkAppId: string; botName: string; cliId?: string; larkTransportEnabled?: boolean }[] {
   const ids = configuredCliIds();
-  return registry.list().map(d => {
+  // core-only (apiOnly) bots have no Feishu transport → flag them so the
+  // aggregated roster (and any spoke pulling it) can exclude them from group
+  // membership/creation (#668). Mirror federation-spoke-api's spoke-side advert.
+  // FAIL-CLOSED: config unreadable → apiOnlyIds=null → resolveLiveBotTransport
+  // marks every bot transport=false (a remote consumer then won't invite any),
+  // because we cannot confirm transport for a roster federated off-box. (Do NOT
+  // fail-open here like the local isNoTransportBot: that has a config backstop
+  // beside it; a remote spoke consuming this roster has none.)
+  let apiOnlyIds: Set<string> | null;
+  try { apiOnlyIds = new Set(loadBotConfigs().filter(b => b.apiOnly === true).map(b => b.larkAppId)); }
+  catch { apiOnlyIds = null; }
+  const base = registry.list().map(d => {
     const b = withConfiguredCliId(d, ids);
     return { larkAppId: b.larkAppId, botName: b.botName, cliId: b.cliId };
   });
+  return resolveLiveBotTransport(base, apiOnlyIds);
 }
 
 async function createTeamGroup(args: { name: string; larkAppIds: string[]; userOpenId?: string; preferredCreator?: string; ownerUnionIds?: string[]; transferOwnerUnionId?: string; roleProfileId?: string }): Promise<TeamGroupCreateResult & {
@@ -2797,7 +2825,12 @@ const server = createServer(async (req, res) => {
     const authed = !!presentedToken && presentedToken === activeToken && !!activeToken;
 
     if (decision.kind === 'deny401') {
-      res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' });
+      const loginUrl = buildPlatformDashboardLoginUrl();
+      res.writeHead(401, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        ...(loginUrl ? { 'x-botmux-login-url': loginUrl } : {}),
+      });
       res.end('<h1>Token expired</h1><p>Run <code>botmux dashboard</code> to get a fresh URL.</p>');
       return;
     }
@@ -3131,9 +3164,26 @@ const server = createServer(async (req, res) => {
       // 2.86.0) is NOT flagged behind — exactly the canary case we want.
       const latestResult = await cachedLatestVersion(url.searchParams.get('refresh') === '1');
       const latest = latestResult.value;
-      const cliUpdates = listCliRuntimeUpdateEntries(config.session.dataDir).map((entry) => ({
+      let configuredUpdateTargets: ReturnType<typeof selectCodexRuntimeUpdateTargets> = [];
+      try {
+        configuredUpdateTargets = selectCodexRuntimeUpdateTargets(
+          loadBotConfigs(),
+          (cliPathOverride) => createCliAdapterSync('codex', cliPathOverride).resolvedBin,
+        );
+      } catch {
+        // Config unreadable or an adapter unavailable: fail closed and hide
+        // persisted badges whose continued relevance cannot be established.
+      }
+      const cliUpdates = filterCliRuntimeUpdateEntriesForTargets(
+        listCliRuntimeUpdateEntries(config.session.dataDir),
+        configuredUpdateTargets,
+      ).map((entry) => ({
         cliId: entry.cliId,
+        runtimeId: entry.runtimeId,
+        displayName: entry.displayName,
         binPath: entry.binPath,
+        provider: entry.provider,
+        managed: entry.managed,
         current: entry.current,
         latest: entry.latest,
         updateAvailable: entry.updateAvailable,
@@ -4614,6 +4664,15 @@ const server = createServer(async (req, res) => {
             ...d,
             botName: d.botName ?? j.botName,
             cliId: j.cliId || d.cliId,
+            // New daemons return explicit null for Official/no legacy path.
+            // Respect that instead of reviving a stale fallback descriptor;
+            // older daemons omit the fields and still use bots.json fallback.
+            cliRuntime: Object.prototype.hasOwnProperty.call(j, 'cliRuntime')
+              ? j.cliRuntime ?? undefined
+              : d.cliRuntime,
+            cliPathOverride: Object.prototype.hasOwnProperty.call(j, 'cliPathOverride')
+              ? j.cliPathOverride ?? undefined
+              : d.cliPathOverride,
             wrapperCli: j.wrapperCli || d.wrapperCli,
             model: j.model || d.model,
           }, j);

@@ -552,8 +552,8 @@ describe('supportsTypeAhead flag', () => {
     expect(createGeniusAdapter('/bin/genius').supportsTypeAhead).toBe(true);
   });
 
-  it('pi: undefined (uses busy marker probes instead of type-ahead)', () => {
-    expect(createPiAdapter('/bin/pi').supportsTypeAhead).toBeUndefined();
+  it('pi: true (0.80.6+ Message Queue steers submit-while-busy; JSONL transcript boundary makes attribution correct)', () => {
+    expect(createPiAdapter('/bin/pi').supportsTypeAhead).toBe(true);
   });
 
   it('pi: exposes Working... as the explicit busy marker', () => {
@@ -562,7 +562,7 @@ describe('supportsTypeAhead flag', () => {
     expect(adapter.busyPattern?.test('已完成，等待下一条输入')).toBe(false);
   });
 
-  it('pi: does not squash queued botmux turns', () => {
+  it('pi: does not squash queued botmux turns (one card per Lark turn; steer merge reconciled by the bridge queue)', () => {
     expect(createPiAdapter('/bin/pi').mergeQueuedInput).toBeUndefined();
   });
 
@@ -586,6 +586,10 @@ describe('reliableTurnTerminal capability', () => {
     expect(createTraexAdapter('/bin/traex').reliableTurnTerminal).toBe(true);
     expect(createGrokAdapter('/bin/grok').reliableTurnTerminal).toBe(true);
     expect(createCocoAdapter('/bin/coco').reliableTurnTerminal).toBeUndefined();
+    // Pi supports type-ahead but NOT reliableTurnTerminal: it holds no session
+    // fd (append short open/close) and a custom-terminate turn has no on-disk
+    // boundary, so it cannot make the always-on-disk end-of-turn promise
+    // durable delivery requires. Type-ahead does not need it (see pi.ts).
     expect(createPiAdapter('/bin/pi').reliableTurnTerminal).toBeUndefined();
   });
 });

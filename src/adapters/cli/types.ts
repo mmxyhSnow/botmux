@@ -94,6 +94,12 @@ export interface CliAdapter {
     workingDir?: string;
     /** CLI-native session id used for resume when it differs from botmux's session id. */
     resumeSessionId?: string;
+    /** When true, resume the `resumeSessionId` transcript but write forward into a
+     *  NEW CLI-native session id instead of the resumed one, leaving the source
+     *  transcript untouched — the native "fork/branch a session" primitive
+     *  (Claude `--fork-session`, `codex fork`). Only meaningful with resume=true
+     *  and a resumeSessionId; adapters whose CLI lacks the primitive ignore it. */
+    forkSession?: boolean;
     initialPrompt?: string;
     botName?: string;
     botOpenId?: string;
@@ -421,6 +427,17 @@ export interface CliAdapter {
    *  Resolved lazily / read AFTER buildArgs() (so a lazily-resolved bin is cached).
    *  Missing/empty → no extra re-expose. */
   sandboxExtraExecPaths?(): readonly string[];
+
+  /** Absolute paths (files or dirs) this adapter needs visible READ-ONLY inside
+   *  the file sandbox — distinct from `authPaths`, which are bound READ-WRITE.
+   *  Use this for host state the CLI only READS (e.g. traex/coco's first-run
+   *  migration done-markers at the ~/.trae root): exposing them read-only lets
+   *  the CLI see them without widening the writable surface to sibling
+   *  hook/plugin/skill code. Wired into the fs-policy `readonlyRoots` channel
+   *  (→ readOnly rule). `~`-expanded + existence-filtered by the worker, so
+   *  listing a path absent on this host is a no-op. Missing/empty → nothing extra
+   *  exposed. Return ONLY paths safe to reveal read-only (never credentials). */
+  sandboxReadonlyPaths?(): readonly string[];
 
   /** Extra env merged into the spawned child's environment. Used by Claude-family
    *  forks to point the CLI at its data root (e.g. Seed's `CLAUDE_CONFIG_DIR`).

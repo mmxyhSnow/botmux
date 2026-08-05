@@ -3,6 +3,7 @@ import type { BotSkillPolicy } from './core/skills/types.js';
 import type { RiffBackendConfig } from './adapters/backend/riff-backend.js';
 import type { CliUsageLimitState } from './utils/cli-usage-limit.js';
 import type { VcMeetingActivityType } from './vc-agent/types.js';
+import type { CodexServiceTierSnapshot } from './services/codex-service-tier.js';
 
 /** Managed meeting sinks supported by the first multi-consumer slice. */
 export type VcMeetingConsumerManagedSink = 'meeting_text' | 'meeting_voice';
@@ -509,18 +510,35 @@ export interface Session {
   whiteboardId?: string;
   /** CLI-native resume id when it differs from botmux's sessionId (for example Codex thread id). */
   cliSessionId?: string;
+  /** Provenance: the botmux sessionId this session was forked from (`/fork`).
+   *  Purely informational — surfaced in UI/pickers so a fork is distinguishable
+   *  from its parent. Does not affect routing or lifecycle. */
+  forkedFrom?: string;
+  /** One-shot fork intent for the child's FIRST spawn: resume `cliSessionId`
+   *  (the source's CLI-native transcript) but write forward into a new CLI-minted
+   *  id via the native fork primitive (Claude `--fork-session` / `codex fork`).
+   *  The worker clears it after the fork spawns and persists the child's own new
+   *  `cliSessionId`, so later re-forks resume the child's transcript normally. */
+  pendingForkSession?: boolean;
   /**
    * Set true when the idle-worker sweeper suspends this session over the per-bot
    * live cap: the worker AND the backing tmux/herdr/zellij/zmx session (+ CLI) were
    * intentionally killed to reclaim memory, but the session stays `active` and
-   * cold-resumes from its on-disk transcript on the next message. Distinguishes
-   * this deliberate state from a real zombie (pane gone while the server runs):
-   * `restoreActiveSessions` must NOT close a suspended session whose backing
-   * session probes 'missing'. Cleared once a live worker is re-established.
+   * cold-resumes from its on-disk transcript on the next message. Since the
+   * host-reboot fix, NO managed session (suspended or not) is auto-closed just
+   * because its backing probes 'missing' — a resumable transcript is always kept
+   * (see restoreActiveSessions / isSessionStopped). This marker is therefore no
+   * longer a close-guard; it stays as the authoritative "deliberately parked,
+   * expect no worker/pane" signal that drives the `dormant` status label and
+   * skips redundant liveness probes. Cleared once a live worker is re-established.
    */
   suspendedColdResume?: boolean;
   /** CLI used to spawn this session, frozen at creation so bot-level CLI edits only affect new sessions. */
   cliId?: import('./adapters/cli/types.js').CliId;
+  /** Concrete CLI distribution frozen with cliId. New sessions carry this
+   * structured snapshot while cliPathOverride remains shadow-written for
+   * downgrade compatibility with older botmux builds. */
+  cliRuntime?: import('./adapters/cli/runtime.js').CliRuntimeSnapshot;
   /** Optional CLI binary override frozen with `cliId`; used when no wrapper launcher is set. */
   cliPathOverride?: string;
   /** Optional wrapper launcher frozen at creation, e.g. `ttadk codex` or `aiden x claude`. */
@@ -781,7 +799,7 @@ export interface CliTurnPayload {
 
 /** Messages sent from Daemon to Worker */
 export type DaemonToWorker =
-  | { type: 'init'; sessionId: string; chatId: string; chatType?: 'group' | 'p2p'; rootMessageId: string; workingDir: string; cliId: string; cliPathOverride?: string; wrapperCli?: string; launchShell?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'; disableCliBypass?: boolean; codexRpcInput?: boolean; startupCommands?: string[]; env?: Record<string, string>; sandbox?: boolean; sandboxPaths?: { readWrite?: string[]; readOnly?: string[]; deny?: string[] }; sandboxHidePaths?: string[]; sandboxReadonlyPaths?: string[]; sandboxNetwork?: boolean; readIsolation?: boolean; readDenyExtraPaths?: string[]; daemonBootId?: string; backendType: BackendType; persistentBackendTarget?: PersistentBackendTarget; backendConfig?: RiffBackendConfig; riffParentTaskId?: string; riffRepoDirs?: string[]; deferredScheduleRun?: Session['deferredScheduleRun']; nativeSessionTitle?: string; nativeSessionTitlePrompt?: string; prompt: string; promptCodexAppInput?: CodexAppTurnInput; resume?: boolean; cliSessionId?: string; originalSessionId?: string; ownerOpenId?: string; webPort?: number; larkAppId: string; larkAppSecret: string; apiOnly?: boolean; loadedBotsConfigPath?: string; brand?: 'feishu' | 'lark'; botName?: string; botOpenId?: string; locale?: 'zh' | 'en'; turnId?: string; dispatchAttempt?: number; vcMeetingImTurnOrigin?: VcMeetingImTurnOrigin; pluginBindings?: string[]; skillPolicy?: BotSkillPolicy; skillPluginDir?: string; skillReadonlyRoots?: string[]; adoptMode?: boolean; adoptSource?: 'tmux' | 'herdr' | 'zellij'; adoptTmuxTarget?: string; adoptZellijSession?: string; adoptZellijPaneId?: string; adoptHerdrSessionName?: string; adoptHerdrTarget?: string; adoptHerdrPaneId?: string; adoptPaneCols?: number; adoptPaneRows?: number; bridgeJsonlPath?: string; adoptCliPid?: number; adoptCwd?: string; adoptRestoredFromMetadata?: boolean; runnerBuildId?: string; persistedRunnerBuildId?: string; restartAttemptId?: string }
+  | { type: 'init'; sessionId: string; chatId: string; chatType?: 'group' | 'p2p'; rootMessageId: string; workingDir: string; cliId: string; cliRuntime?: import('./adapters/cli/runtime.js').CliRuntimeSnapshot; cliPathOverride?: string; wrapperCli?: string; launchShell?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'; disableCliBypass?: boolean; codexRpcInput?: boolean; startupCommands?: string[]; env?: Record<string, string>; sandbox?: boolean; sandboxPaths?: { readWrite?: string[]; readOnly?: string[]; deny?: string[] }; sandboxHidePaths?: string[]; sandboxReadonlyPaths?: string[]; sandboxNetwork?: boolean; readIsolation?: boolean; readDenyExtraPaths?: string[]; daemonBootId?: string; backendType: BackendType; persistentBackendTarget?: PersistentBackendTarget; backendConfig?: RiffBackendConfig; riffParentTaskId?: string; riffRepoDirs?: string[]; deferredScheduleRun?: Session['deferredScheduleRun']; nativeSessionTitle?: string; nativeSessionTitlePrompt?: string; prompt: string; promptCodexAppInput?: CodexAppTurnInput; resume?: boolean; forkSession?: boolean; cliSessionId?: string; originalSessionId?: string; ownerOpenId?: string; webPort?: number; larkAppId: string; larkAppSecret: string; apiOnly?: boolean; loadedBotsConfigPath?: string; brand?: 'feishu' | 'lark'; botName?: string; botOpenId?: string; locale?: 'zh' | 'en'; turnId?: string; dispatchAttempt?: number; vcMeetingImTurnOrigin?: VcMeetingImTurnOrigin; pluginBindings?: string[]; skillPolicy?: BotSkillPolicy; skillPluginDir?: string; skillReadonlyRoots?: string[]; adoptMode?: boolean; adoptSource?: 'tmux' | 'herdr' | 'zellij'; adoptTmuxTarget?: string; adoptZellijSession?: string; adoptZellijPaneId?: string; adoptHerdrSessionName?: string; adoptHerdrTarget?: string; adoptHerdrPaneId?: string; adoptPaneCols?: number; adoptPaneRows?: number; bridgeJsonlPath?: string; adoptCliPid?: number; adoptCwd?: string; adoptRestoredFromMetadata?: boolean; runnerBuildId?: string; persistedRunnerBuildId?: string; restartAttemptId?: string }
   | { type: 'message'; content: string; codexAppInput?: CodexAppTurnInput; nativeSessionTitle?: string; nativeSessionTitlePrompt?: string; turnId?: string; dispatchAttempt?: number; vcMeetingImTurnOrigin?: VcMeetingImTurnOrigin }
   /** Literal slash-command passthrough. `followUpContent` rides along so the
    *  worker enqueues it strictly AFTER the slash command's Enter — two separate
@@ -908,6 +926,9 @@ export type WorkerToDaemon =
    *  daemon 收到后才结束 `botmux session-ready` HTTP 请求。 */
   | { type: 'session_ready_ack'; requestId: string }
   | { type: 'screen_update'; content: string; status: ScreenStatus; usageLimit?: CliUsageLimitState; turnId?: string; dispatchAttempt?: number }
+  /** Executor-observed Codex tier, bound to this worker + rollout generation.
+   * `null` explicitly clears any previous generation's snapshot. */
+  | { type: 'codex_service_tier'; snapshot: CodexServiceTierSnapshot | null }
   | { type: 'error'; message: string; turnId?: string; dispatchAttempt?: number }
   | { type: 'bridge_source_session'; bridge: 'hermes'; sourceSessionId: string }
   /** Worker observed a successful explicit `botmux send` for this turn, so

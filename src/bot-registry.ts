@@ -2,9 +2,14 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { underReadIsolation } from './adapters/cli/read-isolation.js';
 import type { BackendType } from './adapters/backend/types.js';
 import type { RiffBackendConfig } from './adapters/backend/riff-backend.js';
 import type { CliId } from './adapters/cli/types.js';
+import {
+  normalizeCliRuntimeConfig,
+  type CliRuntimeConfig,
+} from './adapters/cli/runtime.js';
 import { logger } from './utils/logger.js';
 import { isLocale, setBotLookup, type Locale } from './i18n/index.js';
 import type { VoiceConfig } from './services/voice/types.js';
@@ -69,6 +74,13 @@ export interface MessageListenerConfig {
     mode?: 'all_except_excluded' | 'include_only';
     includeSenderOpenIds?: string[];
     excludeSenderOpenIds?: string[];
+    /**
+     * Persisted sender KIND for each exclude id (open_id → 'user' | 'bot'), so
+     * the runtime fail-close decision (all_except_excluded + unverified bot
+     * sender) can tell a muted human from a muted bot WITHOUT guessing by id
+     * prefix. Absent entries fall back to a conservative "maybe a bot".
+     */
+    excludeSenderKinds?: Record<string, 'user' | 'bot'>;
     includeSenderTypes?: MessageListenerSenderType[];
     excludeSenderTypes?: MessageListenerSenderType[];
     /** Default true. */
@@ -813,6 +825,20 @@ function normalizeMessageListenerStringList(raw: unknown): string[] | undefined 
   return values.length > 0 ? [...new Set(values)] : undefined;
 }
 
+function normalizeMessageListenerSenderKinds(
+  raw: unknown,
+  excludeSenderOpenIds: string[] | undefined,
+): Record<string, 'user' | 'bot'> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const allowed = excludeSenderOpenIds ? new Set(excludeSenderOpenIds) : undefined;
+  const out: Record<string, 'user' | 'bot'> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!key || (allowed && !allowed.has(key))) continue;
+    if (value === 'user' || value === 'bot') out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function normalizeMessageListenerSenderTypes(raw: unknown): MessageListenerSenderType[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   const values = raw
@@ -838,11 +864,13 @@ function normalizeMessageListenerConfig(raw: unknown, botIndex: number, chatId: 
   const mode = senderRaw.mode === 'include_only' ? 'include_only' : 'all_except_excluded';
   const includeSenderOpenIds = normalizeMessageListenerStringList(senderRaw.includeSenderOpenIds);
   const excludeSenderOpenIds = normalizeMessageListenerStringList(senderRaw.excludeSenderOpenIds);
+  const excludeSenderKinds = normalizeMessageListenerSenderKinds(senderRaw.excludeSenderKinds, excludeSenderOpenIds);
   const includeSenderTypes = normalizeMessageListenerSenderTypes(senderRaw.includeSenderTypes);
   const excludeSenderTypes = normalizeMessageListenerSenderTypes(senderRaw.excludeSenderTypes);
   if (mode !== 'all_except_excluded') senderPolicy.mode = mode;
   if (includeSenderOpenIds) senderPolicy.includeSenderOpenIds = includeSenderOpenIds;
   if (excludeSenderOpenIds) senderPolicy.excludeSenderOpenIds = excludeSenderOpenIds;
+  if (excludeSenderKinds) senderPolicy.excludeSenderKinds = excludeSenderKinds;
   if (includeSenderTypes) senderPolicy.includeSenderTypes = includeSenderTypes;
   if (excludeSenderTypes) senderPolicy.excludeSenderTypes = excludeSenderTypes;
   if (senderRaw.excludeSelf === false) senderPolicy.excludeSelf = false;
@@ -1022,6 +1050,19 @@ export interface BotConfig {
    */
   displayName?: string;
   cliId: CliId;
+  /**
+   * Optional distribution identity for a CLI that is protocol-compatible with
+   * {@link cliId} but ships as an independent executable/release stream (for
+   * example a Codex-compatible fork). The adapter remains selected by cliId;
+   * this descriptor owns product identity, executable and update provenance.
+   *
+   * `cliPathOverride` remains readable for legacy configs. A configured runtime
+   * is exposed through cliPathOverride in memory as a compatibility shadow so
+   * existing adapter call sites keep launching the selected executable while
+   * the runtime rollout migrates them to the structured descriptor.
+   */
+  cliRuntime?: CliRuntimeConfig;
+  /** @deprecated Prefer cliRuntime.executable for newly configured runtimes. */
   cliPathOverride?: string;
   /**
    * 通用启动前缀（按空格拆 token）：worker spawn 时把启动命令拼成
@@ -1431,6 +1472,13 @@ export interface BotConfig {
    */
   autoStartOnGroupJoinPrompt?: string;
   /**
+   * 进群自动拉 owner。Default (undefined) = ON：本 bot 被加进任何群时，自动把
+   * 自己的 owner（resolvedAllowedUsers 首个 ou_ 用户）拉进群——bot 应始终处于
+   *  owner 可见的群里（不打黑工）。显式 false 关闭（如告警/oncall 类 bot 被
+   * 平台批量拉进大量事件群、不想打扰 owner 的场景）。仅 bots.json 文件配置。
+   */
+  autoInviteOwnerOnGroupAdd?: boolean;
+  /**
    * 主动开工 — 场景②. When true, in a 话题群 (topic mode) every new topic's first
    * message auto-starts a session even without an @mention (the default role +
    * the user's first message form the prompt). No effect in regular groups.
@@ -1509,6 +1557,10 @@ export interface BotConfig {
   docRepoMap?: Record<string, string>;
   /** Per-bot range for explicit `@bot /summary`; defaults to 50 messages / 24h. */
   summaryRange?: SummaryRangeConfig;
+  /** When true, explicit `@bot /summary` records a conservative project-local summary.md. */
+  summaryMemory?: boolean;
+  /** Optional target path for summary memory. Relative paths are resolved by the agent against the current project root; absolute paths are used as configured. */
+  summaryMemoryPath?: string;
   /**
    * Legacy content/keyword trigger config. Kept parseable for config
    * compatibility, but message routing no longer fires non-@ content triggers.
@@ -2177,7 +2229,27 @@ export function isManagedActivationStartingAtIndex(
 }
 
 function parseBotConfigFile(filePath: string): BotConfig[] {
-  const raw = readFileSync(filePath, 'utf-8');
+  let raw: string;
+  try {
+    raw = readFileSync(filePath, 'utf-8');
+  } catch (err: any) {
+    // A sandboxed CLI is denied bots.json ON PURPOSE (it holds every sibling's
+    // secret). Seatbelt allows the METADATA read but denies the CONTENT read, so
+    // resolveBotConfigPath()'s existsSync() passes and we land here with
+    // EPERM/EACCES — the "no config file" branch that would have degraded
+    // gracefully is never reached. Callers then die with a raw
+    // `EPERM … open '~/.botmux/bots.json'`, which is why EVERY botmux subcommand
+    // (not just send) breaks inside the sandbox.
+    //
+    // Under isolation the bot's identity comes from registerSelfFromCredFile()
+    // instead, so "disk gave us nothing" is the correct, complete answer here.
+    //
+    // Outside isolation an unreadable bots.json is a REAL fault and must still
+    // throw: swallowing it would silently boot a zero-bot process (no bots
+    // respond, no error anywhere) — strictly worse than crashing loudly.
+    if ((err?.code === 'EPERM' || err?.code === 'EACCES') && underReadIsolation()) return [];
+    throw err;
+  }
   try {
     return parseBotConfigsFromText(raw);
   } catch (err: any) {
@@ -2229,6 +2301,27 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
       || entry.activationCommitted !== undefined
     ) {
       continue;
+    }
+
+    // cliRuntime is the canonical successor to cliPathOverride. New writers
+    // also persist an exactly-equal path shadow so a rollback to an older
+    // BotMux still launches the same distribution. Any unequal pair would make
+    // old and new versions disagree, so it fails closed below.
+    const entryCliId = entry.cliId ?? 'claude-code';
+    if (entry.cliRuntime !== undefined && entryCliId !== 'codex') {
+      throw new Error(`Bot config [${i}]: cliRuntime is currently supported only for cliId "codex"`);
+    }
+    if (entry.cliRuntime !== undefined && typeof entry.wrapperCli === 'string' && entry.wrapperCli.trim()) {
+      throw new Error(`Bot config [${i}]: cliRuntime cannot be combined with wrapperCli`);
+    }
+    const cliRuntime = entry.cliRuntime === undefined
+      ? undefined
+      : normalizeCliRuntimeConfig(entry.cliRuntime, `Bot config [${i}].cliRuntime`);
+    if (cliRuntime && entry.cliPathOverride === undefined) {
+      throw new Error(`Bot config [${i}]: cliPathOverride is required as an exact downgrade shadow of cliRuntime.executable`);
+    }
+    if (cliRuntime && entry.cliPathOverride !== cliRuntime.executable) {
+      throw new Error(`Bot config [${i}]: cliPathOverride must exactly match cliRuntime.executable`);
     }
 
     // Parse workingDirs from comma-separated workingDir if workingDirs not explicitly set
@@ -2421,6 +2514,8 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
       ? normalizePluginIdList(entry.plugins) ?? []
       : undefined;
     const summaryRange = normalizeSummaryRange(entry.summaryRange ?? entry.summary);
+    const summaryMemory = entry.summaryMemory === true ? true : undefined;
+    const summaryMemoryPath = normalizeNonEmptyString(entry.summaryMemoryPath);
     const contentTriggers = normalizeContentTriggers(entry.contentTriggers, i);
     const messageListeners = normalizeMessageListeners(entry.messageListeners, i);
     const vcMeetingAgent = normalizeVcMeetingAgentConfig(entry.vcMeetingAgent);
@@ -2457,7 +2552,10 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
       brand: entry.brand === 'lark' ? 'lark' : undefined,
       name: typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : undefined,
       displayName: typeof entry.displayName === 'string' && entry.displayName.trim() ? entry.displayName.trim() : undefined,
-      cliId: entry.cliId ?? 'claude-code',
+      cliId: entryCliId,
+      cliRuntime,
+      // Compatibility shadow: writers persist it for downgrade safety and the
+      // loader requires an exact match so every accepted config is rollback-safe.
       cliPathOverride: entry.cliPathOverride,
       wrapperCli: typeof entry.wrapperCli === 'string' && entry.wrapperCli.trim()
         ? entry.wrapperCli.trim()
@@ -2571,6 +2669,8 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
       // 平台团队展示默认 ON：只有显式 false 有意义/落盘（undefined = 展示）。
       showInTeam: entry.showInTeam === false ? false : undefined,
       autoStartOnGroupJoin: entry.autoStartOnGroupJoin === true || undefined,
+      // Default ON: only an explicit false is meaningful/persisted (undefined = on).
+      autoInviteOwnerOnGroupAdd: entry.autoInviteOwnerOnGroupAdd === false ? false : undefined,
       // Preserve the configured prompt verbatim; trim-to-undefined when blank
       // so an empty string doesn't linger in bots.json.
       autoStartOnGroupJoinPrompt: typeof entry.autoStartOnGroupJoinPrompt === 'string' && entry.autoStartOnGroupJoinPrompt.trim()
@@ -2608,6 +2708,8 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
           )
         : undefined,
       summaryRange,
+      summaryMemory,
+      summaryMemoryPath,
       contentTriggers,
       voice,
     });

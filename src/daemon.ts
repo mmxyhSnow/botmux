@@ -119,9 +119,12 @@ import { activeSessionKey, sessionKey, sessionAnchorId, storedSessionAnchorId, l
 import { buildTerminalUrl, setTerminalProxyPort, setTerminalExternalPort } from './core/terminal-url.js';
 import { startTerminalProxy, type TerminalProxyHandle } from './core/terminal-proxy.js';
 import type { CliId } from './adapters/cli/types.js';
+import { runtimeInstallationKey } from './adapters/cli/runtime.js';
 import * as scheduler from './core/scheduler.js';
 import { scanProjects, scanMultipleProjects } from './services/project-scanner.js';
 import { buildQuotaExhaustedCard, buildRepoSelectCard, buildStreamingCard, getCliDisplayName } from './im/lark/card-builder.js';
+import { codexServiceTierBadge } from './services/codex-service-tier.js';
+import { sessionConfiguredRuntimeDisplayName } from './core/cli-runtime-display.js';
 import { isLocalCliOpenReady } from './services/local-cli-opener.js';
 import { RECEIVED_REACTION_EMOJI_TYPE, SUBSTITUTE_RECEIVED_REACTION_EMOJI_TYPE } from './core/pending-response.js';
 import { t as tr, botLocale, localeForBot } from './i18n/index.js';
@@ -229,6 +232,8 @@ import {
 } from './core/persistent-backend.js';
 import type { PersistentBackendTarget } from './adapters/backend/types.js';
 import { handleCardAction, runAutoWorktreeCommit } from './im/lark/card-handler.js';
+import { setIssueActivate } from './im/lark/issue-command-deps.js';
+import { startIssueOutboxPump } from './services/issue-outbox-pump.js';
 import type { CardActionData, CardHandlerDeps } from './im/lark/card-handler.js';
 import {
   parseWorkflowGrillTrigger,
@@ -3550,13 +3555,22 @@ function scheduleAllowedUsersResolveRetry(larkAppId: string, attempt = 1): void 
 
 // ─── Version tracking ────────────────────────────────────────────────────────
 
-function refreshCliVersion(cliId: CliId, cliPathOverride?: string): boolean {
+function cliRuntimeVersionKey(cfg: Pick<BotConfig, 'cliId' | 'cliRuntime' | 'cliPathOverride'>): string {
+  return runtimeInstallationKey({
+    cliId: cfg.cliId,
+    cliRuntime: cfg.cliRuntime,
+    cliPathOverride: cfg.cliPathOverride,
+  });
+}
+
+function refreshCliVersion(botCfg: Pick<BotConfig, 'cliId' | 'cliRuntime' | 'cliPathOverride'>): boolean {
   const now = Date.now();
-  const cached = cliVersionCache.get(cliId);
+  const key = cliRuntimeVersionKey(botCfg);
+  const cached = cliVersionCache.get(key);
   if (cached && now - cached.lastCheckAt < VERSION_CHECK_INTERVAL) return false;
 
   try {
-    const adapter = createCliAdapterSync(cliId, cliPathOverride);
+    const adapter = createCliAdapterSync(botCfg.cliId, botCfg.cliPathOverride);
     // Remote backends (riff) have no local binary to version-check — skip.
     if (!adapter.resolvedBin && !adapter.versionCommand) return false;
     const versionCommand = adapter.versionCommand?.() ?? { bin: adapter.resolvedBin, args: ['--version'] };
@@ -3569,19 +3583,18 @@ function refreshCliVersion(cliId: CliId, cliPathOverride?: string): boolean {
     if (newVersion === 'unknown' || !newVersion) return false;
 
     const oldVersion = cached?.version;
-    cliVersionCache.set(cliId, { version: newVersion, lastCheckAt: now });
-    // Also update the shared version (used by forkWorker for ds.cliVersion)
-    setCurrentCliVersion(newVersion);
+    cliVersionCache.set(key, { version: newVersion, lastCheckAt: now });
+    setCurrentCliVersion(newVersion, key);
 
     if (oldVersion && oldVersion !== newVersion) {
-      logger.info(`CLI version updated: ${oldVersion} → ${newVersion} (${adapter.id})`);
+      logger.info(`CLI version updated: ${oldVersion} → ${newVersion} (${botCfg.cliRuntime?.displayName ?? adapter.id})`);
       return true;
     }
 
-    logger.info(`CLI version: ${newVersion} (${adapter.id})`);
+    logger.info(`CLI version: ${newVersion} (${botCfg.cliRuntime?.displayName ?? adapter.id})`);
     return false;
   } catch (err: any) {
-    logger.warn(`Failed to get CLI version for ${cliId}: ${err.message}`);
+    logger.warn(`Failed to get CLI version for ${botCfg.cliRuntime?.displayName ?? botCfg.cliId}: ${err.message}`);
     return false;
   }
 }
@@ -4020,27 +4033,34 @@ function beginNewTurn(ds: DaemonSession, title: string): void {
   if (ds.streamCardId && workerHasInitialized(ds)) {
     const readUrl = readableTerminalUrlFor(ds);
     const dsBotCfg = getBot(ds.larkAppId).config;
-    const prevTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(dsBotCfg.cliId);
+    const effectiveCliId = ds.session.cliId ?? dsBotCfg.cliId;
+    const runtimeDisplayName = sessionConfiguredRuntimeDisplayName(ds.session, dsBotCfg.cliRuntime);
+    const prevTitle = ds.currentTurnTitle || ds.session.title || runtimeDisplayName || getCliDisplayName(effectiveCliId);
     const prevMode = ds.displayMode ?? 'hidden';
+    const previousCodexTierBadge = codexServiceTierBadge(effectiveCliId, ds.codexServiceTier);
     const frozenCard = buildStreamingCard(
       ds.session.sessionId, sessionAnchorId(ds), readUrl, prevTitle,
-      ds.lastScreenContent ?? '', previousStatus, dsBotCfg.cliId,
+      ds.lastScreenContent ?? '', previousStatus, effectiveCliId,
       prevMode, ds.streamCardNonce, ds.currentImageKey,
       !!ds.adoptedFrom, false, localeForBot(ds.larkAppId), previousUsageLimit,
       writableTerminalLinkFor(ds),
-      isLocalCliOpenReady(ds, { cliId: dsBotCfg.cliId }),
-      getDaemonStreamingCardUsageSnapshot(ds, dsBotCfg.cliId, { fresh: true }),
+      isLocalCliOpenReady(ds, { cliId: effectiveCliId }),
+      getDaemonStreamingCardUsageSnapshot(ds, effectiveCliId, { fresh: true }),
+      runtimeDisplayName,
+      previousCodexTierBadge,
     );
     scheduleCardPatch(ds, frozenCard);
 
     if (ds.streamCardNonce && ds.streamCardId !== CARD_POSTING_SENTINEL) {
       if (!ds.frozenCards) ds.frozenCards = new Map();
+      ds.parkedStreamCardNonce = ds.streamCardNonce;
       ds.frozenCards.set(ds.streamCardNonce, {
         messageId: ds.streamCardId,
         content: ds.lastScreenContent ?? '',
         title: prevTitle,
         displayMode: prevMode,
         imageKey: ds.currentImageKey,
+        ...(previousCodexTierBadge ? { codexServiceTierBadge: previousCodexTierBadge } : {}),
       });
       saveFrozenCards(ds.session.sessionId, ds.frozenCards);
     }
@@ -15485,6 +15505,20 @@ function isInitialSessionPassthrough(larkAppId: string, cmd: string): boolean {
   return resolveAdapterDefaultPassthroughCommands(larkAppId).includes(cmd);
 }
 
+/** `/fast` is a passthrough keystroke to Codex's native tier toggle — it only
+ *  reaches the executor on a real paste TUI. In RPC input mode the pane is a
+ *  pure viewer (turns go over JSON-RPC, keystrokes never reach the app-server),
+ *  and the Riff backend turns the text+Enter into two remote task writes. On
+ *  those backends the toggle is a silent no-op (or worse), so fail closed:
+ *  reject with a clear message instead of pretending it worked. The read-only
+ *  card badge is unaffected — it reflects whatever tier Codex actually runs. */
+function fastToggleUnsupportedBackend(ds: DaemonSession | undefined): boolean {
+  if (!ds) return false;
+  const backendType = ds.initConfig?.backendType ?? ds.session.backendType;
+  if (backendType === 'riff') return true;
+  return ds.initConfig?.codexRpcInput === true;
+}
+
 /** Preserve the established mid-session passthrough semantics when a cold-start
  * scratch loses its registration race to a concurrently-created real session. */
 function deliverPassthroughToExistingSession(
@@ -15584,7 +15618,7 @@ async function startInitialPassthroughSession(args: {
   }
 
   const botCfg = getBot(larkAppId).config;
-  refreshCliVersion(botCfg.cliId, botCfg.cliPathOverride);
+  refreshCliVersion(botCfg);
   const directChatSender = chatType === 'p2p'
     ? await resolveSender(larkAppId, senderOpenId, parsed.senderType, { messageId })
     : undefined;
@@ -15629,7 +15663,7 @@ async function startInitialPassthroughSession(args: {
     chatType,
     scope,
     spawnedAt: Date.parse(session.createdAt) || now,
-    cliVersion: cliVersionCache.get(botCfg.cliId)?.version ?? 'unknown',
+    cliVersion: cliVersionCache.get(cliRuntimeVersionKey(botCfg))?.version ?? 'unknown',
     lastMessageAt: now,
     hasHistory: false,
     pendingRepo: !pinnedWorkingDir || autoWt,
@@ -15829,6 +15863,18 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
   // enforceMessageQuotaForCliInput 的 botSender 说明。
   const isBotSenderType = data.sender?.sender_type === 'app' || data.sender?.sender_type === 'bot';
   const teamTrustUnionId: string | undefined = isBotSenderType ? senderUnionId : undefined;
+  // A bot-sent new topic (e.g. a message-listener match on a third-party alert
+  // bot's card) must NOT make that bot the session owner: daemon-generated
+  // footers --mention-back the owner, so a bot owner means we @ the alert bot
+  // on every reply — self-poking / re-trigger loops — and leak owner-gated
+  // surfaces (restart/report/cards) to it. Mirror the handleThreadReply +
+  // auto-create paths (isForeignBot → ownerOpenId/ownerUnionId undefined); keep
+  // creatorOpenId + quoteTarget* so botmux report / first-turn quote still work.
+  const isForeignBotSender = isBotSenderType
+    || (!!senderOpenId && senderOpenId !== getBot(larkAppId).botOpenId
+        && isKnownPeerBot(config.session.dataDir, larkAppId, senderOpenId));
+  const ownerOpenIdForSession = isForeignBotSender ? undefined : senderOpenId;
+  const ownerUnionIdForSession = isForeignBotSender ? undefined : senderUnionId;
   const botCfg = getBot(larkAppId).config;
   const listenerPrompt = messageListener ? renderMessageListenerPrompt(messageListener) : undefined;
   if (listenerPrompt) {
@@ -16045,7 +16091,7 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
         chatType,
         scope,
         spawnedAt: Date.parse(session.createdAt) || now,
-        cliVersion: cliVersionCache.get(botCfg.cliId)?.version ?? 'unknown',
+        cliVersion: cliVersionCache.get(cliRuntimeVersionKey(botCfg))?.version ?? 'unknown',
         lastMessageAt: now,
         hasHistory: false,
         ownerOpenId: senderOpenId,
@@ -16121,7 +16167,7 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
   );
   const newTopicSender = await resolveSender(larkAppId, senderOpenId, parsed.senderType, { messageId });
 
-  refreshCliVersion(botCfg.cliId, botCfg.cliPathOverride);
+  refreshCliVersion(botCfg);
 
   // Pin the working dir via the layered oncall / inherit / default lookup
   // (auto-binds a defaultOncall chat as a side effect). Shared with the
@@ -16207,8 +16253,12 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
   const groupChatName = await groupChatNamePromise;
   if (groupChatName) session.chatDisplayName = groupChatName;
   session.larkAppId = larkAppId;
-  session.ownerOpenId = senderOpenId;
-  session.ownerUnionId = senderUnionId;
+  // Foreign-bot senders own nothing (see isForeignBotSender above); owner stays
+  // undefined so footers don't --mention-back the bot. creator/quoteTarget keep
+  // the raw sender so botmux report + first-turn quote still resolve.
+  session.ownerOpenId = ownerOpenIdForSession;
+  session.ownerUnionId = ownerUnionIdForSession;
+  session.creatorOpenId = senderOpenId;
   session.lastCallerOpenId = senderOpenId;
   // First turn of a brand-new topic: seed quoteTarget* so the very first
   // `botmux send` can --mention-back / 引用 the triggering message (chat scope).
@@ -16216,7 +16266,7 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
   // chat-scope首条不引用. Use the event's sender open_id (correct app scope).
   session.quoteTargetId = parsed.messageId;
   session.quoteTargetSenderOpenId = senderOpenId;
-  session.quoteTargetSenderIsBot = parsed.senderType === 'app' || parsed.senderType === 'bot';
+  session.quoteTargetSenderIsBot = isForeignBotSender || parsed.senderType === 'app' || parsed.senderType === 'bot';
   session.lastMessageAt = new Date(now).toISOString();
   session.scope = scope;
   if (topicStatusBinding) session.topicStatusBinding = topicStatusBinding;
@@ -16247,7 +16297,7 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
     chatType,
     scope,
     spawnedAt: Date.parse(session.createdAt) || now,
-    cliVersion: cliVersionCache.get(botCfg.cliId)?.version ?? 'unknown',
+    cliVersion: cliVersionCache.get(cliRuntimeVersionKey(botCfg))?.version ?? 'unknown',
     lastMessageAt: now,
     hasHistory: false,
     pendingRepo: !pinnedWorkingDir || autoWt,
@@ -16261,7 +16311,7 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
     pendingSubstituteTrigger: substituteTrigger,
     pendingSubstituteControlCard: shouldSendSubstituteControlCard,
     pendingSender: newTopicSender,
-    ownerOpenId: senderOpenId,
+    ownerOpenId: ownerOpenIdForSession,
     currentTurnTitle: initialTurnTitle,
     workingDir: pinnedWorkingDir,
   };
@@ -16496,10 +16546,26 @@ async function warnGroupJoinScopeOnce(larkAppId: string, detail: string): Promis
  * in a 话题群 is the known stale-session bug (every reply would wrap into a new
  * topic, and later messages route elsewhere).
  */
-async function handleBotAdded(chatId: string, operatorOpenId: string | undefined, larkAppId: string): Promise<void> {
+async function handleBotAdded(
+  chatId: string,
+  operatorOpenId: string | undefined,
+  larkAppId: string,
+  opts?: {
+    /**
+     * 强制开工并指定首轮 prompt（Issue Board 领取用）。
+     *
+     * 复用这里而不是另写一条建会话路径：下面那套 CAS 注册 + ready 屏障 + 接管检测是
+     * 有状态的竞态协议，平行实现迟早对不齐。带上它就绕过 `autoStartOnGroupJoin` 开关
+     * ——领取是人明确点出来的动作，不该再受"主动开工"这个全局偏好左右。
+     * D7（群里必须有 allowedUser）等其余前置检查一律照常跑。
+     */
+    forcePrompt?: string;
+  },
+): Promise<void> {
   const bot = getBot(larkAppId);
   const botCfg = bot.config;
-  if (botCfg.autoStartOnGroupJoin !== true) {
+  const forced = typeof opts?.forcePrompt === 'string';
+  if (!forced && botCfg.autoStartOnGroupJoin !== true) {
     logger.debug(`[auto-start:入群] ${chatId.substring(0, 12)} 开关未开，忽略`);
     return;
   }
@@ -16548,7 +16614,7 @@ async function handleBotAdded(chatId: string, operatorOpenId: string | undefined
     // conversion to 话题群 would wrongly pick chat-scope and reintroduce the
     // oc_-id-as-reply-target bug (R1). Fetch fresh.
     const mode = await getChatMode(larkAppId, chatId, { forceRefresh: true });
-    const promptBody = resolveGroupJoinPrompt(botCfg.autoStartOnGroupJoinPrompt);
+    const promptBody = opts?.forcePrompt ?? resolveGroupJoinPrompt(botCfg.autoStartOnGroupJoinPrompt);
     const title = (promptBody || tr('daemon.auto_start_join_title', undefined, localeForBot(larkAppId))).substring(0, 50);
     // D8 deliberately keeps the legacy prompt empty when no join prompt is
     // configured, so the agent can inspect group context without receiving a
@@ -16578,7 +16644,7 @@ async function handleBotAdded(chatId: string, operatorOpenId: string | undefined
 
     const { pinnedWorkingDir, pinnedFromBotDefault } = await resolvePinnedWorkingDir({ scope, anchor, chatId, chatType, larkAppId });
     const autoWt = willAutoWorktree(larkAppId, pinnedWorkingDir, pinnedFromBotDefault);
-    refreshCliVersion(botCfg.cliId, botCfg.cliPathOverride);
+    refreshCliVersion(botCfg);
 
     const session = sessionStore.createSession(chatId, anchor, title, chatType);
     const now = Date.now();
@@ -16601,7 +16667,7 @@ async function handleBotAdded(chatId: string, operatorOpenId: string | undefined
       chatType,
       scope,
       spawnedAt: Date.parse(session.createdAt) || now,
-      cliVersion: cliVersionCache.get(botCfg.cliId)?.version ?? 'unknown',
+      cliVersion: cliVersionCache.get(cliRuntimeVersionKey(botCfg))?.version ?? 'unknown',
       lastMessageAt: now,
       hasHistory: false,
       pendingRepo: !pinnedWorkingDir || autoWt,
@@ -17130,6 +17196,14 @@ async function handleThreadReply(
       // 收紧到与 daemon 命令同档；这会同时改变真人 oncall 成员的现有行为，应单独评估。
       const ds = existingDs;
       if (ds) {
+        // /fast fail-closed: on RPC-input / Riff backends the keystroke can't
+        // reach Codex's executor (see fastToggleUnsupportedBackend). Reject with
+        // a clear message rather than deliver a silent no-op (or spawn junk Riff
+        // tasks). Other passthrough commands are unaffected.
+        if (cmd === '/fast' && fastToggleUnsupportedBackend(ds)) {
+          await sessionReply(anchor, tr('daemon.fast_unsupported_backend', undefined, localeForBot(larkAppId)), 'text', larkAppId);
+          return;
+        }
         deliverPassthroughToExistingSession(ds, cmd, commandContent, anchor, larkAppId, {
           messageId: parsed.messageId,
           replyRootId,
@@ -17204,7 +17278,7 @@ async function handleThreadReply(
           chatType: ctxChatType,
           scope,
           spawnedAt: Date.parse(session.createdAt) || now,
-          cliVersion: cliVersionCache.get(getBot(larkAppId).config.cliId)?.version ?? 'unknown',
+          cliVersion: cliVersionCache.get(cliRuntimeVersionKey(getBot(larkAppId).config))?.version ?? 'unknown',
           lastMessageAt: now,
           hasHistory: false,
           ownerOpenId: threadSenderOpenId,
@@ -17485,7 +17559,7 @@ async function handleThreadReply(
       parsed.mentions,
     );
     logger.info(`No active session for ${scope}-scope ${anchor}, auto-creating new session...`);
-    refreshCliVersion(botCfg.cliId, botCfg.cliPathOverride);
+    refreshCliVersion(botCfg);
     const senderOId = data.sender?.sender_id?.open_id;
     const senderUId = data.sender?.sender_id?.union_id;
     // For thread-scope: rootMessageId = anchor (real thread root).
@@ -17553,7 +17627,7 @@ async function handleThreadReply(
       chatType: autoCreateChatType,
       scope,
       spawnedAt: Date.parse(session.createdAt) || now,
-      cliVersion: cliVersionCache.get(botCfg.cliId)?.version ?? 'unknown',
+      cliVersion: cliVersionCache.get(cliRuntimeVersionKey(botCfg))?.version ?? 'unknown',
       lastMessageAt: now,
       hasHistory: false,
       pendingRepo: !pinnedWorkingDir || autoWt,
@@ -18529,6 +18603,34 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     logger.warn(`[tmux] failed to scrub server-global env key(s): ${tmuxEnvScrub.failed.join(', ')}`);
   }
 
+  // Issue Board 领取的「激活」入口。
+  //
+  // 复用 handleBotAdded 而不是另写建会话逻辑：那套 CAS 注册 + ready 屏障 + 接管检测是有
+  // 状态的竞态协议，平行实现迟早对不齐（普通群 vs 话题群锚点判定错了就是已知的
+  // stale-session bug）。领取侧只需要"强制开工 + 指定首轮 prompt"。
+  //
+  // 注意这里**不发任何 @ 消息**：飞书不会把应用自己发的消息推回给它自己，而领取场景里
+  // 建群者与承接者是同一个 bot，代发那条路也不通。botmux 自己就是 daemon，直接建会话即可。
+  setIssueActivate(async ({ chatId, larkAppId, prompt }) => {
+    await handleBotAdded(chatId, undefined, larkAppId, { forcePrompt: prompt });
+    const anchorKey = groupJoinAnchorByChat.get(`${larkAppId}:${chatId}`);
+    if (!anchorKey || !activeSessions.has(anchorKey)) {
+      // handleBotAdded 内部有多处静默早返回（去重、D7 未过、成员拉取失败…）。
+      // 抛出来让领取流程停在 activate 阶段，而不是谎报成功——群和 binding 都已就绪，
+      // 补一次激活即可。
+      throw new Error('session_not_started');
+    }
+    return anchorKey;
+  });
+
+  // Issue Board 发件箱后台泵 + 启动解卡。
+  //
+  // 各处回写失败时都写着「行留在 outbox 里，pump 会接着重投」——在这之前没有任何东西会
+  // 重投，那句话是假的。后果不是晚同步：in_progress 那次写只要失败一次，5 分钟后平台就把
+  // 任务打成 needs_attention(claim_activate_timeout)，而那是单向门，群里的活直接废掉。
+  // 同时启动时把卡在 inflight 的行退回待发，否则崩溃一次就永久堵死该 binding 的串行队列。
+  startIssueOutboxPump({ dataDir: config.session.dataDir });
+
   // 首次启动时后台尝试安装 CJK 字体（Debian/Ubuntu），避免截图中文显示豆腐块。
   // 不阻塞：首张截图可能仍是豆腐块，装完重启 daemon 即可正常。
   ensureCjkFontsInstalled();
@@ -19065,7 +19167,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     const cfg = bot.config;
 
     // Refresh CLI version per bot's cliId
-    refreshCliVersion(cfg.cliId, cfg.cliPathOverride);
+    refreshCliVersion(cfg);
 
     // Resolve allowed users per bot. Skipped for apiOnly (core-only) bots:
     // their HTTP control-API triggers authenticate via the dashboard token, not

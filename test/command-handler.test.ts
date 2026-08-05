@@ -470,7 +470,7 @@ vi.mock('../src/services/card-mode-store.js', () => ({
 
 // ─── Imports (after mocks) ──────────────────────────────────────────────────
 
-import { DAEMON_COMMANDS, SESSIONLESS_DAEMON_COMMANDS, PASSTHROUGH_COMMANDS, resolvePassthroughCommands, resolveAdapterDefaultPassthroughCommands, handleCommand, handleCardCommand, handleTermLinkCommand, parseSlashCommandInvocation, parseForceTopicInvocation, startAdoptSession } from '../src/core/command-handler.js';
+import { DAEMON_COMMANDS, SESSIONLESS_DAEMON_COMMANDS, PASSTHROUGH_COMMANDS, resolvePassthroughCommands, resolveAdapterDefaultPassthroughCommands, handleCommand, handleCardCommand, handleTermLinkCommand, parseSlashCommandInvocation, parseForceTopicInvocation, startAdoptSession, startResumeImportSession } from '../src/core/command-handler.js';
 import { setCardMode } from '../src/services/card-mode-store.js';
 import { writeRoleFile, deleteRoleFile, writeTeamRoleFile, deleteTeamRoleFile, resolveRole, resolveRoleFile } from '../src/core/role-resolver.js';
 import { setBotCapability, clearBotCapability } from '../src/services/bot-profile-store.js';
@@ -494,7 +494,7 @@ import * as sessionStore from '../src/services/session-store.js';
 import * as scheduleStore from '../src/services/schedule-store.js';
 import * as scheduler from '../src/core/scheduler.js';
 import { deleteMessage, sendMessage, replyMessage, listChatBotMembers, UserTokenMissingError } from '../src/im/lark/client.js';
-import { buildSlashListCard, buildSessionClosedCard } from '../src/im/lark/card-builder.js';
+import { buildAdoptSelectCard, buildSlashListCard, buildSessionClosedCard } from '../src/im/lark/card-builder.js';
 import { createGroupWithBots } from '../src/services/group-creator.js';
 import { getAllBots, getBot, findOncallChat, effectiveDefaultWorkingDir } from '../src/bot-registry.js';
 import { generateAuthUrl, getTokenStatus, resolveUserToken, DOC_COMMENT_OAUTH_SCOPES } from '../src/utils/user-token.js';
@@ -509,7 +509,7 @@ import { codexHome } from '../src/services/codex-paths.js';
 import { scanMultipleProjects, describeProjectDir } from '../src/services/project-scanner.js';
 import { readGlobalConfig, repoPickerScanOptions } from '../src/global-config.js';
 import { createRepoWorktree, pushWorktreeBranch } from '../src/services/git-worktree.js';
-import { discoverAdoptableSessions } from '../src/core/session-discovery.js';
+import { discoverAdoptableSessions, validateAdoptTarget } from '../src/core/session-discovery.js';
 import { listCodexAppThreads } from '../src/services/codex-app-threads.js';
 import { discoverSlashCommandsForAdapter } from '../src/core/command-discovery.js';
 
@@ -652,10 +652,10 @@ describe('DAEMON_COMMANDS set', () => {
   });
 
   it('should have the correct size', () => {
-    // 30 = current master command set without the removed /land command.
-    // /subscribe-lark-doc remains
+    // 32 = current master command set (30) + /fork (session clone)
+    // + /issue (Issue Board 领取). /subscribe-lark-doc remains
     // as its original per-file API subscription command rather than an alias.
-    expect(DAEMON_COMMANDS.size).toBe(30);
+    expect(DAEMON_COMMANDS.size).toBe(32);
   });
 
   it('contains the /list-slash-command lister and its /slash alias', () => {
@@ -691,6 +691,50 @@ describe('/list-slash-command discovery', () => {
       }),
       expect.anything(),
     );
+  });
+
+  it('uses the frozen compatible runtime name for an existing Codex session', async () => {
+    vi.mocked(getBot).mockImplementation((() => ({
+      botName: 'Vendor bot',
+      config: {
+        larkAppId: 'app-runtime',
+        larkAppSecret: 'secret-1',
+        cliId: 'codex' as const,
+        cliPathOverride: 'vendor-codex',
+        cliRuntime: {
+          id: 'vendor-codex',
+          displayName: 'Live Vendor Name',
+          executable: 'vendor-codex',
+          update: { provider: 'auto' as const },
+        },
+        workingDir: '~/projects',
+        workingDirs: ['~/projects'],
+      },
+    })) as any);
+    try {
+      const ds = makeDaemonSession({
+        larkAppId: 'app-runtime',
+        session: makeSession({
+          cliId: 'codex',
+          cliPathOverride: 'vendor-codex',
+          cliRuntime: {
+            id: 'vendor-codex',
+            displayName: 'Frozen Vendor Codex',
+            executable: 'vendor-codex',
+            source: 'configured',
+            update: { provider: 'auto' },
+          },
+        }),
+      });
+      await handleCommand('/slash', ROOT_ID, makeLarkMessage('/slash'), makeDeps(ds), 'app-runtime');
+
+      expect(buildSlashListCard).toHaveBeenCalledWith(
+        expect.objectContaining({ cliName: 'Frozen Vendor Codex' }),
+        expect.anything(),
+      );
+    } finally {
+      vi.mocked(getBot).mockImplementation(defaultGetBot as any);
+    }
   });
 
   it('shows only effective custom passthrough commands (drops daemon-shadow + junk, normalizes)', async () => {
@@ -995,6 +1039,22 @@ describe('PASSTHROUGH_COMMANDS set', () => {
     expect(PASSTHROUGH_COMMANDS.has('/goal')).toBe(false);
     expect(resolvePassthroughCommands('app-1').has('/goal')).toBe(true);
     expect(resolvePassthroughCommands('app-2').has('/goal')).toBe(true);
+  });
+
+  it('forwards /fast as a global passthrough WITHOUT cold-start (not adapter-scoped)', () => {
+    // /fast is a tier toggle, not "start a unit of work": it lives in the global
+    // PASSTHROUGH_COMMANDS (forwarded to Codex on an existing session), and is
+    // deliberately NOT in any adapter's defaultPassthroughCommands — so a bare
+    // /fast in an empty topic must not cold-start a session (owner policy).
+    // Regression guard: an earlier revision put /fast in the codex adapter
+    // default, which both broke that no-cold-start policy and (before that) a
+    // revision that removed /fast from every set left it never reaching Codex.
+    expect(PASSTHROUGH_COMMANDS.has('/fast')).toBe(true);
+    expect(resolvePassthroughCommands('app-2').has('/fast')).toBe(true); // codex
+    expect(resolvePassthroughCommands('app-1').has('/fast')).toBe(true); // claude-code (harmless unknown-command)
+    expect(resolvePassthroughCommands(undefined).has('/fast')).toBe(true);
+    expect(resolveAdapterDefaultPassthroughCommands('app-2')).not.toContain('/fast'); // no cold-start
+    expect(resolveAdapterDefaultPassthroughCommands('app-1')).not.toContain('/fast');
   });
 
   it('exposes /effort globally to every CLI (best-effort passthrough)', () => {
@@ -1633,6 +1693,26 @@ describe('handleCommand', () => {
       );
     });
 
+    it('uses the frozen configured runtime name in restart feedback', async () => {
+      const ds = makeDaemonSession({
+        session: makeSession({
+          cliId: 'codex',
+          agentFrozen: true,
+          cliRuntime: {
+            id: 'vendor-codex', displayName: 'Vendor Codex', executable: 'vendor-codex',
+            source: 'configured', update: { provider: 'none' },
+          },
+        }),
+      });
+      const deps = makeDeps(ds);
+
+      await handleCommand('/restart', ROOT_ID, makeLarkMessage('/restart'), deps, LARK_APP_ID);
+
+      const reply = (deps.sessionReply as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+      expect(reply).toContain('Vendor Codex');
+      expect(reply).not.toContain('Claude');
+    });
+
     it('should kill dead worker and reply recovery message when worker is already killed', async () => {
       const ds = makeDaemonSession({
         worker: { killed: true, send: vi.fn() } as any,
@@ -1725,6 +1805,35 @@ describe('handleCommand', () => {
       expect(replyContent).toContain('没有活跃的会话');
       expect(replyContent).toContain('v1.0.42');
     });
+
+    it('shows configured runtime identity but keeps legacy path copy as Codex', async () => {
+      const configured = makeDaemonSession({
+        session: makeSession({
+          cliId: 'codex', agentFrozen: true,
+          cliRuntime: {
+            id: 'vendor-codex', displayName: 'Vendor Codex', executable: 'vendor-codex',
+            source: 'configured', update: { provider: 'none' },
+          },
+        }),
+      });
+      const configuredDeps = makeDeps(configured);
+      await handleCommand('/status', ROOT_ID, makeLarkMessage('/status'), configuredDeps, LARK_APP_ID);
+      expect((configuredDeps.sessionReply as ReturnType<typeof vi.fn>).mock.calls[0][1]).toContain('Vendor Codex:');
+
+      const legacy = makeDaemonSession({
+        session: makeSession({
+          cliId: 'codex', agentFrozen: true, cliPathOverride: '/opt/legacy/vendor-codex',
+        }),
+      });
+      const legacyDeps = makeDeps(legacy);
+      await handleCommand('/status', ROOT_ID, makeLarkMessage('/status'), legacyDeps, LARK_APP_ID);
+      const legacyReply = (legacyDeps.sessionReply as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+      // This suite's getCliDisplayName mock returns the raw id for Codex; the
+      // compatibility invariant is that legacy uses that adapter copy rather
+      // than its executable basename.
+      expect(legacyReply).toContain('codex:');
+      expect(legacyReply).not.toContain('vendor-codex:');
+    });
   });
 
   // ─── /help ──────────────────────────────────────────────────────────────
@@ -1755,6 +1864,49 @@ describe('handleCommand', () => {
       expect(replyContent).toContain('/compact'); // passthrough list
       expect(replyContent).toContain('/model');
       expect(replyContent).toContain('Claude'); // CLI display name
+    });
+
+    it('keeps the session-frozen compatible runtime name after bot config changes', async () => {
+      vi.mocked(getBot).mockImplementation((() => ({
+        botName: 'Vendor bot',
+        config: {
+          larkAppId: 'app-runtime',
+          larkAppSecret: 'secret-1',
+          cliId: 'codex' as const,
+          cliPathOverride: 'new-vendor-codex',
+          cliRuntime: {
+            id: 'new-vendor-codex',
+            displayName: 'New Live Name',
+            executable: 'new-vendor-codex',
+            update: { provider: 'none' as const },
+          },
+        },
+      })) as any);
+      try {
+        const ds = makeDaemonSession({
+          larkAppId: 'app-runtime',
+          session: makeSession({
+            cliId: 'codex',
+            cliPathOverride: 'vendor-codex',
+            cliRuntime: {
+              id: 'vendor-codex',
+              displayName: 'Frozen Vendor Codex',
+              executable: 'vendor-codex',
+              source: 'configured',
+              update: { provider: 'auto' },
+            },
+          }),
+        });
+        const deps = makeDeps(ds);
+
+        await handleCommand('/help', ROOT_ID, makeLarkMessage('/help'), deps, 'app-runtime');
+
+        const replyContent = (deps.sessionReply as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+        expect(replyContent).toContain('Frozen Vendor Codex');
+        expect(replyContent).not.toContain('New Live Name');
+      } finally {
+        vi.mocked(getBot).mockImplementation(defaultGetBot as any);
+      }
     });
 
     it('renders the current bot effective passthrough list', async () => {
@@ -3219,6 +3371,69 @@ describe('handleCommand', () => {
       expect(closeBtn.value.session_id).toBe(ds.session.sessionId);
     });
 
+    it('revalidates a selected custom Codex process with the same executable identity', async () => {
+      vi.mocked(getBot).mockImplementation((() => ({
+        botName: 'Vendor Codex',
+        config: {
+          larkAppId: LARK_APP_ID,
+          larkAppSecret: 'secret-1',
+          cliId: 'codex' as const,
+          cliRuntime: {
+            id: 'vendor-codex',
+            displayName: 'Vendor Codex',
+            executable: '/opt/vendorCodex',
+            update: { provider: 'none' as const },
+          },
+          cliPathOverride: '/opt/vendorCodex',
+          workingDir: '~/projects',
+          workingDirs: ['~/projects'],
+        },
+      })) as any);
+      const ds = makeDaemonSession({ session: makeSession({ cliId: 'codex' }) });
+      const deps = makeDeps(ds);
+      const target = {
+        source: 'tmux' as const,
+        tmuxTarget: 'fork:0.0',
+        cliPid: 4242,
+        cliId: 'codex' as const,
+        cwd: '/repo',
+        paneCols: 80,
+        paneRows: 24,
+      };
+
+      try {
+        await startAdoptSession(target, ds, deps, LARK_APP_ID);
+
+        expect(validateAdoptTarget).toHaveBeenCalledWith(target, '/opt/vendorCodex');
+        expect(forkAdoptWorker).toHaveBeenCalledWith(ds);
+        const reply = (deps.sessionReply as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1] as string;
+        expect(reply).toContain('Vendor Codex');
+      } finally {
+        vi.mocked(getBot).mockImplementation(defaultGetBot as any);
+      }
+    });
+
+    it('uses the frozen configured runtime name in resume-import feedback', async () => {
+      const ds = makeDaemonSession({
+        session: makeSession({
+          cliId: 'codex', agentFrozen: true,
+          cliRuntime: {
+            id: 'vendor-codex', displayName: 'Vendor Codex', executable: 'vendor-codex',
+            source: 'configured', update: { provider: 'none' },
+          },
+        }),
+      });
+      const deps = makeDeps(ds);
+
+      await startResumeImportSession({
+        cliSessionId: 'native-resume-id', cwd: '/repo', title: 'Imported task', lastActivityAt: 1,
+      }, ds, deps, LARK_APP_ID);
+
+      expect(forkWorker).toHaveBeenCalledWith(ds, '', true);
+      const reply = (deps.sessionReply as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1] as string;
+      expect(reply).toContain('Vendor Codex');
+    });
+
     it('should refuse re-adopt and prompt 断开 when ds.adoptedFrom is already set', async () => {
       const ds = makeDaemonSession({
         adoptedFrom: {
@@ -3295,6 +3510,78 @@ describe('handleCommand', () => {
       expect(discoverAdoptableSessions).toHaveBeenCalledWith('claude-code');
       const replyContent = (deps.sessionReply as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
       expect(replyContent).toContain('未发现可接入');
+    });
+
+    it('passes the bot current custom Codex executable into live adopt discovery', async () => {
+      vi.mocked(getBot).mockImplementation((() => ({
+        botName: 'Vendor Codex',
+        config: {
+          larkAppId: LARK_APP_ID,
+          larkAppSecret: 'secret-1',
+          cliId: 'codex' as const,
+          cliRuntime: {
+            id: 'vendor-codex',
+            displayName: 'Vendor Codex',
+            executable: '/opt/Vendor Codex/vendorCodex',
+            update: { provider: 'none' as const },
+          },
+          cliPathOverride: '/opt/Vendor Codex/vendorCodex',
+          workingDir: '~/projects',
+          workingDirs: ['~/projects'],
+        },
+      })) as any);
+      vi.mocked(discoverAdoptableSessions).mockReturnValueOnce([]);
+      const ds = makeDaemonSession({ session: makeSession({ cliId: 'codex' }) });
+      const deps = makeDeps(ds);
+
+      try {
+        await handleCommand('/adopt', ROOT_ID, makeLarkMessage('/adopt'), deps, LARK_APP_ID);
+
+        expect(discoverAdoptableSessions).toHaveBeenCalledWith(
+          'codex',
+          '/opt/Vendor Codex/vendorCodex',
+        );
+      } finally {
+        vi.mocked(getBot).mockImplementation(defaultGetBot as any);
+      }
+    });
+
+    it('does not relabel a frozen official adopt picker after a runtime hot switch', async () => {
+      vi.mocked(getBot).mockImplementation((() => ({
+        botName: 'Vendor Codex',
+        config: {
+          larkAppId: LARK_APP_ID,
+          larkAppSecret: 'secret-1',
+          cliId: 'codex' as const,
+          cliRuntime: {
+            id: 'vendor-codex', displayName: 'Vendor Codex', executable: 'vendor-codex',
+            update: { provider: 'none' as const },
+          },
+          workingDir: '~/projects',
+          workingDirs: ['~/projects'],
+        },
+      })) as any);
+      vi.mocked(discoverAdoptableSessions).mockReturnValueOnce([{
+        tmuxTarget: '0:1.0', panePid: 1000, cliPid: 1001, cliId: 'codex',
+        cwd: '/repo', paneCols: 80, paneRows: 24,
+      }]);
+      const ds = makeDaemonSession({
+        session: makeSession({
+          cliId: 'codex', agentFrozen: true,
+          cliRuntime: {
+            id: 'codex', displayName: 'Codex', executable: 'codex',
+            source: 'official', update: { provider: 'internal' },
+          },
+        }),
+      });
+
+      try {
+        await handleCommand('/adopt', ROOT_ID, makeLarkMessage('/adopt'), makeDeps(ds), LARK_APP_ID);
+        const pickerArgs = vi.mocked(buildAdoptSelectCard).mock.calls.at(-1)!;
+        expect(pickerArgs[8]).toBeUndefined();
+      } finally {
+        vi.mocked(getBot).mockImplementation(defaultGetBot as any);
+      }
     });
 
     it('should show the picker card when not adopted and discovery returns sessions', async () => {

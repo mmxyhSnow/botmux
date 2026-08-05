@@ -1040,6 +1040,58 @@ describe('POST /api/sessions/:sessionId/restart', () => {
     findSpy.mockRestore();
   });
 
+  it('uses the frozen compatible runtime name in the restart notice', async () => {
+    registerBot({
+      larkAppId: 'runtime-app',
+      larkAppSecret: 'secret',
+      cliId: 'codex',
+      cliPathOverride: 'new-vendor-codex',
+      cliRuntime: {
+        id: 'new-vendor-codex',
+        displayName: 'New Live Name',
+        executable: 'new-vendor-codex',
+        update: { provider: 'none' },
+      },
+    });
+    const replySpy = vi.spyOn(larkClient, 'replyMessage').mockResolvedValue('om_notice');
+    const findSpy = vi.spyOn(workerPool, 'findActiveBySessionId').mockReturnValue({
+      larkAppId: 'runtime-app',
+      chatId: 'oc_runtime',
+      scope: 'thread',
+      session: {
+        sessionId: 's-runtime-restart',
+        rootMessageId: 'om_runtime_root',
+        cliId: 'codex',
+        cliPathOverride: 'vendor-codex',
+        cliRuntime: {
+          id: 'vendor-codex',
+          displayName: 'Frozen Vendor Codex',
+          executable: 'vendor-codex',
+          source: 'configured',
+          update: { provider: 'auto' },
+        },
+      },
+      worker: { send: vi.fn(), killed: false },
+      adoptedFrom: undefined,
+    } as any);
+    try {
+      handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+      const res = await fetch(
+        `http://127.0.0.1:${handle.port}/api/sessions/s-runtime-restart/restart`,
+        { method: 'POST' },
+      );
+
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => expect(replySpy).toHaveBeenCalled());
+      const notice = JSON.parse(replySpy.mock.calls[0]![2]);
+      expect(notice.text).toContain('Frozen Vendor Codex');
+      expect(notice.text).not.toContain('New Live Name');
+    } finally {
+      replySpy.mockRestore();
+      findSpy.mockRestore();
+    }
+  });
+
   it('rejects unknown sessions without creating a restart side effect', async () => {
     const findSpy = vi.spyOn(workerPool, 'findActiveBySessionId').mockReturnValue(undefined);
 
@@ -1831,6 +1883,196 @@ describe('PUT /api/bot-agent', () => {
         wrapperCli: 'ttadk codex',
         model: 'kimi-k2.5',
       });
+    } finally {
+      if (prevBotsConfig === undefined) delete process.env.BOTS_CONFIG;
+      else process.env.BOTS_CONFIG = prevBotsConfig;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists a validated Codex-compatible runtime and reports its own version', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'botmux-runtime-ipc-'));
+    const configPath = join(dir, 'bots.json');
+    const appId = 'test-runtime-app';
+    const prevBotsConfig = process.env.BOTS_CONFIG;
+    try {
+      process.env.BOTS_CONFIG = configPath;
+      writeFileSync(configPath, JSON.stringify([{
+        larkAppId: appId,
+        larkAppSecret: 'secret',
+        cliId: 'codex',
+      }], null, 2));
+      loadBotConfigs().forEach((c: any) => registerBot(c));
+      setLarkAppId(appId);
+      handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+
+      const cliRuntime = {
+        id: 'vendor-codex',
+        displayName: 'Vendor Codex',
+        executable: process.execPath,
+        update: { provider: 'self' },
+      };
+      const res = await fetch(`http://127.0.0.1:${handle.port}/api/bot-agent`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cliId: 'codex', model: 'custom-model', cliRuntime }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        ok: true,
+        cliId: 'codex',
+        cliRuntime,
+        runtimeProbe: { updateProvider: 'self' },
+      });
+      const stored = JSON.parse(readFileSync(configPath, 'utf-8'))[0];
+      expect(stored).toMatchObject({ cliId: 'codex', cliRuntime });
+      expect(stored.cliPathOverride).toBe(cliRuntime.executable);
+      expect(getBot(appId).config).toMatchObject({
+        cliRuntime,
+        // Parsed/live config keeps the executable shadow for existing adapters.
+        cliPathOverride: process.execPath,
+      });
+    } finally {
+      if (prevBotsConfig === undefined) delete process.env.BOTS_CONFIG;
+      else process.env.BOTS_CONFIG = prevBotsConfig;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a runtime for old same-selection clients and clears it only when explicit', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'botmux-runtime-compat-ipc-'));
+    const configPath = join(dir, 'bots.json');
+    const appId = 'test-runtime-compat-app';
+    const prevBotsConfig = process.env.BOTS_CONFIG;
+    const cliRuntime = {
+      id: 'vendor-codex',
+      displayName: 'Vendor Codex',
+      executable: process.execPath,
+      update: { provider: 'none' },
+    };
+    try {
+      process.env.BOTS_CONFIG = configPath;
+      writeFileSync(configPath, JSON.stringify([{
+        larkAppId: appId,
+        larkAppSecret: 'secret',
+        cliId: 'codex',
+        cliRuntime,
+        cliPathOverride: cliRuntime.executable,
+      }], null, 2));
+      loadBotConfigs().forEach((c: any) => registerBot(c));
+      setLarkAppId(appId);
+      handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+      const url = `http://127.0.0.1:${handle.port}/api/bot-agent`;
+
+      const oldClientSave = await fetch(url, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cliId: 'codex', model: 'new-model' }),
+      });
+      expect(oldClientSave.status).toBe(200);
+      expect(JSON.parse(readFileSync(configPath, 'utf-8'))[0]).toMatchObject({
+        cliRuntime,
+        cliPathOverride: cliRuntime.executable,
+      });
+
+      const explicitOfficial = await fetch(url, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cliId: 'codex', model: 'new-model', cliRuntime: null }),
+      });
+      expect(explicitOfficial.status).toBe(200);
+      expect(await explicitOfficial.json()).toMatchObject({ cliRuntime: null });
+      const stored = JSON.parse(readFileSync(configPath, 'utf-8'))[0];
+      expect(stored).not.toHaveProperty('cliRuntime');
+      expect(stored).not.toHaveProperty('cliPathOverride');
+    } finally {
+      if (prevBotsConfig === undefined) delete process.env.BOTS_CONFIG;
+      else process.env.BOTS_CONFIG = prevBotsConfig;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns and preserves a legacy CLI path when a model-only client omits cliRuntime', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'botmux-runtime-legacy-ipc-'));
+    const configPath = join(dir, 'bots.json');
+    const appId = 'test-runtime-legacy-app';
+    const prevBotsConfig = process.env.BOTS_CONFIG;
+    try {
+      process.env.BOTS_CONFIG = configPath;
+      writeFileSync(configPath, JSON.stringify([{
+        larkAppId: appId,
+        larkAppSecret: 'secret',
+        cliId: 'codex',
+        cliPathOverride: process.execPath,
+        model: 'old-model',
+      }], null, 2));
+      loadBotConfigs().forEach((c: any) => registerBot(c));
+      setLarkAppId(appId);
+      handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+      const base = `http://127.0.0.1:${handle.port}`;
+
+      const initial = await (await fetch(`${base}/api/bot-default-oncall`)).json();
+      expect(initial).toMatchObject({
+        cliId: 'codex',
+        cliRuntime: null,
+        cliPathOverride: process.execPath,
+      });
+
+      const modelSave = await fetch(`${base}/api/bot-agent`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cliId: 'codex', model: 'new-model' }),
+      });
+      expect(modelSave.status).toBe(200);
+      expect(await modelSave.json()).toMatchObject({
+        cliRuntime: null,
+        cliPathOverride: process.execPath,
+        model: 'new-model',
+      });
+      expect(JSON.parse(readFileSync(configPath, 'utf-8'))[0]).toMatchObject({
+        cliPathOverride: process.execPath,
+        model: 'new-model',
+      });
+    } finally {
+      if (prevBotsConfig === undefined) delete process.env.BOTS_CONFIG;
+      else process.env.BOTS_CONFIG = prevBotsConfig;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a custom runtime for non-Codex or wrapper selections', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'botmux-runtime-reject-ipc-'));
+    const configPath = join(dir, 'bots.json');
+    const appId = 'test-runtime-reject-app';
+    const prevBotsConfig = process.env.BOTS_CONFIG;
+    const cliRuntime = { id: 'vendor-codex', executable: process.execPath };
+    try {
+      process.env.BOTS_CONFIG = configPath;
+      writeFileSync(configPath, JSON.stringify([{
+        larkAppId: appId,
+        larkAppSecret: 'secret',
+        cliId: 'codex',
+      }], null, 2));
+      loadBotConfigs().forEach((c: any) => registerBot(c));
+      setLarkAppId(appId);
+      handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+      const url = `http://127.0.0.1:${handle.port}/api/bot-agent`;
+
+      const nonCodex = await fetch(url, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cliId: 'claude-code', cliRuntime }),
+      });
+      expect(nonCodex.status).toBe(400);
+      expect(await nonCodex.json()).toMatchObject({ error: 'runtime_requires_codex' });
+
+      const wrapper = await fetch(url, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cliId: 'ttadk-x-codex', cliRuntime }),
+      });
+      expect(wrapper.status).toBe(400);
+      expect(await wrapper.json()).toMatchObject({ error: 'runtime_wrapper_conflict' });
+      expect(JSON.parse(readFileSync(configPath, 'utf-8'))[0]).not.toHaveProperty('cliRuntime');
     } finally {
       if (prevBotsConfig === undefined) delete process.env.BOTS_CONFIG;
       else process.env.BOTS_CONFIG = prevBotsConfig;
@@ -3162,5 +3404,105 @@ describe('core-only public routes + readiness barrier (behavioral)', () => {
     const res = await fetch(`http://127.0.0.1:${handle.port}/healthz`);
     expect(res.status).toBe(200);
     expect((await res.json()).ok).toBe(true);
+  });
+
+  // Form C: trigger-result carries a read-only web-terminal URL while a live
+  // worker terminal exists, so an async caller (riff's task-runner) can open
+  // the visible CLI TUI in the sandbox browser.
+  it('trigger-result exposes readOnlyUrl + viewToken when a live worker terminal is up (core-only)', async () => {
+    setIpcAuthSecret(TEST_IPC_SECRET);
+    setLarkAppId('local_smoke');
+    setCoreOnlyReady();
+    const prevCoreOnly = process.env.BOTMUX_CORE_ONLY;
+    process.env.BOTMUX_CORE_ONLY = '1';
+    const findSpy = vi.spyOn(workerPool, 'findActiveBySessionId').mockReturnValue({
+      session: { sessionId: 's-term', chatId: 'http_async_x', larkAppId: 'local_smoke', status: 'open' },
+      chatId: 'http_async_x',
+      larkAppId: 'local_smoke',
+      workerPort: 4321,
+      workerToken: 'write-tok',
+      workerViewToken: 'view-cap-abc',
+      asyncTriggerResults: new Map(),
+    } as any);
+    handle = await startIpcServer({ port: 0, host: '127.0.0.1', authRequired: true, coreOnlyPublicRoutes: true });
+    try {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/api/sessions/s-term/trigger-result`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(typeof body.readOnlyUrl).toBe('string');
+      // Carries the read capability inline, NOT the write token.
+      expect(body.readOnlyUrl).toContain('viewToken=view-cap-abc');
+      expect(body.readOnlyUrl).not.toContain('write-tok');
+      expect(body.viewToken).toBe('view-cap-abc');
+    } finally {
+      if (prevCoreOnly === undefined) delete process.env.BOTMUX_CORE_ONLY;
+      else process.env.BOTMUX_CORE_ONLY = prevCoreOnly;
+      findSpy.mockRestore();
+    }
+  });
+
+  // codex review concern #1: the readOnlyUrl/viewToken attach must be gated to
+  // core-only. On a normal/mixed fleet trigger-result must NEVER mint a terminal
+  // read-capability into the poll response — even with a live worker terminal —
+  // or an HMAC-authed trigger caller would gain a view token the route never
+  // historically handed out (tokens are minted only on explicit /write-link).
+  it('trigger-result does NOT expose readOnlyUrl on a NON-core-only fleet even with a live worker terminal', async () => {
+    setIpcAuthSecret(TEST_IPC_SECRET);
+    setLarkAppId('local_smoke');
+    const prevCoreOnly = process.env.BOTMUX_CORE_ONLY;
+    delete process.env.BOTMUX_CORE_ONLY; // normal fleet
+    const findSpy = vi.spyOn(workerPool, 'findActiveBySessionId').mockReturnValue({
+      session: { sessionId: 's-fleet', chatId: 'oc_real_chat', larkAppId: 'local_smoke', status: 'open' },
+      chatId: 'oc_real_chat',
+      larkAppId: 'local_smoke',
+      workerPort: 4321,               // live worker terminal present …
+      workerToken: 'write-tok',
+      workerViewToken: 'view-cap-abc',
+      asyncTriggerResults: new Map(),
+    } as any);
+    // Normal fleet: default server (no coreOnlyPublicRoutes) — trigger-result
+    // is HMAC-gated; authorize with the same unbound token the write-link tests
+    // use so the request reaches the handler.
+    handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+    try {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/api/sessions/s-fleet/trigger-result`, { headers: tokenAuthHeaders() });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // … but NO terminal capability is leaked into the poll response.
+      expect(body.readOnlyUrl).toBeUndefined();
+      expect(body.viewToken).toBeUndefined();
+    } finally {
+      if (prevCoreOnly === undefined) delete process.env.BOTMUX_CORE_ONLY;
+      else process.env.BOTMUX_CORE_ONLY = prevCoreOnly;
+      findSpy.mockRestore();
+    }
+  });
+
+  it('trigger-result omits readOnlyUrl when the live session has no worker terminal yet (core-only)', async () => {
+    setIpcAuthSecret(TEST_IPC_SECRET);
+    setLarkAppId('local_smoke');
+    setCoreOnlyReady();
+    const prevCoreOnly = process.env.BOTMUX_CORE_ONLY;
+    process.env.BOTMUX_CORE_ONLY = '1';
+    const findSpy = vi.spyOn(workerPool, 'findActiveBySessionId').mockReturnValue({
+      session: { sessionId: 's-noterm', chatId: 'http_async_y', larkAppId: 'local_smoke', status: 'open' },
+      chatId: 'http_async_y',
+      larkAppId: 'local_smoke',
+      workerPort: null,          // worker web server not up yet
+      workerViewToken: null,
+      asyncTriggerResults: new Map(),
+    } as any);
+    handle = await startIpcServer({ port: 0, host: '127.0.0.1', authRequired: true, coreOnlyPublicRoutes: true });
+    try {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/api/sessions/s-noterm/trigger-result`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.readOnlyUrl).toBeUndefined();
+      expect(body.viewToken).toBeUndefined();
+    } finally {
+      if (prevCoreOnly === undefined) delete process.env.BOTMUX_CORE_ONLY;
+      else process.env.BOTMUX_CORE_ONLY = prevCoreOnly;
+      findSpy.mockRestore();
+    }
   });
 });
