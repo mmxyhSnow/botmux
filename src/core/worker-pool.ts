@@ -48,6 +48,7 @@ import {
   writeCodexAppProgressReport,
 } from '../services/codex-app-progress-report.js';
 import { codexAppProgressCardTitle } from '../services/codex-app-progress.js';
+import { generateCodexAppProgressSemanticSummary } from '../services/codex-app-progress-semantic-summary.js';
 import { buildDashboardUrls } from './dashboard-url.js';
 import { getSessionUsageSnapshot } from './cost-calculator.js';
 import { renderBrandTemplate } from '../im/lark/brand-template.js';
@@ -638,6 +639,9 @@ function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
   let card = codexAppProgressCards.get(ds);
   if (card) return card;
   const cb = requireCallbacks();
+  const botConfig = getBot(ds.larkAppId).config;
+  const cliId = ds.session.cliId ?? botConfig.cliId;
+  const codexSummaryEnabled = cliId === 'codex' || cliId === 'codex-app';
   card = new CodexAppProgressCard({
     sessionId: ds.session.sessionId,
     post: (cardJson, turnId) => cb.sessionReply(
@@ -653,6 +657,22 @@ function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
       const report = writeCodexAppProgressReport(state);
       return codexAppProgressReportUrl(report.reportId);
     },
+    ...(codexSummaryEnabled ? {
+      summarize: (state, signal) => {
+        const latestEnv = latestPerBotEnvForRestart(ds);
+        return generateCodexAppProgressSemanticSummary({
+          state,
+          codexBin: createCliAdapterSync(
+            'codex',
+            ds.session.cliPathOverride ?? botConfig.cliPathOverride,
+          ).resolvedBin,
+          env: { ...process.env, ...(latestEnv ?? {}) },
+          model: ds.session.model ?? botConfig.model,
+          timeoutMs: 30_000,
+          signal,
+        });
+      },
+    } : {}),
     persist: state => {
       ds.session.codexAppProgressCard = state;
       sessionStore.updateSession(ds.session);

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type {
   CodexAppProgressCardPhase,
   CodexAppProgressCardSessionState,
+  CodexAppProgressSemanticSummaryItem,
 } from '../types.js';
 import { renderCodexAppProgressCard } from './codex-app-progress-card-renderer.js';
 import {
@@ -32,6 +33,11 @@ export interface CodexAppProgressCardOperations {
   publishReport?(
     state: CodexAppProgressCardSessionState,
   ): string | undefined | Promise<string | undefined>;
+  /** 后台综合完整时间线；失败返回 undefined，上层继续保留最近一次成功摘要。 */
+  summarize?(
+    state: CodexAppProgressCardSessionState,
+    signal: AbortSignal,
+  ): Promise<CodexAppProgressSemanticSummaryItem[] | undefined>;
   /** 返回内容事件的发生时间；测试可注入固定时钟，生产环境缺省使用系统时间。 */
   now?(): Date;
 }
@@ -71,6 +77,10 @@ function fingerprint(content: string): string {
 export class CodexAppProgressCard {
   private state?: CodexAppProgressCardSessionState;
   private chain: Promise<void> = Promise.resolve();
+  private summaryEpoch = 0;
+  private summaryRequestedRevision = 0;
+  private summaryRunning = false;
+  private summaryAbort?: AbortController;
 
   constructor(
     private readonly operations: CodexAppProgressCardOperations,
@@ -184,6 +194,7 @@ export class CodexAppProgressCard {
         summaryEvent,
         milestone,
       );
+      if (trimmed) this.requestSemanticSummary();
       this.state.updatedAtMs = now.getTime();
       this.persist();
       await this.syncCard();
@@ -223,6 +234,7 @@ export class CodexAppProgressCard {
           index: this.state.currentEntryCount ?? 0,
         }),
       );
+      this.requestSemanticSummary();
       this.state.updatedAtMs = now.getTime();
       this.persist();
       await this.syncCard();
@@ -240,6 +252,7 @@ export class CodexAppProgressCard {
         || this.state.finalResponse === finalResponse
       ) return;
       this.state.finalResponse = finalResponse;
+      this.requestSemanticSummary();
       this.state.updatedAtMs = this.now().getTime();
       this.persist();
       await this.publishCurrentReport();
@@ -252,6 +265,11 @@ export class CodexAppProgressCard {
   }
 
   private startState(turnId: string, title: string): void {
+    this.summaryAbort?.abort();
+    this.summaryAbort = undefined;
+    this.summaryEpoch += 1;
+    this.summaryRequestedRevision = 0;
+    this.summaryRunning = false;
     const remainingPending = this.state?.pendingTurns.filter(turn => turn.turnId !== turnId) ?? [];
     const now = this.now();
     this.state = {
@@ -265,6 +283,9 @@ export class CodexAppProgressCard {
       startedAtMs: now.getTime(),
       updatedAtMs: now.getTime(),
       summaryEntryIndexes: [],
+      ...(this.operations.summarize
+        ? { semanticSummary: { status: 'updating' as const, items: [], sourceEntryCount: 0 } }
+        : {}),
       pageNumber: 1,
       currentEntryCount: 1,
       archivedPages: [],
@@ -279,6 +300,73 @@ export class CodexAppProgressCard {
 
   private persist(): void {
     if (this.state) this.operations.persist(cloneCodexAppProgressState(this.state));
+  }
+
+  /** 标记摘要已过期并启动最多一个后台生成器；连续进展只增加待处理修订号。 */
+  private requestSemanticSummary(): void {
+    if (!this.state || !this.operations.summarize) return;
+    this.summaryRequestedRevision += 1;
+    const previous = this.state.semanticSummary;
+    this.state.semanticSummary = {
+      status: 'updating',
+      items: previous?.items ?? [],
+      sourceEntryCount: previous?.sourceEntryCount ?? 0,
+      updatedAtMs: previous?.updatedAtMs,
+    };
+    if (this.summaryRunning) return;
+    this.summaryRunning = true;
+    const epoch = this.summaryEpoch;
+    void this.runSemanticSummaryLoop(epoch);
+  }
+
+  /**
+   * 每次只总结启动时的完整快照；生成期间如有新记录，只再补一次最新修订。
+   * 应用结果也走卡片串行队列，避免后台完成覆盖同步进展。
+   */
+  private async runSemanticSummaryLoop(epoch: number): Promise<void> {
+    try {
+      while (epoch === this.summaryEpoch && this.state && this.operations.summarize) {
+        const revision = this.summaryRequestedRevision;
+        const snapshot = cloneCodexAppProgressState(this.state);
+        const sourceEntryCount = snapshot.currentEntryCount ?? 0;
+        const abort = new AbortController();
+        this.summaryAbort = abort;
+        let items: CodexAppProgressSemanticSummaryItem[] | undefined;
+        try {
+          items = await this.operations.summarize(snapshot, abort.signal);
+        } catch {
+          // 后台摘要失败不能形成未处理 rejection，更不能阻断真实进展写入。
+          items = undefined;
+        }
+        if (epoch !== this.summaryEpoch) return;
+        await this.enqueue(async () => {
+          if (!this.state || epoch !== this.summaryEpoch) return;
+          const newerRevisionPending = this.summaryRequestedRevision > revision;
+          const previous = this.state.semanticSummary;
+          this.state.semanticSummary = items
+            ? {
+                status: newerRevisionPending ? 'updating' : 'ready',
+                items,
+                sourceEntryCount,
+                updatedAtMs: this.now().getTime(),
+              }
+            : {
+                status: newerRevisionPending ? 'updating' : 'failed',
+                items: previous?.items ?? [],
+                sourceEntryCount: previous?.sourceEntryCount ?? 0,
+                updatedAtMs: previous?.updatedAtMs,
+              };
+          this.persist();
+          await this.publishCurrentReport();
+        });
+        if (this.summaryRequestedRevision <= revision) return;
+      }
+    } finally {
+      if (epoch === this.summaryEpoch) {
+        this.summaryRunning = false;
+        this.summaryAbort = undefined;
+      }
+    }
   }
 
   /** 报告失败不能阻断主卡；稳定 URL 会在下一次状态同步时再次覆盖刷新。 */
