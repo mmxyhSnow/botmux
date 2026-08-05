@@ -159,7 +159,7 @@ describe('Codex 连续提问卡片', () => {
     expect(answerable).toContain('<at id=ou_owner></at>');
   });
 
-  it('同一 flow 的第二问复用原卡，并保留高亮且锁定的第一问', async () => {
+  it('同一 flow 的第二问复用原卡，并把第一问压成只读摘要', async () => {
     const firstPromise = registerAsk({
       larkAppId: 'cli_ask',
       chatId: 'oc_chat',
@@ -196,21 +196,12 @@ describe('Codex 连续提问卡片', () => {
     const settledButtons = settled.elements
       .flatMap((element: any) => element.actions ?? [])
       .filter((action: any) => action.tag === 'button');
-    expect(JSON.stringify(settled)).toContain('第一问：优先优化什么？');
+    const settledText = JSON.stringify(settled);
+    expect(settledText).toContain('历史回答（1）');
+    expect(settledText).toContain('问题 1：交互智能');
+    expect(settledText).not.toContain('操作顺手');
     expect(settled.header.title.content).toBe('botmux ask');
-    expect(settledButtons).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        disabled: true,
-        type: 'primary',
-        text: expect.objectContaining({ content: '✅ 交互智能' }),
-      }),
-      expect.objectContaining({
-        disabled: true,
-        type: 'default',
-        text: expect.objectContaining({ content: '○ 操作顺手' }),
-      }),
-    ]));
-    expect(JSON.stringify(settled)).toContain('你的选择：交互智能');
+    expect(settledButtons).toHaveLength(0);
 
     registerAsk({
       larkAppId: 'cli_ask',
@@ -226,37 +217,40 @@ describe('Codex 连续提问卡片', () => {
     expect(sentCards).toHaveLength(1);
     expect(updatedCards.at(-1)?.messageId).toBe(sentCards[0]!.messageId);
     const updatedText = JSON.stringify(updatedCards.at(-1)?.card);
-    expect(updatedText).toContain('第一问：优先优化什么？');
+    expect(updatedText).toContain('历史回答（1）');
+    expect(updatedText).toContain('问题 1：交互智能');
+    expect(updatedText).not.toContain('操作顺手');
     expect(updatedText).toContain('第二问：采用哪种方式？');
     expect(updatedText).toContain(ASK_SELECT_ACTION);
   });
 
-  it('第六问自动开启下一段卡片，前五问仍保留在上一张卡', async () => {
-    for (let index = 1; index <= 5; index++) {
+  it('问题超过单段上限后仍复用原卡，并只展示最近三条历史摘要', async () => {
+    for (let index = 1; index <= 10; index++) {
       await selectCurrent('turn-long', `第${index}问`, `选择${index}`, `备选${index}`);
     }
     expect(sentCards).toHaveLength(1);
 
-    const sixth = registerAsk({
+    const eleventh = registerAsk({
       larkAppId: 'cli_ask',
       chatId: 'oc_chat',
       rootMessageId: 'om_root',
       sessionId: 'sess-1',
-      questions: [question('第6问', '选择6', '备选6')],
+      questions: [question('第11问', '选择11', '备选11')],
       timeoutMs: 10_000,
       flowId: 'turn-long',
     } as any);
     await flushDispatch();
 
-    expect(sentCards).toHaveLength(2);
-    expect(JSON.stringify(sentCards[0]!.card)).toContain('第1问');
-    expect(JSON.stringify(sentCards[1]!.card)).toContain('第6问');
-    const closedFirstSegment = updatedCards
-      .filter(card => card.messageId === sentCards[0]!.messageId)
-      .at(-1)?.card;
-    expect(closedFirstSegment?.header?.template).toBe('green');
-    expect(JSON.stringify(closedFirstSegment)).toContain('第5问');
-    void sixth;
+    expect(sentCards).toHaveLength(1);
+    expect(updatedCards.at(-1)?.messageId).toBe(sentCards[0]!.messageId);
+    const eleventhCard = JSON.stringify(updatedCards.at(-1)?.card);
+    expect(eleventhCard).toContain('历史回答（10）');
+    expect(eleventhCard).toContain('另有 7 问已完成');
+    expect(eleventhCard).not.toContain('第1问');
+    expect(eleventhCard).not.toContain('备选10');
+    expect(eleventhCard).toContain('问题 10：选择10');
+    expect(eleventhCard).toContain('第11问');
+    void eleventh;
   });
 
   it('下一题作答前可撤销最近一步，并让模型收到重新提问信号', async () => {
@@ -293,7 +287,7 @@ describe('Codex 连续提问卡片', () => {
     expect(JSON.stringify(response)).toContain('正在恢复上一问');
   });
 
-  it('整轮结束后把最后一段卡片切换为完成态并保留全部答案', async () => {
+  it('整轮结束后把原卡切换为完成态并保留答案摘要', async () => {
     const askId = await selectCurrent('turn-complete', '最终确认', '确认完成', '继续追问');
     expect(activeDispatcher.completeFlow).toBeTypeOf('function');
     if (typeof activeDispatcher.completeFlow !== 'function') return;
@@ -303,8 +297,10 @@ describe('Codex 连续提问卡片', () => {
     const completed = updatedCards.at(-1)?.card;
     expect(completed?.header?.title?.content).toContain('已结束');
     expect(completed?.header?.template).toBe('green');
-    expect(JSON.stringify(completed)).toContain('最终确认');
-    expect(JSON.stringify(completed)).toContain('确认完成');
+    const completedText = JSON.stringify(completed);
+    expect(completedText).toContain('历史回答（1）');
+    expect(completedText).toContain('问题 1：确认完成');
+    expect(completedText).not.toContain('继续追问');
   });
 
   it('broker 可按 flowId 完成最后一段卡片', async () => {
