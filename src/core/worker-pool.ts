@@ -10170,6 +10170,29 @@ function deliverFinalOutput(
           : deliveryReplyOptions,
       );
       if (!isStillOwned()) { onComplete?.(true); return; }
+      if (rendersFinalReplyActions && nextActionSetId) {
+        // 卡片回调会用 actionSetId + messageId 校验最新入口；发送成功后必须立即持久化同一份身份。
+        const projection = createFinalReplyActionProjection({
+          sessionId: ds.session.sessionId,
+          turnId: msg.turnId,
+          actions: extracted.actions,
+          messageId,
+          cardJson,
+        });
+        persistFinalReplyActionProjection(ds, projection);
+        if (priorActionProjection?.messageId !== messageId) {
+          await retireFinalReplyActionProjection(ds, priorActionProjection);
+        }
+      } else if (priorActionProjection?.status === 'pending') {
+        // 新一轮最终回复没有继续给出操作，旧入口必须终态化，不能再被误认为当前决策。
+        persistFinalReplyActionProjection(ds, {
+          ...priorActionProjection,
+          status: 'superseded',
+          reprojectRequestedAt: undefined,
+          updatedAt: Date.now(),
+        });
+        await retireFinalReplyActionProjection(ds, priorActionProjection);
+      }
       recordPrimaryOutput(messageId);
       if (msg.turnId.startsWith('mlrp_turn_')) {
         markMessageListenerRunPreviewReplied(msg.turnId, {
