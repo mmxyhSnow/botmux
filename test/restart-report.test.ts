@@ -9,7 +9,12 @@ import {
   sendRestartReportIfPending,
   fetchChangelog,
 } from '../src/core/restart-report.js';
-import { writeRestartIntentTo, restartIntentPathIn } from '../src/services/restart-intent-store.js';
+import {
+  commitRestartIntentAttemptTo,
+  restartIntentPathIn,
+  writeRestartAttemptIntentTo,
+  writeRestartIntentTo,
+} from '../src/services/restart-intent-store.js';
 
 function writeSessions(dir: string, name: string, sessions: Record<string, { status: string }>) {
   writeFileSync(join(dir, name), JSON.stringify(sessions));
@@ -307,18 +312,75 @@ describe('sendRestartReportIfPending', () => {
     expect(sent).toHaveLength(1);
   });
 
-  it('生产 wiring 优先通过已登记的 owner 通知策略投递', async () => {
-    writeRestartIntentTo(dir, { kind: 'manual', at: new Date(T0).toISOString() });
-    const delivered: string[] = [];
+  it('atomically reclaims a commit that lands after the prepared observation', async () => {
+    writeRestartAttemptIntentTo(
+      dir,
+      { kind: 'manual', at: new Date(T0).toISOString() },
+      T0,
+      'attempt-full-fleet',
+    );
+    const wait = vi.fn(async () => {
+      expect(commitRestartIntentAttemptTo(dir, 'attempt-full-fleet')).toBe(true);
+    });
     const { w, sent } = fakeWiring({
-      deliverCard: async (_openId, card) => { delivered.push(card); },
+      wait,
+      preparedCommitWaitMs: 100,
     });
 
     await sendRestartReportIfPending(w);
 
-    expect(delivered).toHaveLength(1);
-    expect(delivered[0]).toContain('botmux 已重启');
+    expect(wait).toHaveBeenCalledOnce();
+    expect(sent).toHaveLength(1);
+    expect(existsSync(restartIntentPathIn(dir))).toBe(false);
+  });
+
+  it('keeps following a durable prepared intent past the legacy 45s window until commit', async () => {
+    writeRestartAttemptIntentTo(
+      dir,
+      { kind: 'manual', at: new Date(T0).toISOString() },
+      T0,
+      'attempt-slow-full-fleet',
+    );
+    let elapsedMs = 0;
+    let committed = false;
+    const wait = vi.fn(async (delayMs: number) => {
+      elapsedMs += delayMs;
+      if (!committed && elapsedMs > 45_000) {
+        committed = commitRestartIntentAttemptTo(dir, 'attempt-slow-full-fleet');
+      }
+    });
+    const { w, sent } = fakeWiring({
+      now: () => T0 + elapsedMs,
+      wait,
+    });
+
+    await sendRestartReportIfPending(w);
+
+    expect(elapsedMs).toBeGreaterThan(45_000);
+    expect(committed).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(existsSync(restartIntentPathIn(dir))).toBe(false);
+  });
+
+  it('stops following a prepared intent when its durable freshness expires', async () => {
+    writeRestartAttemptIntentTo(
+      dir,
+      { kind: 'manual', at: new Date(T0).toISOString() },
+      T0,
+      'attempt-stuck',
+    );
+    let nowMs = T0;
+    const wait = vi.fn(async () => { nowMs = T0 + 10 * 60_000 + 1; });
+    const { w, sent } = fakeWiring({
+      now: () => nowMs,
+      wait,
+    });
+
+    await sendRestartReportIfPending(w);
+
+    expect(wait).toHaveBeenCalledOnce();
     expect(sent).toHaveLength(0);
+    expect(existsSync(restartIntentPathIn(dir))).toBe(false);
   });
 });
 

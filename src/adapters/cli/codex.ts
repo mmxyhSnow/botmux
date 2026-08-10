@@ -8,6 +8,8 @@ import { findCodexRolloutSetByPid } from '../../services/codex-transcript.js';
 import { discoverRolloutSessions } from '../../services/resumable-session-discovery.js';
 import { delay, scaleMs } from '../../utils/timing.js';
 
+const CODEX_ACTIVE_BUSY_PATTERN = /Working[^\r\n]{0,160}esc to interrupt/i;
+
 /** Global submit log — Codex appends one JSON line here on every successful
  *  user submit across all sessions. Far better than the per-session rollout
  *  file, which Codex creates lazily at the first submit (chicken-and-egg:
@@ -360,7 +362,7 @@ export function createCodexAdapter(pathOverride?: string): CliAdapter {
         if (match.found) {
           return match.cliSessionId
             ? { submitted: true, cliSessionId: match.cliSessionId }
-            : undefined;
+            : { submitted: true };
         }
         if (!trySendEnter()) return { submitted: false };
       }
@@ -368,7 +370,7 @@ export function createCodexAdapter(pathOverride?: string): CliAdapter {
       if (match.found) {
         return match.cliSessionId
           ? { submitted: true, cliSessionId: match.cliSessionId }
-          : undefined;
+          : { submitted: true };
       }
       // In-band budget exhausted. Hand the worker a recheck closure: a
       // slow-startup Codex (or one whose first turn is delayed by a heavy
@@ -384,6 +386,11 @@ export function createCodexAdapter(pathOverride?: string): CliAdapter {
     },
 
     completionPattern: undefined,
+    // Codex redraws this status line while a turn is active. Require both text
+    // anchors on one line so transcript prose or an idle composer cannot revive
+    // a completed Lark card.
+    busyPattern: CODEX_ACTIVE_BUSY_PATTERN,
+    idleToBusyPattern: CODEX_ACTIVE_BUSY_PATTERN,
     // Codex's update picker also renders `› 1. Update now`; a bare /›/ treats
     // that menu as the composer and lets botmux's queued first message select
     // the update. Keep accepting the composer marker anywhere in a TUI redraw,

@@ -20,6 +20,13 @@ export interface AskApiBody {
   lockToTurnCaller?: boolean;
   /** 同一 Codex turn 的连续提问标识；普通 ask 不携带。 */
   flowId?: string;
+  /** Per-invocation identity (hook generates once, reuses across reconnect
+   *  retries) so a re-POST after a daemon restart re-attaches to the same ask.
+   *  Optional — legacy callers omit it and the broker synthesizes one. */
+  requestId?: string;
+  /** Caller kind ('hook' | 'explicit' | …) namespacing the identity so an
+   *  explicit `botmux ask` can't re-claim a hook ask's card. Optional. */
+  originKind?: string;
 }
 
 export type AskApiBodyError =
@@ -39,7 +46,9 @@ export type AskApiBodyError =
   | 'bad_question_shape'
   | 'bad_multiSelect'
   | 'bad_lockToTurnCaller'
-  | 'bad_flowId';
+  | 'bad_flowId'
+  | 'bad_requestId'
+  | 'bad_originKind';
 
 /** 校验单个 option 对象，返回解析后的 AskOption 或错误码。 */
 function parseOption(o: unknown): AskOption | AskApiBodyError {
@@ -106,6 +115,22 @@ export function parseAskBody(raw: unknown): AskApiBody | { error: AskApiBodyErro
   ) {
     return { error: 'bad_flowId' };
   }
+  // Optional invocation identity. When present, must be a sane short string
+  // (used verbatim as a persistence filename segment after sanitization).
+  let requestId: string | undefined;
+  if (r.requestId !== undefined) {
+    if (typeof r.requestId !== 'string' || !r.requestId.trim() || r.requestId.length > 128) {
+      return { error: 'bad_requestId' };
+    }
+    requestId = r.requestId;
+  }
+  let originKind: string | undefined;
+  if (r.originKind !== undefined) {
+    if (typeof r.originKind !== 'string' || !r.originKind.trim() || r.originKind.length > 32) {
+      return { error: 'bad_originKind' };
+    }
+    originKind = r.originKind;
+  }
 
   let questions: AskQuestion[];
 
@@ -145,5 +170,7 @@ export function parseAskBody(raw: unknown): AskApiBody | { error: AskApiBodyErro
     timeoutMs: r.timeoutMs,
     ...(r.lockToTurnCaller === true ? { lockToTurnCaller: true } : {}),
     ...(typeof r.flowId === 'string' ? { flowId: r.flowId.trim() } : {}),
+    ...(requestId !== undefined ? { requestId } : {}),
+    ...(originKind !== undefined ? { originKind } : {}),
   };
 }

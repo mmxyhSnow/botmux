@@ -31,7 +31,7 @@ const DIRECT_USER_MESSAGE_CALLS = new Map(Object.entries({
   'src/core/dashboard-command/settings.ts': 1,
   'src/core/worker-pool.ts': 2,
   'src/daemon.ts': 1,
-  'src/im/lark/card-handler.ts': 1,
+  'src/im/lark/card-handler.ts': 2,
   [FACADE]: 1,
 }));
 const REVIEWED_OWNER_ADMIN_SENDS = new Set([
