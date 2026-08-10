@@ -5,6 +5,7 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer } from 'node:http';
+import { createServer as createNetServer, type Server, type Socket } from 'node:net';
 import {
   chmodSync,
   copyFileSync,
@@ -19,11 +20,25 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { encodeRunnerInput } from '../src/adapters/cli/runner-input.js';
+import {
+  CodexAppControlFinalAssembler,
+  CodexAppControlLineDecoder,
+  CodexAppControlSequenceFence,
+  codexAppControlSocketPath,
+  createCodexAppControlBootstrap,
+  encodeCodexAppControlAck,
+  encodeCodexAppControlAccepted,
+  encodeCodexAppControlChallenge,
+  generateCodexAppControlChallenge,
+  parseCodexAppControlWireRecord,
+  verifyCodexAppControlAuth,
+  verifyCodexAppSignedControlMarker,
+} from '../src/utils/codex-app-control.js';
 
 const RUNNER_PATH = resolve('src/codex-app-runner.ts');
 const FAKE_SERVER_FIXTURE = resolve('test/fixtures/fake-codex-app-server.mjs');
 const CONTROL_PREFIX = '::botmux-codex-app:';
-const FINAL_MARKER = /\x1b\]777;botmux:final:([A-Za-z0-9+/=]+)\x07/;
+const SESSION_ID = 'session-integration';
 const liveChildren = new Set<ChildProcessWithoutNullStreams>();
 
 interface Harness {
@@ -32,17 +47,120 @@ interface Harness {
   readonly stderr: string;
 }
 
+/** 为 request_user_input 集成用例提供真实的签名控制通道接收端。 */
+class ControlCollector {
+  readonly bootstrap;
+  readonly socketPath: string;
+  readonly states: Array<Record<string, any>> = [];
+  readonly finals: Array<Record<string, any>> = [];
+  private readonly server: Server;
+  private readonly sockets = new Set<Socket>();
+  private readonly socketDirectory: string;
+
+  constructor(directory: string) {
+    this.socketDirectory = mkdtempSync('/tmp/bca-ui-sock-');
+    this.socketPath = codexAppControlSocketPath(this.socketDirectory, SESSION_ID);
+    this.bootstrap = createCodexAppControlBootstrap(directory, SESSION_ID, this.socketPath);
+    this.server = createNetServer(socket => this.accept(socket));
+  }
+
+  listen(): Promise<void> {
+    return new Promise((resolvePromise, rejectPromise) => {
+      this.server.once('error', rejectPromise);
+      this.server.listen(this.socketPath, () => {
+        this.server.off('error', rejectPromise);
+        resolvePromise();
+      });
+    });
+  }
+
+  async close(): Promise<void> {
+    for (const socket of this.sockets) socket.destroy();
+    this.sockets.clear();
+    if (this.server.listening) {
+      await new Promise<void>(resolvePromise => this.server.close(() => resolvePromise()));
+    }
+    rmSync(this.socketDirectory, { recursive: true, force: true });
+  }
+
+  /** 校验 runner 身份、组装分片 final，并按协议回 ACK。 */
+  private accept(socket: Socket): void {
+    this.sockets.add(socket);
+    const decoder = new CodexAppControlLineDecoder();
+    const sequenceFence = new CodexAppControlSequenceFence();
+    const finalAssembler = new CodexAppControlFinalAssembler();
+    const challenge = generateCodexAppControlChallenge();
+    let authenticated = false;
+    socket.on('data', chunk => {
+      const decoded = decoder.push(chunk);
+      if (decoded.droppedMalformed) socket.destroy();
+      for (const line of decoded.lines) {
+        const record = parseCodexAppControlWireRecord(line);
+        if (!record || record.sessionId !== SESSION_ID) {
+          socket.destroy();
+          continue;
+        }
+        if (!authenticated) {
+          if (record.type !== 'auth'
+              || record.challenge !== challenge
+              || record.generation !== this.bootstrap.identity.generation
+              || !verifyCodexAppControlAuth(record, this.bootstrap.identity.publicKey)) {
+            socket.destroy();
+            continue;
+          }
+          authenticated = true;
+          socket.write(`${encodeCodexAppControlAccepted(
+            SESSION_ID,
+            this.bootstrap.identity.generation,
+            challenge,
+          )}\n`);
+          continue;
+        }
+        if (record.type !== 'marker'
+            || record.challenge !== challenge
+            || record.generation !== this.bootstrap.identity.generation
+            || !sequenceFence.accept(record.seq)
+            || !verifyCodexAppSignedControlMarker(record, this.bootstrap.identity.publicKey)) {
+          socket.destroy();
+          continue;
+        }
+        const assembled = finalAssembler.accept(record.kind, record.payload);
+        if (assembled.status === 'reject') {
+          socket.destroy();
+          continue;
+        }
+        if (assembled.status === 'not-final' && record.kind === 'state') {
+          this.states.push(record.payload);
+        } else if (assembled.status === 'complete') {
+          this.finals.push(assembled.payload);
+        }
+        if (assembled.status === 'accepted') continue;
+        socket.write(`${encodeCodexAppControlAck(
+          SESSION_ID,
+          this.bootstrap.identity.generation,
+          challenge,
+          record.seq,
+        )}\n`);
+      }
+    });
+    socket.on('error', () => undefined);
+    socket.on('close', () => this.sockets.delete(socket));
+    socket.write(`${encodeCodexAppControlChallenge(SESSION_ID, challenge)}\n`);
+  }
+}
+
 function startRunner(
   fakeCodex: string,
   cwd: string,
   logPath: string,
+  controlBootstrapPath: string,
   extraEnv: NodeJS.ProcessEnv,
 ): Harness {
   let stdout = '';
   let stderr = '';
   const child = spawn(process.execPath, [
     '--import', 'tsx', RUNNER_PATH,
-    '--session-id', 'session-integration',
+    '--session-id', SESSION_ID,
     '--codex-bin', fakeCodex,
     '--cwd', cwd,
   ], {
@@ -52,7 +170,9 @@ function startRunner(
       FAKE_CODEX_LOG: logPath,
       FAKE_CODEX_VERSION: '0.146.0',
       FAKE_CODEX_BEHAVIOR: 'request-user-input',
+      NODE_ENV: 'test',
       ...extraEnv,
+      BOTMUX_CODEX_APP_CONTROL_BOOTSTRAP: controlBootstrapPath,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -67,32 +187,31 @@ function startRunner(
   };
 }
 
-function waitForOutput(
+function waitFor(
   harness: Harness,
-  predicate: (output: string) => boolean,
+  predicate: () => boolean,
   timeoutMs = 10_000,
 ): Promise<void> {
-  if (predicate(harness.stdout)) return Promise.resolve();
+  if (predicate()) return Promise.resolve();
   return new Promise((resolvePromise, rejectPromise) => {
+    const poll = setInterval(() => {
+      if (!predicate()) return;
+      cleanup();
+      resolvePromise();
+    }, 10);
     const timer = setTimeout(() => {
       cleanup();
       rejectPromise(new Error(`runner output timed out\n${harness.stdout}\n${harness.stderr}`));
     }, timeoutMs);
-    const onData = () => {
-      if (!predicate(harness.stdout)) return;
-      cleanup();
-      resolvePromise();
-    };
     const onExit = () => {
       cleanup();
       rejectPromise(new Error(`runner exited before expected output\n${harness.stderr}`));
     };
     const cleanup = () => {
+      clearInterval(poll);
       clearTimeout(timer);
-      harness.child.stdout.off('data', onData);
       harness.child.off('exit', onExit);
     };
-    harness.child.stdout.on('data', onData);
     harness.child.once('exit', onExit);
   });
 }
@@ -115,12 +234,6 @@ function readRequests(logPath: string): Array<Record<string, any>> {
     .split('\n')
     .filter(Boolean)
     .map(line => JSON.parse(line));
-}
-
-function decodeFinal(output: string): Record<string, any> {
-  const match = output.match(FINAL_MARKER);
-  if (!match) throw new Error('final marker missing');
-  return JSON.parse(Buffer.from(match[1], 'base64').toString('utf8'));
 }
 
 function runnerEnv(port: number, dir: string): NodeJS.ProcessEnv {
@@ -152,12 +265,16 @@ describe('Codex App request_user_input bridge', () => {
     await new Promise<void>(resolvePromise => daemon.listen(0, '127.0.0.1', resolvePromise));
     const address = daemon.address();
     if (!address || typeof address === 'string') throw new Error('fake daemon 未绑定端口');
-    const harness = startRunner(fakeCodex, dir, logPath, runnerEnv(address.port, dir));
+    const control = new ControlCollector(dir);
+    await control.listen();
+    const harness = startRunner(
+      fakeCodex, dir, logPath, control.bootstrap.path, runnerEnv(address.port, dir),
+    );
 
     try {
-      await waitForOutput(harness, output => output.includes('Codex App connected.'));
+      await waitFor(harness, () => control.states.some(state => state.busy === false));
       harness.child.stdin.write(`${CONTROL_PREFIX}${encodeRunnerInput('请确认', undefined, 'om_failure')}\r`);
-      await waitForOutput(harness, output => output.includes('request_user_input failed'));
+      await waitFor(harness, () => harness.stdout.includes('request_user_input failed'));
       await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
       const requests = readRequests(logPath);
       expect(requests).toContainEqual({
@@ -169,6 +286,7 @@ describe('Codex App request_user_input bridge', () => {
       expect(requests.find(request => request.id === 9100 && request.result)).toBeUndefined();
     } finally {
       await stopChild(harness.child);
+      await control.close();
       await new Promise<void>(resolvePromise => daemon.close(() => resolvePromise()));
       rmSync(dir, { recursive: true, force: true });
     }
@@ -214,16 +332,18 @@ describe('Codex App request_user_input bridge', () => {
     await new Promise<void>(resolvePromise => daemon.listen(0, '127.0.0.1', resolvePromise));
     const address = daemon.address();
     if (!address || typeof address === 'string') throw new Error('fake daemon 未绑定端口');
-    const harness = startRunner(fakeCodex, dir, logPath, {
+    const control = new ControlCollector(dir);
+    await control.listen();
+    const harness = startRunner(fakeCodex, dir, logPath, control.bootstrap.path, {
       ...runnerEnv(address.port, dir),
       FAKE_CODEX_ARGS_LOG: argsLogPath,
       HOME: fakeHome,
     });
 
     try {
-      await waitForOutput(harness, output => output.includes('Codex App connected.'));
+      await waitFor(harness, () => control.states.some(state => state.busy === false));
       harness.child.stdin.write(`${CONTROL_PREFIX}${encodeRunnerInput('请执行', undefined, 'om_choice')}\r`);
-      await waitForOutput(harness, output => FINAL_MARKER.test(output));
+      await waitFor(harness, () => control.finals.length === 1);
       expect(JSON.parse(readFileSync(argsLogPath, 'utf8'))).toEqual([
         'app-server', '--enable', 'default_mode_request_user_input', '--listen', 'stdio://',
       ]);
@@ -244,7 +364,7 @@ describe('Codex App request_user_input bridge', () => {
         }],
       });
       expect(askAuthHeaders[0]).toMatch(/^[A-Za-z0-9_-]{43}$/);
-      expect(decodeFinal(harness.stdout)).toMatchObject({
+      expect(control.finals[0]).toMatchObject({
         appTurnId: 'turn-fake-1',
         replyTurnId: 'om_choice',
         content: 'selected=执行',
@@ -258,6 +378,7 @@ describe('Codex App request_user_input bridge', () => {
         .toMatchObject({ sessionId: 'session-integration', flowId: 'turn-fake-1' });
     } finally {
       await stopChild(harness.child);
+      await control.close();
       await new Promise<void>(resolvePromise => daemon.close(() => resolvePromise()));
       rmSync(dir, { recursive: true, force: true });
     }
@@ -286,12 +407,16 @@ describe('Codex App request_user_input bridge', () => {
     await new Promise<void>(resolvePromise => daemon.listen(0, '127.0.0.1', resolvePromise));
     const address = daemon.address();
     if (!address || typeof address === 'string') throw new Error('fake daemon 未绑定端口');
-    const harness = startRunner(fakeCodex, dir, logPath, runnerEnv(address.port, dir));
+    const control = new ControlCollector(dir);
+    await control.listen();
+    const harness = startRunner(
+      fakeCodex, dir, logPath, control.bootstrap.path, runnerEnv(address.port, dir),
+    );
 
     try {
-      await waitForOutput(harness, output => output.includes('Codex App connected.'));
+      await waitFor(harness, () => control.states.some(state => state.busy === false));
       harness.child.stdin.write(`${CONTROL_PREFIX}${encodeRunnerInput('继续访谈', undefined, 'om_undo')}\r`);
-      await waitForOutput(harness, output => FINAL_MARKER.test(output));
+      await waitFor(harness, () => control.finals.length === 1);
       const response = readRequests(logPath).find(request => request.id === 9100)?.result;
       expect(response).toEqual({
         answers: {
@@ -302,9 +427,10 @@ describe('Codex App request_user_input bridge', () => {
       });
       const start = readRequests(logPath).find(request => request.method === 'thread/start');
       expect(start?.params?.developerInstructions).toContain('undid the previous answer');
-      expect(decodeFinal(harness.stdout).content).toContain('用户撤销了上一问');
+      expect(control.finals[0].content).toContain('用户撤销了上一问');
     } finally {
       await stopChild(harness.child);
+      await control.close();
       await new Promise<void>(resolvePromise => daemon.close(() => resolvePromise()));
       rmSync(dir, { recursive: true, force: true });
     }

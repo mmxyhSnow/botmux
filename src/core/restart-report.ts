@@ -13,7 +13,7 @@ import type {
   RestartSource,
   SourceDeploymentIntent,
 } from '../services/restart-intent-store.js';
-import { consumeRestartIntent } from '../services/restart-intent-store.js';
+import { claimRestartIntentForReport } from '../services/restart-intent-store.js';
 import { countActiveSessionsOnDisk } from '../services/session-store.js';
 import { resolveLiveIdentity } from '../utils/live-identity.js';
 import { t, localeForBot, type Locale } from '../i18n/index.js';
@@ -148,8 +148,13 @@ export interface RestartReportWiring {
   /** 源码同步重启后的运行态验收；缺省时明确告警且不创建 deploy 标签。 */
   finalizeSourceDeployment?: (intent: SourceDeploymentIntent) => Promise<{ deployTag: string }>;
   githubAuth?: GithubAuthResolveOptions;
-  now?: number;
+  /** Injectable clock for deterministic tests. */
+  now?: number | (() => number);
   log?: (msg: string) => void;
+  wait?: (ms: number) => Promise<void>;
+  /** Optional caller/test ceiling. Production leaves this unset so a durable
+   *  prepared intent is followed until it commits, aborts, or becomes stale. */
+  preparedCommitWaitMs?: number;
 }
 
 /**
@@ -160,8 +165,24 @@ export interface RestartReportWiring {
  */
 export async function sendRestartReportIfPending(w: RestartReportWiring): Promise<void> {
   const log = w.log ?? (() => {});
-  const intent = consumeRestartIntent(w.now ?? Date.now());
-  if (!intent) return; // no breadcrumb → crash/reboot → stay silent
+  const now = () => typeof w.now === 'function' ? w.now() : w.now ?? Date.now();
+  const wait = w.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  let claim = claimRestartIntentForReport(now());
+  let remainingPreparedWaitMs = w.preparedCommitWaitMs === undefined
+    ? undefined
+    : Math.max(0, w.preparedCommitWaitMs);
+  const pollMs = 500;
+  while (claim.state === 'prepared') {
+    if (remainingPreparedWaitMs !== undefined && remainingPreparedWaitMs <= 0) return;
+    const delayMs = remainingPreparedWaitMs === undefined
+      ? pollMs
+      : Math.min(pollMs, remainingPreparedWaitMs);
+    await wait(delayMs);
+    if (remainingPreparedWaitMs !== undefined) remainingPreparedWaitMs -= delayMs;
+    claim = claimRestartIntentForReport(now());
+  }
+  if (claim.state !== 'claimed') return;
+  const intent = claim.intent;
   let sourceDeployment: RestartReportInput['sourceDeployment'];
   if (intent.sourceDeployment) {
     try {
