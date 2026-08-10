@@ -665,6 +665,8 @@ const usageAccumulators = new Map<string, TurnTokenUsageAccumulator>();
 /** Only one turn is active at a time; a small cap bounds leakage from turns
  *  that never emit a final marker. */
 const MAX_USAGE_ACCUMULATORS = 8;
+/** 原生 turn 完成后等待相邻 Goal 生命周期事件到达的静默窗口。 */
+const NATIVE_LIFECYCLE_IDLE_GRACE_MS = 25;
 /** Monotonic counter for synthetic appTurnId values on finals that never bound a
  *  codex native turn id (e.g. turn/start rejections). Mirrors master's controller
  *  failure-id contract (`codex-app-error-<now>-<seq>`). */
@@ -2062,10 +2064,10 @@ async function drainQueue(): Promise<void> {
         activeTurn = null;
       }
       // app-server 可能把当前 turn/completed 与紧随其后的 Goal
-      // turn/started 分成相邻 stdout 数据块。让出一个事件循环后再判定
-      // 空闲，避免在两个原生生命周期事件之间短暂发布 busy:false。
+      // turn/started 分成相邻 stdout 数据块。等待一个有界静默窗口后再判定
+      // 空闲，避免系统调度跨过单次 setImmediate 时短暂发布 busy:false。
       if (queue.length === 0 && nativeActiveTurnId === undefined) {
-        await new Promise<void>(resolve => setImmediate(resolve));
+        await new Promise<void>(resolve => setTimeout(resolve, NATIVE_LIFECYCLE_IDLE_GRACE_MS));
       }
       // Do not publish a transient idle boundary between inputs already queued
       // in the serial runner. Once the queue is truly empty, append signed
