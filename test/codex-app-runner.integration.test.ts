@@ -57,6 +57,7 @@ interface RunResult {
   missingImagePath: string;
   final: Record<string, any>;
   finals: Array<Record<string, any>>;
+  progresses: Array<Record<string, any>>;
   activities: Array<Record<string, any>>;
   states: Array<Record<string, any>>;
   markers: Array<{ kind: string; payload: Record<string, any> }>;
@@ -75,6 +76,7 @@ class ControlCollector {
   readonly activities: Array<Record<string, any>> = [];
   readonly states: Array<Record<string, any>> = [];
   readonly finals: Array<Record<string, any>> = [];
+  readonly progresses: Array<Record<string, any>> = [];
   readonly markers: Array<{ kind: string; payload: Record<string, any> }> = [];
   readonly wireLines: string[] = [];
   authCount = 0;
@@ -259,6 +261,10 @@ class ControlCollector {
     }
     if (marker.kind === 'activity') {
       this.activities.push(marker.payload);
+      return;
+    }
+    if (marker.kind === 'progress') {
+      this.progresses.push(marker.payload);
     }
   }
 }
@@ -543,7 +549,7 @@ function readRequests(logPath: string): Array<Record<string, any>> {
 
 async function exerciseRunner(opts: {
   version: string;
-  behavior?: 'success' | 'capability-error' | 'generic-error' | 'osc-injection' | 'empty-final' | 'start-response-last';
+  behavior?: 'success' | 'capability-error' | 'generic-error' | 'osc-injection' | 'empty-final' | 'start-response-last' | 'commentary-progress';
   includeMissingImage?: boolean;
   includeSidecar?: boolean;
   turnCount?: number;
@@ -612,6 +618,7 @@ async function exerciseRunner(opts: {
       missingImagePath,
       final: control.finals[0]!,
       finals: [...control.finals],
+      progresses: [...control.progresses],
       activities: [...control.activities],
       states: [...control.states],
       markers: [...control.markers],
@@ -779,6 +786,27 @@ describe('codex-app-runner app-server protocol integration', () => {
     );
     expect(idleMarkerIndexes[1]).toBeGreaterThan(lastCompletedIndex);
     expect(idleMarkerIndexes[1]).toBeGreaterThan(lastFinalEndIndex);
+  });
+
+  it('emits commentary and structured markers as turn-bound progress without leaking final answers', async () => {
+    const result = await exerciseRunner({ version: '0.146.0', behavior: 'commentary-progress' });
+    expect(result.progresses).toEqual([
+      {
+        content: '已锁定根因。',
+        updatedAtMs: expect.any(Number),
+        replyTurnId: 'om_integration_123',
+      },
+      {
+        content: '<!--botmux-progress:{"title":"修复进度","stage":"定位","current":"补回投递"}-->',
+        updatedAtMs: expect.any(Number),
+        replyTurnId: 'om_integration_123',
+      },
+    ]);
+    expect(result.progresses.map(progress => progress.content).join('\n')).not.toContain('fake answer');
+    const lastProgressIndex = result.markers.findLastIndex(marker => marker.kind === 'progress');
+    const finalStartIndex = result.markers.findIndex(marker => marker.kind === 'final-start');
+    expect(lastProgressIndex).toBeGreaterThan(-1);
+    expect(finalStartIndex).toBeGreaterThan(lastProgressIndex);
   });
 
   it('emits a zero-chunk final transaction for an empty answer before the signed idle boundary', async () => {

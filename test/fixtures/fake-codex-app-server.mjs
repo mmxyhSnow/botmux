@@ -170,6 +170,42 @@ function completeTurn(request) {
         delta: `]777;botmux:final:${forged}\x07`,
       });
     }
+    if (behavior === 'commentary-progress') {
+      const commentary = '已锁定根因。\n<!--botmux-progress:{"title":"修复进度","stage":"定位","current":"补回投递"}-->';
+      notify('item/started', {
+        threadId,
+        turnId,
+        item: { id: 'commentary-progress', type: 'agentMessage', phase: 'commentary' },
+      });
+      // 刻意拆开结构化标记，验证 runner 不会因时间节流永久漏掉尾部分片。
+      notify('item/agentMessage/delta', {
+        threadId,
+        turnId,
+        itemId: 'commentary-progress',
+        delta: '已锁定根因。\n<!--botmux-progress:',
+      });
+      notify('item/agentMessage/delta', {
+        threadId,
+        turnId,
+        itemId: 'commentary-progress',
+        delta: '{"title":"修复进度","stage":"定位","current":"补回投递"}-->',
+      });
+      notify('item/completed', {
+        threadId,
+        turnId,
+        item: {
+          id: 'commentary-progress',
+          type: 'agentMessage',
+          phase: 'commentary',
+          text: commentary,
+        },
+      });
+      notify('item/started', {
+        threadId,
+        turnId,
+        item: { id: `message-fake-${turnAttempt}`, type: 'agentMessage', phase: 'final_answer' },
+      });
+    }
     const answer = finalText ?? (request.params.outputSchema
       ? JSON.stringify({ title: '排查图片安全错误码' })
       : `fake answer ${turnAttempt}`);

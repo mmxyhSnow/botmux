@@ -38,6 +38,7 @@ import {
   dispatchCodexAppUserInput,
   dispatchCodexAppUserInputFlowCompletion,
 } from './services/codex-app-user-input.js';
+import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
 type JsonObject = Record<string, any>;
 interface Args {
   sessionId: string;
@@ -84,6 +85,11 @@ interface ActiveTurn {
   finalText: string;
   allAgentText: string;
   itemText: Map<string, string>;
+  /** 按 item 记录 assistant 消息阶段，只允许 commentary 进入进度卡。 */
+  itemPhases: Map<string, string>;
+  /** 当前原生 turn 已接收的 commentary 全文，用于按完整句子增量投递。 */
+  progressText: string;
+  progress: CodexAppProgressThrottler;
   done: Promise<void>;
   resolveDone: () => void;
   // ─── Blocking 1 ordered-steer driver (codex decision A/B/C) ──────────────
@@ -738,6 +744,11 @@ function makeTurn(clientUserMessageId: string | undefined, requestKind: 'start' 
     finalText: '',
     allAgentText: '',
     itemText: new Map(),
+    itemPhases: new Map(),
+    progressText: '',
+    // commentary 本身已是低频显式进展；关闭时间节流，避免分片标记在 item
+    // 完成前没有后续事件可触发而永久滞留。
+    progress: new CodexAppProgressThrottler({ minIntervalMs: 0 }),
     phase: 'starting',
     done,
     resolveDone,
@@ -761,6 +772,24 @@ function emitTurnActivity(turn: ActiveTurn, phase: 'submitted' | 'progress' | 'c
     atMs,
     ...(turn.nativeTurnId ? { turnId: turn.nativeTurnId } : {}),
   });
+}
+
+/** 把当前 commentary 中新增的完整句子绑定到最新已接收的飞书输入。 */
+function emitAssistantProgress(turn: ActiveTurn): void {
+  const replyTurnId = turn.accepted?.at(-1)?.replyTurnId ?? turn.clientUserMessageId;
+  if (!replyTurnId) return;
+  for (const snapshot of turn.progress.drainSnapshots({
+    turnId: replyTurnId,
+    text: turn.progressText,
+    startedAtMs: turn.startedAtMs,
+    nowMs: Date.now(),
+  })) {
+    emitMarker('progress', {
+      content: snapshot.content,
+      updatedAtMs: snapshot.updatedAtMs,
+      replyTurnId,
+    });
+  }
 }
 
 function handleServerRequest(msg: JsonObject): boolean {
@@ -1153,7 +1182,11 @@ function handleNotification(msg: JsonObject, replayedAfterResponse = false): voi
 
   if (msg.method === 'item/started') {
     const item = params.item;
-    if (item?.type === 'commandExecution') {
+    if (item?.type === 'agentMessage') {
+      const itemId = typeof item.id === 'string' ? item.id : undefined;
+      const phase = typeof item.phase === 'string' ? item.phase : undefined;
+      if (itemId && phase) turn.itemPhases.set(itemId, phase);
+    } else if (item?.type === 'commandExecution') {
       writeLine(`\n$ ${item.command}`);
     } else if (item?.type === 'fileChange') {
       writeLine('\n[files changed]');
@@ -1167,6 +1200,10 @@ function handleNotification(msg: JsonObject, replayedAfterResponse = false): voi
     turn.itemText.set(itemId, (turn.itemText.get(itemId) ?? '') + delta);
     turn.allAgentText += delta;
     output.display(delta);
+    if (turn.itemPhases.get(itemId) === 'commentary') {
+      turn.progressText += delta;
+      emitAssistantProgress(turn);
+    }
     return;
   }
 
@@ -1181,6 +1218,10 @@ function handleNotification(msg: JsonObject, replayedAfterResponse = false): voi
       if (item.phase === 'final_answer') turn.finalText = String(item.text ?? '');
       else if (!turn.itemText.has(item.id) && item.text) {
         turn.allAgentText += String(item.text);
+        if (item.phase === 'commentary') {
+          turn.progressText += String(item.text);
+          emitAssistantProgress(turn);
+        }
       }
     }
     return;
@@ -1652,6 +1693,8 @@ async function tryAdmitSteer(): Promise<void> {
   }
   queue.shift();
   turn.accepted!.push(dispatch);
+  // 新的飞书输入接管后续进度；既有未完整句子不应跨输入补发。
+  turn.progress.resetTo(turn.progressText);
   turn.steerInFlight = undefined;
   steerAdmitting = false;
   emitLifecycle({
