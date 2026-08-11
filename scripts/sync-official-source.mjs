@@ -1,193 +1,77 @@
 #!/usr/bin/env node
 /**
- * 官方同步执行器：在隔离 upgrade worktree 完成合并、测试和构建，通过后才快进
- * fork 的生产分支并替换本机 dist。脚本只接受仓库内受限配置，不执行配置中的任意命令。
+ * 官方同步执行器：prepare 只生成隔离候选，verify 只跑契约门禁，promote 才推进
+ * custom/dev、custom/prod 与版本化运行目录。默认 all 保持 Dashboard 一键入口兼容。
  */
-import { execFileSync, spawn } from 'node:child_process';
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-} from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   backupActiveDist,
   runtimeCurrentRoot,
   writeRuntimeManifest,
 } from './runtime-release-files.mjs';
+import {
+  assertSourceUpdatePromotable,
+  captureCandidateSnapshot,
+  captureSourceUpdateSnapshot,
+  readSourceUpdateState,
+  sourceUpdatePhase,
+  sourceUpdateStatePath,
+  verifyPreparedSourceUpdate,
+  writeSourceUpdateState,
+} from './lib/source-update-phases.mjs';
+import {
+  alignedStableTag,
+  cleanTracked,
+  compatibleUnitTests,
+  ensureUpgradeWorktree,
+  git,
+  githubRepo,
+  latestStableTag,
+  replaceDist,
+  run,
+  sourceUpdateConfigAt,
+} from './lib/source-update-support.mjs';
 
 const RESULT_PREFIX = 'BOTMUX_SOURCE_UPDATE_RESULT=';
-const STABLE_TAG = /^v(\d+)\.(\d+)\.(\d+)$/;
-const SAFE_NAME = /^[A-Za-z0-9._/-]+$/;
 const INTEGRATION_BRANCH = 'custom/dev';
-
-function fail(message) {
-  process.stderr.write(`${message}\n`);
-  process.exit(1);
-}
 
 function rootArg(argv) {
   const index = argv.indexOf('--root');
-  if (index < 0 || !argv[index + 1]) fail('缺少 --root');
+  if (index < 0 || !argv[index + 1]) throw new Error('缺少 --root');
   return resolve(argv[index + 1]);
 }
 
-function configAt(root) {
-  const value = JSON.parse(readFileSync(join(root, '.botmux-source-update.json'), 'utf8'));
-  const names = ['productionBranch', 'originRemote', 'originRepo', 'upstreamRemote', 'upstreamRepo'];
-  const allowed = new Set(['schemaVersion', ...names]);
-  if (
-    value?.schemaVersion !== 1
-    || Object.keys(value).some(key => !allowed.has(key))
-    || names.some(key => typeof value[key] !== 'string' || !SAFE_NAME.test(value[key]))
-  ) {
-    fail('源码同步配置无效');
-  }
-  return value;
+function emit(result) {
+  process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(result)}\n`);
 }
 
-function git(root, args, options = {}) {
-  return execFileSync('git', args, {
-    cwd: root,
-    encoding: 'utf8',
-    timeout: options.timeout ?? 120_000,
-    stdio: options.stdio ?? ['ignore', 'pipe', 'pipe'],
-  }).trim();
-}
-
-function githubRepo(url) {
-  return url.trim().match(/github\.com(?::|\/)([^/\s]+\/[^/\s]+?)(?:\.git)?$/i)?.[1] ?? null;
-}
-
-function semverParts(tag) {
-  const match = tag.match(STABLE_TAG);
-  return match ? match.slice(1).map(Number) : null;
-}
-
-function compareTags(left, right) {
-  const a = semverParts(left);
-  const b = semverParts(right);
-  if (!a || !b) return 0;
-  return b[0] - a[0] || b[1] - a[1] || b[2] - a[2];
-}
-
-function latestStableTag(root, remote) {
-  const refs = git(root, ['ls-remote', '--tags', remote], { timeout: 120_000 });
-  const tags = refs.split(/\r?\n/)
-    .map(line => line.match(/refs\/tags\/(v\d+\.\d+\.\d+)(?:\^\{\})?$/)?.[1])
-    .filter(Boolean);
-  const unique = [...new Set(tags)].sort(compareTags);
-  if (!unique[0]) fail(`远端 ${remote} 没有正式版标签`);
-  return unique[0];
-}
-
-function alignedStableTag(root) {
-  const tags = git(root, ['tag', '--merged', 'HEAD', '--list', 'v*'])
-    .split(/\r?\n/)
-    .filter(tag => STABLE_TAG.test(tag))
-    .sort(compareTags);
-  return tags[0] ?? 'v0.0.0';
-}
-
-function compatibleUnitTests(root) {
-  const unsupported = new Set([
-    'test/git-worktree.test.ts',
-    'test/default-worktree.test.ts',
-    'test/repo-selection.test.ts',
-    'test/v3-distillation-runner.test.ts',
-  ]);
-  return git(root, ['ls-files', 'test'])
-    .split(/\r?\n/)
-    .filter(path => /\.(?:test|spec)\.ts$/.test(path) && !unsupported.has(path));
-}
-
-function cleanTracked(root) {
-  return git(root, ['status', '--porcelain', '--untracked-files=no']) === '';
-}
-
-function run(root, command, args, timeout = 10 * 60_000) {
-  return new Promise((resolveRun, rejectRun) => {
-    const child = spawn(command, args, {
-      cwd: root,
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let tail = '';
-    const capture = data => {
-      const text = data.toString();
-      process.stderr.write(text);
-      tail = (tail + text).slice(-8_000);
-    };
-    child.stdout.on('data', capture);
-    child.stderr.on('data', capture);
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      rejectRun(new Error(`${command} ${args.join(' ')} 超时`));
-    }, timeout);
-    child.once('error', error => {
-      clearTimeout(timer);
-      rejectRun(error);
-    });
-    child.once('exit', code => {
-      clearTimeout(timer);
-      if (code === 0) resolveRun();
-      else rejectRun(new Error(`${command} ${args.join(' ')} 失败（${code}）\n${tail.slice(-2_000)}`));
-    });
-  });
-}
-
-function ensureUpgradeWorktree(root, branch, path, base) {
-  if (existsSync(path)) {
-    const actual = git(path, ['symbolic-ref', '--short', 'HEAD']);
-    if (actual !== branch) fail(`升级工作树分支不符：${path} 当前为 ${actual}`);
-    if (!cleanTracked(path)) fail(`升级工作树存在未提交改动：${path}`);
-    const head = git(path, ['rev-parse', 'HEAD']);
-    const baseHead = git(root, ['rev-parse', base]);
-    if (head !== baseHead) fail(`升级工作树不是最新生产基线，请先处理：${path}`);
-    return;
-  }
-  mkdirSync(dirname(path), { recursive: true });
-  let branchExists = false;
-  try {
-    git(root, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], {
-      stdio: ['ignore', 'ignore', 'ignore'],
-    });
-    branchExists = true;
-  } catch { /* 未创建过的自动升级分支走首次创建。 */ }
-  if (branchExists) git(root, ['branch', '-f', branch, base]);
-  else git(root, ['branch', branch, base]);
-  git(root, ['worktree', 'add', path, branch], { timeout: 120_000 });
-}
-
-function replaceDist(root, builtDist, tag) {
-  // 备份与生产 dist 必须位于同一文件系统，才能用 rename 原子切换。
-  const backupRoot = join(dirname(root), '.botmux-dist-backups', `source-update-${tag}-${Date.now()}`);
-  const staging = join(root, `dist.next-${process.pid}`);
-  mkdirSync(backupRoot, { recursive: true });
-  rmSync(staging, { recursive: true, force: true });
-  cpSync(builtDist, staging, { recursive: true });
-  if (existsSync(join(root, 'dist'))) renameSync(join(root, 'dist'), join(backupRoot, 'dist'));
-  renameSync(staging, join(root, 'dist'));
-  return backupRoot;
-}
-
-async function main() {
-  const root = rootArg(process.argv.slice(2));
-  const config = configAt(root);
+function assertTrustedRoot(root, config) {
   const branch = git(root, ['symbolic-ref', '--short', 'HEAD']);
-  if (branch !== config.productionBranch) fail(`当前分支 ${branch} 不是生产分支 ${config.productionBranch}`);
-  if (!cleanTracked(root)) fail(`生产工作树存在未提交改动：${root}`);
-  if (githubRepo(git(root, ['remote', 'get-url', config.originRemote]))?.toLowerCase() !== config.originRepo.toLowerCase()) {
-    fail('origin 身份与同步配置不一致');
-  }
-  if (githubRepo(git(root, ['remote', 'get-url', config.upstreamRemote]))?.toLowerCase() !== config.upstreamRepo.toLowerCase()) {
-    fail('upstream 身份与同步配置不一致');
-  }
+  if (branch !== config.productionBranch) throw new Error(`当前分支 ${branch} 不是生产分支 ${config.productionBranch}`);
+  if (!cleanTracked(root)) throw new Error(`生产工作树存在未提交改动：${root}`);
+  const origin = githubRepo(git(root, ['remote', 'get-url', config.originRemote]));
+  if (origin?.toLowerCase() !== config.originRepo.toLowerCase()) throw new Error('origin 身份与同步配置不一致');
+  const upstream = githubRepo(git(root, ['remote', 'get-url', config.upstreamRemote]));
+  if (upstream?.toLowerCase() !== config.upstreamRepo.toLowerCase()) throw new Error('upstream 身份与同步配置不一致');
+}
 
+function baseResult(state) {
+  return {
+    oldVersion: state.oldVersion,
+    newVersion: state.newVersion,
+    changed: true,
+    branch: state.config.productionBranch,
+    upgradeBranch: state.upgradeBranch,
+    releaseTag: state.releaseTag,
+    deployTag: null,
+    productionHead: state.candidateHead,
+  };
+}
+
+async function prepare(root, config, statePath) {
+  assertTrustedRoot(root, config);
   git(root, [
     'fetch',
     '--prune',
@@ -197,111 +81,156 @@ async function main() {
   ], { timeout: 180_000 });
   git(root, ['fetch', '--prune', '--tags', config.upstreamRemote], { timeout: 180_000 });
   const remoteBase = `${config.originRemote}/${config.productionBranch}`;
-  if (git(root, ['rev-parse', 'HEAD']) !== git(root, ['rev-parse', remoteBase])) {
-    fail(`本机 ${config.productionBranch} 与 ${remoteBase} 不一致，请先人工核对`);
-  }
+  const rootHead = git(root, ['rev-parse', 'HEAD']);
+  const productionHead = git(root, ['rev-parse', remoteBase]);
+  if (rootHead !== productionHead) throw new Error(`本机 ${config.productionBranch} 与 ${remoteBase} 不一致，请先人工核对`);
   const integrationBase = `${config.originRemote}/${INTEGRATION_BRANCH}`;
-  if (git(root, ['rev-parse', integrationBase]) !== git(root, ['rev-parse', remoteBase])) {
-    fail(`${INTEGRATION_BRANCH} 存在待发改动；请先完成或放弃当前候选版本，再同步官方版本`);
+  if (git(root, ['rev-parse', integrationBase]) !== productionHead) {
+    throw new Error(`${INTEGRATION_BRANCH} 存在待发改动；请先完成或放弃当前候选版本，再同步官方版本`);
   }
 
   const currentTag = alignedStableTag(root);
   const latestTag = latestStableTag(root, config.upstreamRemote);
-  const currentHead = git(root, ['rev-parse', 'HEAD']);
-  const baseResult = {
-    oldVersion: currentTag.slice(1),
-    newVersion: latestTag.slice(1),
-    branch: config.productionBranch,
-  };
   if (currentTag === latestTag) {
-    process.stdout.write(`${RESULT_PREFIX}${JSON.stringify({
-      ...baseResult,
+    return { noChange: {
+      oldVersion: currentTag.slice(1),
+      newVersion: latestTag.slice(1),
       changed: false,
+      branch: config.productionBranch,
       upgradeBranch: null,
       releaseTag: null,
       deployTag: null,
-      productionHead: currentHead,
-    })}\n`);
-    return;
+      productionHead: rootHead,
+    } };
   }
 
   const upgradeBranch = `upgrade/${latestTag}`;
-  const runtimeVersion = `${latestTag}-custom.1`;
-  const upgradePath = join(homedir(), '.botmux', 'releases', runtimeVersion);
+  const releaseTag = `release/${latestTag}-custom.1`;
+  const upgradePath = join(homedir(), '.botmux', 'releases', `${latestTag}-custom.1`);
   ensureUpgradeWorktree(root, upgradeBranch, upgradePath, remoteBase);
   try {
     git(upgradePath, ['merge', '--no-ff', latestTag, '-m', `merge: 合入 Botmux ${latestTag}`], { timeout: 180_000 });
   } catch (error) {
-    // 只有存在未合并文件时才归类为冲突；凭据、网络或 Git 环境失败保留原始错误。
     let conflicts = '';
     try {
       conflicts = git(upgradePath, ['diff', '--name-only', '--diff-filter=U']);
-    } catch {
-      // 二次诊断失败时不能覆盖最初的 merge 错误。
-    }
+    } catch { /* 二次诊断不能覆盖最初的 merge 错误。 */ }
     if (conflicts) {
-      fail(`官方同步发生合并冲突；已停在 ${upgradePath}，请人工处理冲突后再继续，生产分支尚未推进`);
+      throw new Error(`官方同步发生合并冲突；已停在 ${upgradePath}，请人工处理冲突后再继续，生产分支尚未推进`);
     }
     throw error;
   }
 
-  await run(upgradePath, process.execPath, ['scripts/check-release-toolchain.mjs']);
-  await run(upgradePath, 'pnpm', ['install', '--frozen-lockfile']);
-  // 本机 Git 2.20 不支持夹具使用的 `git init -b`，PID namespace 用例也依赖宿主内核；
-  // 其余 unit 全量执行，更新链路自身的测试不在排除范围内。
-  await run(upgradePath, 'pnpm', [
-    'exec',
-    'vitest',
-    'run',
-    '--project',
-    'unit',
-    ...compatibleUnitTests(upgradePath),
-  ], 20 * 60_000);
-  await run(upgradePath, 'pnpm', ['build'], 20 * 60_000);
-  const releaseTag = `release/${latestTag}-custom.1`;
-  if (git(upgradePath, ['tag', '--list', releaseTag])) fail(`候选标签已存在：${releaseTag}`);
-  git(upgradePath, ['tag', '-a', releaseTag, '-m', `release: ${latestTag} custom.1`]);
-  git(upgradePath, ['push', config.originRemote, `HEAD:refs/heads/${upgradeBranch}`], { timeout: 180_000 });
-  git(upgradePath, ['push', config.originRemote, `refs/tags/${releaseTag}`], { timeout: 180_000 });
-  git(upgradePath, ['push', config.originRemote, `HEAD:refs/heads/${INTEGRATION_BRANCH}`], { timeout: 180_000 });
-  git(upgradePath, ['push', config.originRemote, `HEAD:refs/heads/${config.productionBranch}`], { timeout: 180_000 });
-
-  const productionHead = git(upgradePath, ['rev-parse', 'HEAD']);
-  writeRuntimeManifest(upgradePath, releaseTag, productionHead);
-
-  git(root, [
-    'fetch',
-    config.originRemote,
-    `+refs/heads/${config.productionBranch}:refs/remotes/${config.originRemote}/${config.productionBranch}`,
-  ], { timeout: 180_000 });
-  git(root, ['merge', '--ff-only', remoteBase], { timeout: 180_000 });
-  await run(root, 'pnpm', ['install', '--frozen-lockfile']);
-  replaceDist(root, join(upgradePath, 'dist'), latestTag.slice(1));
-
-  const rollbackRoot = runtimeCurrentRoot(git);
-  const rollbackTags = git(rollbackRoot, ['tag', '--points-at', 'HEAD', '--list', 'deploy/v*-custom.*', '--sort=-v:refname'])
-    .split(/\r?\n/).filter(Boolean);
-  const rollbackVersion = rollbackTags[0]?.slice('deploy/'.length);
-  if (!rollbackVersion) fail('当前运行目录没有精确 deploy tag，拒绝覆盖 current');
-  backupActiveDist(rollbackRoot, rollbackVersion);
-  execFileSync(process.execPath, [
-    join(upgradePath, 'scripts', 'claim-botmux-bin.mjs'),
-    '--runtime-release', upgradePath,
-  ], { cwd: upgradePath, stdio: 'inherit' });
-
-  // dist 替换只代表候选已安装，不能冒充真实运行验收。Dashboard 会把 releaseTag
-  // 与 productionHead 写进 restart intent；新 daemon 三方回读一致后再统一执行
-  // release:record-deploy。命令行同步也必须在重启和健康检查后显式记录。
-  process.stdout.write(`${RESULT_PREFIX}${JSON.stringify({
-    ...baseResult,
-    changed: true,
+  const candidateHead = git(upgradePath, ['rev-parse', 'HEAD']);
+  const state = {
+    schemaVersion: 1,
+    status: 'prepared',
+    root,
+    config,
+    oldVersion: currentTag.slice(1),
+    newVersion: latestTag.slice(1),
     upgradeBranch,
+    upgradePath,
     releaseTag,
-    deployTag: null,
-    productionHead,
-    runtimeRoot: upgradePath,
-    rollbackRoot,
-  })}\n`);
+    candidateHead,
+    snapshot: captureSourceUpdateSnapshot(root, config),
+    preparedAt: new Date().toISOString(),
+  };
+  writeSourceUpdateState(statePath, state);
+  return { state };
 }
 
-main().catch(error => fail(error instanceof Error ? error.message : String(error)));
+async function verify(statePath, root, config) {
+  assertTrustedRoot(root, config);
+  const state = readSourceUpdateState(statePath, root, config);
+  const operations = {
+    snapshot: () => captureSourceUpdateSnapshot(root, config),
+    candidate: () => captureCandidateSnapshot(state.upgradePath),
+    now: () => new Date(),
+    runGates: async () => {
+      await run(state.upgradePath, process.execPath, ['scripts/check-release-toolchain.mjs']);
+      await run(state.upgradePath, 'corepack', ['pnpm@9.5.0', 'install', '--frozen-lockfile']);
+      await run(state.upgradePath, 'corepack', ['pnpm@9.5.0', 'test:upgrade-contract'], 20 * 60_000);
+      await run(state.upgradePath, 'corepack', [
+        'pnpm@9.5.0',
+        'exec',
+        'vitest',
+        'run',
+        '--project',
+        'unit',
+        ...compatibleUnitTests(state.upgradePath),
+      ], 20 * 60_000);
+      await run(state.upgradePath, 'corepack', ['pnpm@9.5.0', 'build'], 20 * 60_000);
+    },
+  };
+  const verified = await verifyPreparedSourceUpdate(state, operations);
+  writeSourceUpdateState(statePath, verified);
+  return verified;
+}
+
+async function promote(statePath, root, config) {
+  assertTrustedRoot(root, config);
+  const state = readSourceUpdateState(statePath, root, config);
+  const operations = {
+    snapshot: () => captureSourceUpdateSnapshot(root, config),
+    candidate: () => captureCandidateSnapshot(state.upgradePath),
+  };
+  await assertSourceUpdatePromotable(state, operations);
+  if (git(state.upgradePath, ['tag', '--list', state.releaseTag])) throw new Error(`候选标签已存在：${state.releaseTag}`);
+  writeRuntimeManifest(state.upgradePath, state.releaseTag, state.candidateHead);
+  git(state.upgradePath, ['tag', '-a', state.releaseTag, '-m', `release: v${state.newVersion} custom.1`]);
+  git(state.upgradePath, [
+    'push', '--atomic', config.originRemote,
+    `HEAD:refs/heads/${state.upgradeBranch}`,
+    `refs/tags/${state.releaseTag}:refs/tags/${state.releaseTag}`,
+    `HEAD:refs/heads/${INTEGRATION_BRANCH}`,
+    `HEAD:refs/heads/${config.productionBranch}`,
+  ], { timeout: 180_000 });
+
+  const remoteBase = `${config.originRemote}/${config.productionBranch}`;
+  git(root, ['fetch', config.originRemote, `+refs/heads/${config.productionBranch}:refs/remotes/${remoteBase}`], { timeout: 180_000 });
+  git(root, ['merge', '--ff-only', remoteBase], { timeout: 180_000 });
+  await run(root, 'corepack', ['pnpm@9.5.0', 'install', '--frozen-lockfile']);
+  replaceDist(root, join(state.upgradePath, 'dist'), state.newVersion);
+
+  const rollbackRoot = runtimeCurrentRoot(git);
+  const rollbackVersion = git(rollbackRoot, [
+    'tag', '--points-at', 'HEAD', '--list', 'deploy/v*-custom.*', '--sort=-v:refname',
+  ]).split(/\r?\n/).filter(Boolean)[0]?.slice('deploy/'.length);
+  if (!rollbackVersion) throw new Error('当前运行目录没有精确 deploy tag，拒绝覆盖 current');
+  backupActiveDist(rollbackRoot, rollbackVersion);
+  execFileSync(process.execPath, [
+    join(state.upgradePath, 'scripts', 'claim-botmux-bin.mjs'),
+    '--runtime-release', state.upgradePath,
+  ], { cwd: state.upgradePath, stdio: 'inherit' });
+
+  const promoted = { ...state, status: 'promoted', promotedAt: new Date().toISOString() };
+  writeSourceUpdateState(statePath, promoted);
+  return { ...baseResult(promoted), runtimeRoot: state.upgradePath, rollbackRoot };
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const root = rootArg(argv);
+  const phase = sourceUpdatePhase(argv);
+  const config = sourceUpdateConfigAt(root);
+  const statePath = sourceUpdateStatePath(config);
+  let state;
+  if (phase === 'prepare' || phase === 'all') {
+    const prepared = await prepare(root, config, statePath);
+    if (prepared.noChange) return emit(prepared.noChange);
+    state = prepared.state;
+    if (phase === 'prepare') return emit({ ...baseResult(state), phase: 'prepare', status: state.status });
+  }
+  if (phase === 'verify' || phase === 'all') {
+    state = await verify(statePath, root, config);
+    if (phase === 'verify') return emit({ ...baseResult(state), phase: 'verify', status: state.status });
+  }
+  const result = await promote(statePath, root, config);
+  emit(result);
+}
+
+main().catch(error => {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
+});

@@ -1,0 +1,272 @@
+{
+  "schemaVersion": 1,
+  "baseline": {
+    "upstreamTag": "v3.12.0",
+    "integrationBranch": "custom/dev",
+    "productionBranch": "custom/prod"
+  },
+  "capabilities": [
+    {
+      "id": "progress-card",
+      "criticality": "release-blocking",
+      "description": "结构化进度、终态、完整报告与外部任务状态投影。",
+      "entrypoints": [
+        {
+          "path": "src/core/worker-pool.ts",
+          "symbols": ["case 'progress_output'", "case 'turn_terminal'", "codexAppProgressCardFor"]
+        },
+        {
+          "path": "src/services/codex-app-progress-card.ts",
+          "symbols": ["class CodexAppProgressCard", "recordFinal", "settle"]
+        }
+      ],
+      "contracts": [
+        "进度卡投影失败不得阻断 durable turn terminal。",
+        "外部任务未终态或失败时不得把整体展示成无条件完成。"
+      ],
+      "tests": [
+        "test/codex-app-progress-card.test.ts",
+        "test/codex-app-progress-external.test.ts",
+        "test/codex-app-progress-structure.test.ts",
+        "test/turn-delivery-integration.test.ts"
+      ],
+      "runtimeProbes": [
+        "真实飞书卡片完成 running 到 terminal 的 POST/PATCH/readback。",
+        "最终回复与进度卡分别回读，证明投影失败不吞最终结论。"
+      ]
+    },
+    {
+      "id": "request-user-input",
+      "criticality": "release-blocking",
+      "description": "Codex App 原生选择题、ASK 单卡流与回答回灌。",
+      "entrypoints": [
+        {
+          "path": "src/im/lark/ask-card-flow.ts",
+          "symbols": ["buildPreviousAskFlowSegmentCard", "buildAskFlowCard"]
+        },
+        {
+          "path": "src/worker.ts",
+          "symbols": ["onRequestUserInput", "bridgeTraexUserInput"]
+        }
+      ],
+      "contracts": [
+        "回答必须绑定准确 session、turn 和 question id。",
+        "失败、超时或卡片发送失败必须 interrupt 原生 turn。"
+      ],
+      "tests": [
+        "test/ask-card-flow.test.ts",
+        "test/ask-card.test.ts",
+        "test/codex-app-user-input.integration.test.ts"
+      ],
+      "runtimeProbes": [
+        "真实选择卡点击后回灌答案并继续同一 Codex App turn。"
+      ]
+    },
+    {
+      "id": "final-reply-actions",
+      "criticality": "release-blocking",
+      "description": "最终回复 v2 推荐动作、一次性回调与可靠投递。",
+      "entrypoints": [
+        {
+          "path": "src/services/final-reply-actions.ts",
+          "symbols": ["extractFinalReplyActions", "FinalReplyAction"]
+        },
+        {
+          "path": "src/services/final-reply-action-projection.ts",
+          "symbols": ["createFinalReplyActionProjection"]
+        }
+      ],
+      "contracts": [
+        "动作卡必须绑定最终回复的准确 delivery receipt。",
+        "敏感状态变更必须携带 explicit authorization。"
+      ],
+      "tests": [
+        "test/final-reply-actions.test.ts",
+        "test/final-reply-action-projection-delivery.test.ts",
+        "test/card-handler-final-reply-action.test.ts"
+      ],
+      "runtimeProbes": [
+        "真实最终回复携带动作卡且一次性按钮成功后置灰。"
+      ]
+    },
+    {
+      "id": "durable-turn-recovery",
+      "criticality": "release-blocking",
+      "description": "终态账本、重启恢复、重复投递抑制和未闭环任务追溯。",
+      "entrypoints": [
+        {
+          "path": "src/services/turn-delivery-ledger.ts",
+          "symbols": ["TurnDeliveryLedger", "recordFinal", "recordDelivered"]
+        },
+        {
+          "path": "src/core/restart-turn-reconciler.ts",
+          "symbols": ["reconcileOutstandingTurns"]
+        }
+      ],
+      "contracts": [
+        "durable terminal 必须先于飞书 UI 投影持久化。",
+        "重启恢复不得重复发送已确认终态或恢复错误 worker generation。"
+      ],
+      "tests": [
+        "test/turn-delivery-ledger.test.ts",
+        "test/turn-delivery-integration.test.ts",
+        "test/restart-turn-reconciler.test.ts"
+      ],
+      "runtimeProbes": [
+        "受控重启后只恢复重启边界仍运行且未产生 final_output 的任务。"
+      ]
+    },
+    {
+      "id": "topic-status",
+      "criticality": "release-blocking",
+      "description": "话题列表 reply-preview 与 bot-root 状态投影。",
+      "entrypoints": [
+        {
+          "path": "src/services/topic-status.ts",
+          "symbols": ["progressStateTopicPhase", "buildTopicStatusRootCard"]
+        },
+        {
+          "path": "src/core/worker-pool.ts",
+          "symbols": ["updateTopicStatusBinding", "setTopicStatusWaiting"]
+        }
+      ],
+      "contracts": [
+        "blocked、failed、interrupted 和 external job 状态必须保持语义区分。",
+        "同一根消息更新必须串行并合并中间态。"
+      ],
+      "tests": [
+        "test/topic-status.test.ts",
+        "test/codex-app-progress-external.test.ts"
+      ],
+      "runtimeProbes": [
+        "真实话题分别验证 reply-preview 与 bot-root 的 running/terminal 投影。"
+      ]
+    },
+    {
+      "id": "owner-notices",
+      "criticality": "release-blocking",
+      "description": "Owner 主动通知统一策略、卡片槽位与重启新卡。",
+      "entrypoints": [
+        {
+          "path": "src/services/owner-notice.ts",
+          "symbols": ["deliverOwnerNotice", "OwnerNoticePolicy"]
+        },
+        {
+          "path": "scripts/audit-owner-notices.mjs",
+          "symbols": ["DIRECT_USER_MESSAGE_CALLS", "REVIEWED_OWNER_ADMIN_SENDS"]
+        }
+      ],
+      "contracts": [
+        "生产模块不得绕过 OwnerNoticeService 直接发送 owner/admin 私信。",
+        "每次真实重启必须新发维护卡，其它同类通知按策略复用。"
+      ],
+      "tests": [
+        "test/owner-notice-card-store.test.ts",
+        "test/owner-notice-policy-audit.test.ts"
+      ],
+      "runtimeProbes": [
+        "重启维护卡使用 fresh delivery，且原始卡片可回读维护原因。"
+      ]
+    },
+    {
+      "id": "custom-release-lifecycle",
+      "criticality": "release-blocking",
+      "description": "custom/dev、候选、custom/prod、deploy 的授权发布状态机。",
+      "entrypoints": [
+        {
+          "path": "scripts/custom-release.mjs",
+          "symbols": ["release:status", "release:join", "record-deploy"]
+        },
+        {
+          "path": "src/core/custom-release-runtime.ts",
+          "symbols": ["prepareCustomReleaseRuntime", "activateCustomReleaseRuntime"]
+        }
+      ],
+      "contracts": [
+        "join、freeze、promote、deploy 必须保持独立授权边界。",
+        "release 与 deploy annotated tag 不得移动或覆盖。"
+      ],
+      "tests": [
+        "test/custom-release-join.test.ts",
+        "test/custom-release-freeze.test.ts",
+        "test/custom-release-promote.test.ts",
+        "test/custom-release-deploy.test.ts",
+        "test/custom-release-runtime.test.ts"
+      ],
+      "runtimeProbes": [
+        "候选卡、远端分支、运行 manifest 和同号 deploy tag 完整一致。"
+      ]
+    },
+    {
+      "id": "versioned-runtime-rollback",
+      "criticality": "release-blocking",
+      "description": "不可变运行目录、current/controller 指针和安全回滚。",
+      "entrypoints": [
+        {
+          "path": "src/cli/runtime-rollback.ts",
+          "symbols": ["runRuntimeRollback"]
+        },
+        {
+          "path": "src/core/custom-release-deploy.ts",
+          "symbols": ["runCustomReleaseDeployment", "finalizeCustomReleaseDeployment"]
+        }
+      ],
+      "contracts": [
+        "回滚只接受完整 manifest 与远端 deploy tag 指向相同 commit 的版本。",
+        "目标启动失败必须恢复原 current，不得创建 deploy 留痕。"
+      ],
+      "tests": [
+        "test/runtime-rollback.test.ts",
+        "test/runtime-release-verification.test.ts",
+        "test/runtime-release-restart-driver.test.ts"
+      ],
+      "runtimeProbes": [
+        "current、controller、manifest、PM2 exec path 和 botmux status 身份一致。"
+      ]
+    },
+    {
+      "id": "production-skill-sync",
+      "criticality": "release-blocking",
+      "description": "维护 Skill 与真实 custom/prod 运行提交同版对齐。",
+      "entrypoints": [
+        {
+          "path": "src/core/production-skill-sync.ts",
+          "symbols": ["reconcileProductionMaintenanceSkillAt", "reconcileProductionMaintenanceSkill"]
+        }
+      ],
+      "contracts": [
+        "只更新已登记且来源匹配的维护 Skill。",
+        "Skill 同步失败不得阻断 daemon 启动，但必须向 owner 告警。"
+      ],
+      "tests": [
+        "test/production-skill-sync.test.ts"
+      ],
+      "runtimeProbes": [
+        "Skill registry 的 source、ref 与实际运行 custom/prod commit 一致。"
+      ]
+    },
+    {
+      "id": "official-source-update-gates",
+      "criticality": "release-blocking",
+      "description": "官方同步 prepare、verify、promote 分段门禁与失败隔离。",
+      "entrypoints": [
+        {
+          "path": "scripts/sync-official-source.mjs",
+          "symbols": ["prepare", "verify", "promote"]
+        }
+      ],
+      "contracts": [
+        "verify 成功前不得推进 custom/dev、custom/prod 或 runtime/current。",
+        "promote 必须重新核对 prepare 时冻结的分支和运行态快照。"
+      ],
+      "tests": [
+        "test/custom-capabilities-audit.test.ts",
+        "test/source-update-phases.test.ts",
+        "test/source-update.test.ts"
+      ],
+      "runtimeProbes": [
+        "失败演练回读 custom/dev、custom/prod 与 runtime/current 均保持 prepare 前状态。"
+      ]
+    }
+  ]
+}
