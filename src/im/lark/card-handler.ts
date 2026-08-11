@@ -78,7 +78,6 @@ import {
   type V3DistillationCardHandlerDeps,
 } from './v3-distillation-card-handler.js';
 import { handleAskCardAction, isAskCardAction } from './ask-card.js';
-import { isFrontendCrPreviewAction } from './frontend-cr-preview-handler.js';
 import { createCliAdapterSync } from '../../adapters/cli/registry.js';
 import { buildClosedSessionCard } from '../../core/closed-session-card.js';
 import { ttadkConfigModelChoices } from '../../setup/cli-selection.js';
@@ -142,8 +141,6 @@ export interface CardHandlerDeps {
   codexNotifierCardAction?: (data: CardActionData, larkAppId: string) => Promise<any>;
   /** 自定义待发版私聊卡动作；独立于任务会话，由 primary daemon 单点处理。 */
   customReleaseCardAction?: (data: CardActionData, larkAppId: string) => Promise<any>;
-  /** 前端 CR 可编辑预览动作；服务端记录绑定发起人、源消息和目标群。 */
-  frontendCrPreviewCardAction?: (data: CardActionData, larkAppId: string) => Promise<any>;
   /** 授权成功后重放之前被拦截的消息，让用户无需再 @ 一遍。 */
   replayGrantedMessage?: (data: any, larkAppId: string) => void;
   /** 将最终回复卡上的快捷按钮作为一个新的普通用户回合交回 daemon 统一路由。 */
@@ -1360,13 +1357,6 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
 
   if (isAskCardAction(value?.action)) {
     return handleAskCardAction(data);
-  }
-
-  if (isFrontendCrPreviewAction(value?.action) && larkAppId) {
-    if (!deps.frontendCrPreviewCardAction) {
-      return { toast: { type: 'error', content: '前端 CR 预览处理器未启用' } };
-    }
-    return deps.frontendCrPreviewCardAction(data, larkAppId);
   }
 
   if (
