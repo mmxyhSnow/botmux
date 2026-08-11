@@ -30,6 +30,8 @@ export interface EditableCardDefinition {
   previewTitle: string;
   notificationTitle: string;
   previewNote?: string;
+  /** 仅用于预览展示；正式投递始终使用 targetChatId。 */
+  targetChatDisplayName?: string;
   fields: EditableCardFieldDefinition[];
   previewElements: EditableCardTemplateElement[];
   notificationElements: EditableCardTemplateElement[];
@@ -142,6 +144,9 @@ export function parseEditableCardPreviewSpec(raw: string | unknown): EditableCar
   if (!CHAT_ID_PATTERN.test(targetChatId)) {
     throw new EditableCardPreviewValidationError('targetChatId 不是合法群聊 chat_id');
   }
+  const targetChatDisplayName = value.targetChatDisplayName === undefined
+    ? undefined
+    : boundedText(value.targetChatDisplayName, '目标群展示名', 100);
   const parsedFields = parseFields(value.fields);
   const fieldNames = new Set(parsedFields.definitions.map(field => field.name));
   const preview = isRecord(value.preview) ? value.preview : {};
@@ -152,6 +157,7 @@ export function parseEditableCardPreviewSpec(raw: string | unknown): EditableCar
     definition: {
       previewTitle: boundedText(preview.title, 'preview.title', 100),
       notificationTitle: boundedText(notification.title, 'notification.title', 100),
+      ...(targetChatDisplayName === undefined ? {} : { targetChatDisplayName }),
       ...(preview.note === undefined
         ? {}
         : { previewNote: boundedText(preview.note, 'preview.note', 500) }),

@@ -30,6 +30,8 @@ function setup(now?: number) {
 describe('通用可编辑卡片预览状态', () => {
   it('只允许准确发起人和源消息认领一次动作', () => {
     const { dataDir, draft } = setup();
+    expect(draft.targetChatId).toBe('oc_target123');
+    expect(draft.definition.targetChatDisplayName).toBe('示例评审群');
     const claim = (operatorOpenId: string, larkAppId = 'cli_app', sourceMessageId = 'om_preview') => claimEditableCardPreviewAction(dataDir, {
       previewId: draft.previewId,
       larkAppId,
