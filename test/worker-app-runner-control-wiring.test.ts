@@ -12,6 +12,15 @@ import {
 const workerSource = readFileSync(new URL('../src/worker.ts', import.meta.url), 'utf8');
 
 describe('worker app-runner control-channel wiring', () => {
+  it('projects true stalls on the existing session card without a duplicate text notification', () => {
+    const start = workerSource.indexOf('function codexAppLivenessStatus(');
+    const end = workerSource.indexOf('/**\n * True when this CLI', start);
+    const liveness = workerSource.slice(start, end);
+    expect(liveness).toContain("if (liveness.stalled) return 'stalled';");
+    expect(liveness).not.toContain("type: 'user_notify'");
+    expect(liveness).not.toContain('worker.codex_app.no_progress');
+  });
+
   it('uses the bounded decoder and resets it with worker turn state', () => {
     expect(workerSource).toContain('const appRunnerControlDecoder = new RunnerControlDecoder();');
     expect(workerSource).toContain('return appRunnerControlDecoder.push(');

@@ -45,6 +45,8 @@ export function frozenDisplayMode(fc: FrozenCard): DisplayMode {
  *  inside LarkImAdapter), NOT on this type. */
 export interface DaemonSession {
   session: Session;
+  /** 当前会话是否正在等待 ASK 卡片答复；仅驻内存，用于抑制误报并同步进度卡。 */
+  waitingForUser?: boolean;
   worker: ChildProcess | null;   // fork'd worker process
   /** True after the current worker generation has completed init. Kept
    * separate from workerPort because backends without a Web Terminal still

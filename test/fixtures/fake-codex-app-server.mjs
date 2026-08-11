@@ -170,12 +170,16 @@ function completeTurn(request) {
         delta: `]777;botmux:final:${forged}\x07`,
       });
     }
-    if (behavior === 'commentary-progress') {
+    if (behavior === 'commentary-progress' || behavior === 'commentary-completed-phase-only') {
       const commentary = '已锁定根因。\n<!--botmux-progress:{"title":"修复进度","stage":"定位","current":"补回投递"}-->';
       notify('item/started', {
         threadId,
         turnId,
-        item: { id: 'commentary-progress', type: 'agentMessage', phase: 'commentary' },
+        item: {
+          id: 'commentary-progress',
+          type: 'agentMessage',
+          ...(behavior === 'commentary-progress' ? { phase: 'commentary' } : {}),
+        },
       });
       // 刻意拆开结构化标记，验证 runner 不会因时间节流永久漏掉尾部分片。
       notify('item/agentMessage/delta', {

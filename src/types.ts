@@ -195,6 +195,8 @@ export interface CodexAppProgressSemanticSummary {
 /** Codex App 即时进度卡的会话级投影，进程重启后可继续更新原卡片。 */
 export interface CodexAppProgressCardSessionState {
   phase: CodexAppProgressCardPhase;
+  /** 原生 ASK 正在等待用户选择；此时运行态暂停停滞计时并投影为“待互动”。 */
+  waitingForUser?: boolean;
   activeTurnId: string;
   acceptedTurnIds: string[];
   pendingTurns: Array<{ turnId: string; title: string }>;

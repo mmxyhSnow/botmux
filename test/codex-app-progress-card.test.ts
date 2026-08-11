@@ -65,6 +65,28 @@ describe('Codex App 即时进度卡', () => {
     });
   });
 
+  it('ASK 等待期投影为待互动，作答后恢复处理中且不写停滞记录', async () => {
+    const h = harness();
+    await h.card.accept('om_turn', '确认发送');
+    await h.card.setWaitingForUser(true);
+
+    const waiting = JSON.parse(h.patches.at(-1)!.cardJson);
+    expect(waiting.header).toMatchObject({
+      template: 'orange',
+      title: { content: '待互动 · 确认发送' },
+    });
+    expect(waiting.body.elements[0].content).toContain('**当前** 等待你的选择');
+    expect(h.card.snapshot()?.content).toBe('[19:11:58] 已收到，开始处理。');
+
+    await h.card.setWaitingForUser(false);
+    const resumed = JSON.parse(h.patches.at(-1)!.cardJson);
+    expect(resumed.header).toMatchObject({
+      template: 'turquoise',
+      title: { content: '处理中 · 确认发送' },
+    });
+    expect(resumed.body.elements[0].content).toContain('**当前** 正在处理');
+  });
+
   it('首条、真实进展和终态分别记录北京时间', async () => {
     const h = harness();
     await h.card.accept('om_turn', '时间测试');

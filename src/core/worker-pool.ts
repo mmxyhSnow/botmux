@@ -823,8 +823,19 @@ function updateTopicStatusBinding(ds: DaemonSession, phase: TopicTaskPhase): boo
   return changed;
 }
 
-/** ASK 流程调用：开始等待时显示待互动，结束后恢复基础阶段。 */
-export function setTopicStatusWaiting(ds: DaemonSession, waiting: boolean): void {
+/** ASK 流程调用：同步进度卡等待态；机器人根卡再恢复其基础阶段。 */
+export async function setTopicStatusWaiting(ds: DaemonSession, waiting: boolean): Promise<void> {
+  ds.waitingForUser = waiting;
+  if (immediateProgressCardEnabled(ds)) {
+    try {
+      await codexAppProgressCardFor(ds).setWaitingForUser(waiting);
+    } catch (error) {
+      logger.warn(
+        `[codex-app-progress] ASK 等待态更新失败 session=${ds.session.sessionId.substring(0, 8)}: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
   const binding = ds.session.topicStatusBinding;
   if (!binding || binding.mode !== 'bot-root' || binding.waitingForUser === waiting) return;
   binding.waitingForUser = waiting;
@@ -905,6 +916,7 @@ export async function beginCodexAppProgressTurn(
   prompt?: string,
 ): Promise<void> {
   if (!turnId.startsWith('om_')) return;
+  ds.waitingForUser = false;
   const title = codexAppProgressCardTitle(prompt ?? ds.lastUserPrompt ?? ds.session.title);
   const binding = ds.session.topicStatusBinding;
   if (binding?.mode === 'bot-root') {

@@ -33,14 +33,16 @@ const PROGRESS_TIME_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
   hourCycle: 'h23',
 });
 
-function titlePrefix(phase: CodexAppProgressCardPhase): string {
+function titlePrefix(phase: CodexAppProgressCardPhase, waitingForUser = false): string {
+  if (phase === 'running' && waitingForUser) return '待互动';
   if (phase === 'running') return '处理中';
   if (phase === 'completed') return '已完成';
   if (phase === 'failed') return '处理失败';
   return '已中断';
 }
 
-function cardTemplate(phase: CodexAppProgressCardPhase): string {
+function cardTemplate(phase: CodexAppProgressCardPhase, waitingForUser = false): string {
+  if (phase === 'running' && waitingForUser) return 'orange';
   if (phase === 'running') return 'turquoise';
   if (phase === 'completed') return 'green';
   if (phase === 'failed') return 'red';
@@ -70,8 +72,19 @@ function fullHistoryEntries(state: CodexAppProgressCardSessionState): string[] {
 
 function overviewMarkdown(state: CodexAppProgressCardSessionState): string {
   const overview = state.overview;
+  if (state.waitingForUser) {
+    return [
+      overview
+        ? `阶段 ${overview.stage}　·　进度 ${
+            overview.total ? `${overview.completed.length}/${overview.total}` : `${overview.completed.length} 项`
+          }`
+        : undefined,
+      '**当前** 等待你的选择',
+      '**下一步** 收到选择后继续处理',
+    ].filter(Boolean).join('\n');
+  }
   if (!overview) {
-    return '**当前** 等待新的明确进展';
+    return '**当前** 正在处理';
   }
   const externalDetail = externalJobLines(overview.external);
   return [
@@ -178,7 +191,7 @@ export function renderCodexAppProgressCard(
   const pageNumber = options.pageNumber ?? state.pageNumber ?? 1;
   const title = options.archived
     ? `进度 ${pageNumber} · 已归档 · ${state.title}`
-    : options.titleOverride ?? `${titlePrefix(state.phase)} · ${state.title}`;
+    : options.titleOverride ?? `${titlePrefix(state.phase, state.waitingForUser)} · ${state.title}`;
   const nowMs = options.nowMs ?? Date.now();
   const history = options.content
     ? splitProgressCardEntries(options.content)
@@ -208,7 +221,7 @@ export function renderCodexAppProgressCard(
         ? 'grey'
         : state.phase === 'running' && state.overview?.blocker
           ? 'orange'
-          : cardTemplate(state.phase),
+          : cardTemplate(state.phase, state.waitingForUser),
       title: {
         tag: 'plain_text',
         content: title,

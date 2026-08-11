@@ -213,6 +213,21 @@ export class CodexAppProgressCard {
     });
   }
 
+  /** ASK 等待态只更新当前投影，不把用户思考时间写成执行停滞或过程噪音。 */
+  setWaitingForUser(waitingForUser: boolean): Promise<void> {
+    return this.enqueue(async () => {
+      if (
+        !this.state
+        || this.state.phase !== 'running'
+        || this.state.waitingForUser === waitingForUser
+      ) return;
+      this.state.waitingForUser = waitingForUser;
+      this.state.updatedAtMs = this.now().getTime();
+      this.persist();
+      await this.syncCard();
+    });
+  }
+
   /** 权威终态只结算属于当前卡片的回合。 */
   settle(
     turnId: string,
@@ -225,6 +240,7 @@ export class CodexAppProgressCard {
         || !this.state.acceptedTurnIds.includes(turnId)
       ) return;
       this.state.phase = phase;
+      this.state.waitingForUser = false;
       const now = this.now();
       appendCodexAppProgressEntry(
         this.state,
@@ -276,6 +292,7 @@ export class CodexAppProgressCard {
     const now = this.now();
     this.state = {
       phase: 'running',
+      waitingForUser: false,
       activeTurnId: turnId,
       acceptedTurnIds: [turnId],
       pendingTurns: remainingPending,
