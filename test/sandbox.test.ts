@@ -199,6 +199,23 @@ describe('validateRelayRequest', () => {
     expect(r.value.flags).toEqual(['--no-mention']);
   });
 
+  it('accepts one editable card spec and rejects ambiguous or traversing inputs', () => {
+    expect(validateRelayRequest({
+      contentFile: 'c.content',
+      editableCardFile: 'preview.json',
+      flags: ['--no-mention'],
+    })).toMatchObject({
+      ok: true,
+      value: { contentName: 'c.content', editableCardName: 'preview.json' },
+    });
+    expect(validateRelayRequest({
+      contentFile: 'c.content', editableCardFile: '../preview.json',
+    }).ok).toBe(false);
+    expect(validateRelayRequest({
+      contentFile: 'c.content', cardFile: 'card.json', editableCardFile: 'preview.json',
+    }).ok).toBe(false);
+  });
+
   it('validates and preserves a frozen relay origin', () => {
     const r = validateRelayRequest({
       contentFile: 'c.content',

@@ -316,7 +316,7 @@ botmux send --attention=blocked --mention-back "缺 TOS 上传密钥，拿不到
 
 ### 纯文本（最常见）
 
-**正文输入契约**：\`botmux send [content]\` 接收原始正文，不是 JSON；只有 \`--card-json\` / \`--card-file\` 的卡片输入才按 JSON 解析。不要先对普通正文执行 \`JSON.stringify\`、把换行手动替换成 \`\\n\`，再把结果塞进位置参数；外层工具协议会自行编码命令字符串，shell / botmux 也不会把字面量 \`\\n\` 反解成换行。
+**正文输入契约**：\`botmux send [content]\` 接收原始正文，不是 JSON；\`--card-json\` / \`--card-file\` 按卡片 JSON 解析，\`--editable-card-file\` 按受限可编辑卡规格解析。不要先对普通正文执行 \`JSON.stringify\`、把换行手动替换成 \`\\n\`，再把结果塞进位置参数；外层工具协议会自行编码命令字符串，shell / botmux 也不会把字面量 \`\\n\` 反解成换行。
 
 位置参数只用于单行正文。多行正文不要写成 \`botmux send "第一行\\n第二行"\`，必须直接走 quoted heredoc / stdin；在 Windows/PowerShell 里发送包含中文或 emoji 的多行内容时，必须先写 UTF-8 文件，再用 \`--content-file\`，不要把中文直接通过 here-string、\`echo\` 或管道送进 stdin。
 
@@ -427,6 +427,16 @@ botmux send --card-file /tmp/card.json --no-mention
 botmux send --card-json '{"schema":"2.0","body":{"direction":"vertical","elements":[{"tag":"markdown","content":"**Done**"}]}}' --mention-back
 \`\`\`
 
+### 受限可编辑预览
+
+\`--editable-card-file <path>\` 从结构化规格生成带文字输入框、“发送”和“重新生成”按钮的预览。它是业务无关的安全底座：规格声明标题、字段和 markdown/hr 模板；创建时锁定本轮触发者、目标群和静态模板，回调只能提交已声明字段的文字值。
+
+该入口只供经过审查的 Skill 或宿主流程使用，不要把用户提供的原始 JSON 原样转发。调用时必须使用 \`--no-mention\`；真正的 mention 应写在锁定模板里。正式发送卡不含输入框或按钮，旧预览在发送或重新生成后失效。
+
+\`\`\`bash
+botmux send --editable-card-file /tmp/editable-preview.json --no-mention
+\`\`\`
+
 ### @mention 其他机器人协作
 
 \`\`\`bash
@@ -510,6 +520,7 @@ botmux send --top-level --chat-id oc_xxxxxxxxxxxx "📦 自动推送内容..."
 | \`--video-covers <path>\` | 视频封面图片，可重复，按顺序对应 \`--videos\` |
 | \`--card-file <path>\` | 直接发送 interactive card JSON 文件（纯展示 + open_url，交互控件被拒） |
 | \`--card-json <json>\` | 直接发送 interactive card JSON 字符串（纯展示 + open_url，交互控件被拒） |
+| \`--editable-card-file <path>\` | 从受限结构化规格生成通用可编辑预览；仅本轮触发者可操作，目标和模板创建时锁定 |
 | \`--mention <open_id[:name]>\` | @mention，可重复。带 \`:name\` 时文本里的 \`@name\` 会被替换成 \<at\> 标签；只传 open_id 则在消息末尾追加 @。用 \`botmux bots list\` 查 open_id |
 | \`--mention-back\` | @ 回本轮触发消息的发送者（open_id 自动从会话取）。满足 @ 硬门 |
 | \`--no-mention\` | 明确声明本条不 @ 任何人。满足 @ 硬门 |

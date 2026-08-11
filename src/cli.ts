@@ -126,6 +126,9 @@ import {
   type Pm2ExactStartClient,
 } from './cli/pm2-exact-start.js';
 import { dispatchPrimaryMessage, findStdinAliasAttachment, normalizeInteractiveCardInput, sendFileAttachments, sendVideoAttachments, shouldSendAsPureVideo, validateVideoAttachments } from './cli/send-dispatch.js';
+import { buildEditableCardPreviewCard } from './im/lark/editable-card-preview-card.js';
+import { parseEditableCardPreviewSpec, type EditableCardPreviewSpec } from './services/editable-card-preview-model.js';
+import { bindEditableCardPreviewMessage, createEditableCardPreviewDraft, failEditableCardPreviewDraft, type EditableCardPreviewRecord } from './services/editable-card-preview-store.js';
 import { dispatchDeferredTopicSend, reusableDeferredTopicRoot, type DeferredScheduleRunData } from './cli/deferred-topic-send.js';
 import { readDeferredTopicBinding } from './core/deferred-topic-binding.js';
 import { resolveDaemonEnv } from './cli/daemon-lifecycle-env.js';
@@ -6931,6 +6934,7 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
        --video-covers <path>           视频封面图片（可重复，按顺序对应 --videos）
        --card-file <path>              直接发送飞书/Lark interactive 卡片 JSON
        --card-json <json>              直接发送飞书/Lark interactive 卡片 JSON 字符串
+       --editable-card-file <path>     从受限结构化规格生成可编辑预览卡
        --mention <open_id:name>        @提及（可重复）
        --mention-back                  @回本轮触发消息的发送者（open_id 自动取自会话）
        --no-mention                    明确声明本条不@任何人
@@ -7989,9 +7993,10 @@ async function relaySend(
   if (!sid) { console.error('relay: 无法确定 session-id'); process.exit(1); }
   const cardJsonArg = argValue(rest, '--card-json');
   const cardFile = argValue(rest, '--card-file');
+  const editableCardFile = argValue(rest, '--editable-card-file');
   let cardContent = '';
-  if (cardJsonArg !== undefined && cardFile !== undefined) {
-    console.error('relay: --card-json 与 --card-file 不能同时使用');
+  if ([cardJsonArg, cardFile, editableCardFile].filter(value => value !== undefined).length > 1) {
+    console.error('relay: --card-json、--card-file 与 --editable-card-file 不能同时使用');
     process.exit(2);
   }
   if (cardJsonArg !== undefined) {
@@ -8000,10 +8005,15 @@ async function relaySend(
     if (!existsSync(cardFile)) { console.error(`relay: 文件不存在: ${cardFile}`); process.exit(1); }
     cardContent = readFileSync(cardFile, 'utf-8');
   }
+  let editableCardContent = '';
+  if (editableCardFile !== undefined) {
+    if (!existsSync(editableCardFile)) { console.error(`relay: 文件不存在: ${editableCardFile}`); process.exit(1); }
+    editableCardContent = readFileSync(editableCardFile, 'utf-8');
+  }
   // Resolve content with the same precedence as cmdSend (content-file > positional > stdin)
   const contentFile = argValue(rest, '--content-file');
   let content = '';
-  if (cardJsonArg !== undefined || cardFile !== undefined) {
+  if (cardJsonArg !== undefined || cardFile !== undefined || editableCardFile !== undefined) {
     content = '';
   } else if (contentFile) {
     content = existsSync(contentFile) ? readFileSync(contentFile, 'utf-8') : '';
@@ -8016,7 +8026,7 @@ async function relaySend(
     const pos = positionals(rest, ['--card', '--text', '--top-level', '--no-quote', '--mention-back', '--no-mention', '--anyway', '--voice']);
     content = pos.length > 0 ? pos.join(' ') : await readStdin();
   }
-  const preparedCardContent = cardJsonArg === undefined && cardFile === undefined && !rest.includes('--voice')
+  const preparedCardContent = cardJsonArg === undefined && cardFile === undefined && editableCardFile === undefined && !rest.includes('--voice')
     ? prepareCardMarkdown(extractCardText(content), process.cwd(), 'filesystem')
     : undefined;
   const id = randomBytes(8).toString('hex');
@@ -8048,6 +8058,13 @@ async function relaySend(
     cardBase = `${id}.card.json`;
     cardOutfile = join(relayDir, cardBase);
     writeFileSync(cardOutfile, cardContent);
+  }
+  let editableCardBase: string | undefined;
+  let editableCardOutfile: string | undefined;
+  if (editableCardFile !== undefined) {
+    editableCardBase = `${id}.editable-card.json`;
+    editableCardOutfile = join(relayDir, editableCardBase);
+    writeFileSync(editableCardOutfile, editableCardContent);
   }
 
   // Copy attachments into the outbox; carry only basenames.
@@ -8087,6 +8104,7 @@ async function relaySend(
     contentFile: contentBase,
     preparedContentFile: preparedContentBase,
     cardFile: cardBase,
+    editableCardFile: editableCardBase,
     attachments,
     videos,
     videoCovers,
@@ -8104,6 +8122,7 @@ async function relaySend(
         try { unlinkSync(cfile); } catch { /* */ }
         if (preparedContentOutfile) { try { unlinkSync(preparedContentOutfile); } catch { /* */ } }
         if (cardOutfile) { try { unlinkSync(cardOutfile); } catch { /* */ } }
+        if (editableCardOutfile) { try { unlinkSync(editableCardOutfile); } catch { /* */ } }
         if (res.stdout) process.stdout.write(res.stdout);
         if (res.stderr) process.stderr.write(res.stderr);
         process.exit(res.code ?? 0);
@@ -8704,27 +8723,34 @@ async function cmdSend(rest: string[]): Promise<void> {
     console.error('botmux send: --card-json 需要 JSON 字符串参数');
     process.exit(2);
   }
+  if (flagPresentButValueMissing(rest, '--editable-card-file', true)) {
+    console.error('botmux send: --editable-card-file 需要路径参数');
+    process.exit(2);
+  }
   const cardJsonArg = argValue(rest, '--card-json');
   const cardFile = argValue(rest, '--card-file');
+  const editableCardFile = argValue(rest, '--editable-card-file');
   const customCardRequested = cardJsonArg !== undefined || cardFile !== undefined;
+  const editableCardRequested = editableCardFile !== undefined;
+  const structuredCardRequested = customCardRequested || editableCardRequested;
   const managedCustomCardError = managedVcCustomCardError(
     !!vcMeetingManagedSendOrigin,
-    customCardRequested,
+    structuredCardRequested,
   );
   if (managedCustomCardError) {
     console.error(`botmux send refused for a managed VC turn: ${managedCustomCardError}`);
     process.exit(2);
   }
-  if (cardJsonArg !== undefined && cardFile !== undefined) {
-    console.error('botmux send: --card-json 与 --card-file 不能同时使用');
+  if ([cardJsonArg, cardFile, editableCardFile].filter(value => value !== undefined).length > 1) {
+    console.error('botmux send: --card-json、--card-file 与 --editable-card-file 不能同时使用');
     process.exit(2);
   }
   const images = argValues(rest, '--image', '--images');
   const files = argValues(rest, '--file', '--files');
   const videos = argValues(rest, '--video', '--videos');
   const videoCovers = argValues(rest, '--video-cover', '--video-covers');
-  if (customCardRequested && (images.length > 0 || files.length > 0 || videos.length > 0 || videoCovers.length > 0)) {
-    console.error('botmux send: --card-file/--card-json 暂不与 --images/--files/--videos 混用；请把素材先上传为飞书资源并写入卡片 JSON');
+  if (structuredCardRequested && (images.length > 0 || files.length > 0 || videos.length > 0 || videoCovers.length > 0)) {
+    console.error('botmux send: 卡片或可编辑预览暂不与 --images/--files/--videos 混用');
     process.exit(2);
   }
   const videoValidation = validateVideoAttachments(videos, videoCovers);
@@ -8748,8 +8774,8 @@ async function cmdSend(rest: string[]): Promise<void> {
   }
   const mentionArgs = argValues(rest, '--mention');  // "open_id:Display Name"
   const contentFile = argValue(rest, '--content-file');
-  if (customCardRequested && contentFile) {
-    console.error('botmux send: --card-file/--card-json 不能与 --content-file 混用');
+  if (structuredCardRequested && contentFile) {
+    console.error('botmux send: 卡片或可编辑预览不能与 --content-file 混用');
     process.exit(2);
   }
   // 回复一律走交互卡片。`--card` / `--text` 是隐藏的旧脚本兼容 no-op：纯文本
@@ -8803,8 +8829,8 @@ async function cmdSend(rest: string[]): Promise<void> {
     console.error(`botmux send refused for a managed VC turn: ${managedControlError}`);
     process.exit(2);
   }
-  if (customCardRequested && asVoice) {
-    console.error('botmux send: --card-file/--card-json 不能与 --voice 混用');
+  if (structuredCardRequested && asVoice) {
+    console.error('botmux send: 卡片或可编辑预览不能与 --voice 混用');
     process.exit(2);
   }
 
@@ -9004,6 +9030,7 @@ async function cmdSend(rest: string[]): Promise<void> {
       || videoAttachments.length > 0
       || videoCovers.length > 0
       || customCardRequested
+      || editableCardRequested
       || attention.requested
       || explicitQuote !== undefined
       || noQuote) {
@@ -9015,7 +9042,22 @@ async function cmdSend(rest: string[]): Promise<void> {
   // Read content from: --content-file > positional arg > stdin
   let content = '';
   let customCard: Record<string, unknown> | undefined;
-  if (customCardRequested) {
+  let editableCardSpec: EditableCardPreviewSpec | undefined;
+  let editableCardDraft: EditableCardPreviewRecord | undefined;
+  if (editableCardRequested) {
+    const unexpectedText = positionals(rest, ['--card', '--text', '--top-level', '--no-quote', '--mention-back', '--no-mention', '--anyway', '--voice', '--attention']);
+    if (unexpectedText.length > 0) {
+      console.error('botmux send: --editable-card-file 不接受正文参数；字段请写入结构化规格');
+      process.exit(2);
+    }
+    if (!existsSync(editableCardFile!)) { console.error(`文件不存在: ${editableCardFile}`); process.exit(1); }
+    try {
+      editableCardSpec = parseEditableCardPreviewSpec(readFileSync(editableCardFile!, 'utf-8'));
+    } catch (error) {
+      console.error(`botmux send: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(2);
+    }
+  } else if (customCardRequested) {
     const unexpectedText = positionals(rest, ['--card', '--text', '--top-level', '--no-quote', '--mention-back', '--no-mention', '--anyway', '--voice', '--attention']);
     if (unexpectedText.length > 0) {
       console.error('botmux send: --card-file/--card-json 发送自定义卡片时不接受正文参数；卡片内容请写入 JSON');
@@ -9040,7 +9082,7 @@ async function cmdSend(rest: string[]): Promise<void> {
       content = await readStdin();
     }
   }
-  if (!contentFile && !customCardRequested) rejectLikelyWindowsStdinMojibake(content);
+  if (!contentFile && !structuredCardRequested) rejectLikelyWindowsStdinMojibake(content);
 
   const managedPayloadError = managedVcSendPayloadError({
     managed: !!vcMeetingManagedSendOrigin,
@@ -9056,7 +9098,7 @@ async function cmdSend(rest: string[]): Promise<void> {
     process.exit(2);
   }
 
-  if (!customCard && !content.trim() && images.length === 0 && files.length === 0 && videoAttachments.length === 0) {
+  if (!customCard && !editableCardSpec && !content.trim() && images.length === 0 && files.length === 0 && videoAttachments.length === 0) {
     console.error('没有内容可发送。用法:\n  echo "消息" | botmux send\n  botmux send "消息"\n  botmux send --content-file /tmp/msg.md --images /tmp/chart.png\n  botmux send --videos /tmp/replay.mp4 --video-covers /tmp/cover.png --no-mention "视频预览"');
     process.exit(1);
   }
@@ -9337,6 +9379,16 @@ async function cmdSend(rest: string[]): Promise<void> {
     // bug #750 fixed). pickTurnReplyTarget already enforces
     // quoteTargetId===currentTurnId for its own hit.
     ?? (currentTurnId ? undefined : s.quoteTargetSenderOpenId);
+  if (editableCardRequested) {
+    if (!replyTargetSenderOpenId) {
+      console.error('botmux send: 可编辑预览无法确认本轮发起人，拒绝创建可操作卡片');
+      process.exit(2);
+    }
+    if (!noMention || mentionBack || mentionArgs.length > 0) {
+      console.error('botmux send: 可编辑预览必须使用 --no-mention，静态 mention 由锁定模板生成');
+      process.exit(2);
+    }
+  }
 
   // @ hard-gate (config.send.requireMentionDecision, default on): force the
   // model to make an explicit @ decision before sending. --top-level publish
@@ -9781,6 +9833,19 @@ async function cmdSend(rest: string[]): Promise<void> {
       process.exit(2);
     }
 
+    // 可编辑预览只接受受限结构化规格。先持久化 creating 记录，再把唯一
+    // preview_id 写进按钮；回调不会信任卡片里的目标、模板或身份。
+    if (editableCardSpec) {
+      editableCardDraft = createEditableCardPreviewDraft(dataDir, {
+        larkAppId: appId,
+        initiatorOpenId: replyTargetSenderOpenId!,
+        targetChatId: editableCardSpec.targetChatId,
+        editable: editableCardSpec.editable,
+        definition: editableCardSpec.definition,
+      });
+      customCard = JSON.parse(buildEditableCardPreviewCard(editableCardDraft)) as Record<string, unknown>;
+    }
+
     // Upload images only after the final rendered payload has passed the
     // managed side-effect gate above.
     const imageKeys: string[] = [];
@@ -10079,6 +10144,18 @@ async function cmdSend(rest: string[]): Promise<void> {
       });
       messageId = await dispatchPrimary(cardJson, 'interactive');
     }
+    let editableCardBindingStatus: 'active' | 'failed' | undefined;
+    if (editableCardDraft) {
+      try {
+        bindEditableCardPreviewMessage(dataDir, editableCardDraft.previewId, messageId);
+        editableCardBindingStatus = 'active';
+      } catch (error) {
+        editableCardBindingStatus = 'failed';
+        const reason = error instanceof Error ? error.message : String(error);
+        try { failEditableCardPreviewDraft(dataDir, editableCardDraft.previewId, reason); } catch { /* 保留原始错误 */ }
+        console.error(`⚠️ 可编辑预览已发送但服务端绑定失败，按钮将拒绝执行：${reason}`);
+      }
+    }
 
     // Bridge fallback marker — append-only jsonl per session. Same-thread
     // sends can suppress transcript fallback when their content appears to
@@ -10196,6 +10273,13 @@ async function cmdSend(rest: string[]): Promise<void> {
       sessionId: sid,
       quotedMessageId: primaryQuotedId,
       mentioned: mentions.map(m => ({ open_id: m.open_id, name: m.name })),
+      ...(editableCardDraft
+        ? {
+            previewId: editableCardDraft.previewId,
+            targetChatId: editableCardDraft.targetChatId,
+            previewBindingStatus: editableCardBindingStatus,
+          }
+        : {}),
       ...(deferredTopicRootMessageIdForOutput
         ? { deferredTopicRootMessageId: deferredTopicRootMessageIdForOutput, turnId: currentTurnId }
         : {}),
@@ -10208,6 +10292,9 @@ async function cmdSend(rest: string[]): Promise<void> {
         : {}),
     }));
   } catch (err: any) {
+    if (editableCardDraft) {
+      try { failEditableCardPreviewDraft(dataDir, editableCardDraft.previewId, err?.message ?? String(err)); } catch { /* 主错误优先 */ }
+    }
     console.error(`发送失败: ${err.message}`);
     process.exit(1);
   }

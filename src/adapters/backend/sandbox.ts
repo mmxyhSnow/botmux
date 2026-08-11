@@ -822,6 +822,7 @@ export interface RelayRequest {
   contentFile?: unknown;
   preparedContentFile?: unknown;
   cardFile?: unknown;
+  editableCardFile?: unknown;
   attachments?: unknown;
   videos?: unknown;
   videoCovers?: unknown;
@@ -842,6 +843,7 @@ export interface ValidatedRelay {
   contentName: string;
   preparedContentName?: string;
   cardName?: string;
+  editableCardName?: string;
   attachmentNames: string[];
   videoNames: string[];
   videoCoverNames: string[];
@@ -880,6 +882,17 @@ export function validateRelayRequest(req: RelayRequest): { ok: true; value: Vali
       ? req.cardFile
       : null;
   if (cardName === null) return { ok: false, error: 'cardFile must be a plain outbox basename' };
+  const editableCardName = req.editableCardFile === undefined
+    ? undefined
+    : safeName(req.editableCardFile)
+      ? req.editableCardFile
+      : null;
+  if (editableCardName === null) {
+    return { ok: false, error: 'editableCardFile must be a plain outbox basename' };
+  }
+  if (cardName && editableCardName) {
+    return { ok: false, error: 'cardFile and editableCardFile are mutually exclusive' };
+  }
   const attachmentNames: string[] = [];
   for (const a of Array.isArray(req.attachments) ? req.attachments : []) {
     if (!safeName(a)) return { ok: false, error: 'attachment must be a plain outbox basename' };
@@ -942,6 +955,7 @@ export function validateRelayRequest(req: RelayRequest): { ok: true; value: Vali
       contentName: req.contentFile,
       preparedContentName,
       cardName,
+      editableCardName,
       attachmentNames,
       videoNames,
       videoCoverNames,
@@ -1100,6 +1114,15 @@ export function startOutboxWatcher(
         }
         staged.push(cardPath);
       }
+      let editableCardPath: string | undefined;
+      if (v.value.editableCardName) {
+        editableCardPath = join(staging, `${id}.editable-card.json`);
+        if (!materializeOutboxFile(outbox, v.value.editableCardName, editableCardPath)) {
+          finish(id, reqPath, name, staged, 1, '', 'relay rejected: editable card spec not a regular file in outbox');
+          continue;
+        }
+        staged.push(editableCardPath);
+      }
       let attBad = false;
       const attPaths: string[] = [];
       v.value.attachmentNames.forEach((an, i) => {
@@ -1130,7 +1153,11 @@ export function startOutboxWatcher(
 
       const hostArgs = [
         ...v.value.flags,
-        ...(cardPath ? ['--card-file', cardPath] : ['--content-file', contentDest]),
+        ...(editableCardPath
+          ? ['--editable-card-file', editableCardPath]
+          : cardPath
+            ? ['--card-file', cardPath]
+            : ['--content-file', contentDest]),
         ...attPaths.flatMap(a => ['--files', a]),
         ...videoPaths.flatMap(a => ['--videos', a]),
         ...videoCoverPaths.flatMap(a => ['--video-covers', a]),
