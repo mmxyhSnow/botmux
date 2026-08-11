@@ -77,6 +77,30 @@ describe('Codex App 真实进展提取', () => {
     ]);
   });
 
+  it('流式标记只到达 <! 时等待完整标记，不产生碎片或残余 JSON', () => {
+    const progress = new CodexAppProgressThrottler({ minIntervalMs: 0 });
+    const marker = '<!--botmux-progress:'
+      + '{"stage":"验证","current":"运行回归","completed":[],"next":"构建"}'
+      + '-->';
+
+    expect(progress.drainSnapshots({
+      turnId: 'om_1',
+      text: '代码已经修改。\n<!',
+      startedAtMs: 1,
+      nowMs: 2,
+    }).map(item => item.content)).toEqual(['代码已经修改。']);
+
+    expect(progress.drainSnapshots({
+      turnId: 'om_1',
+      text: `代码已经修改。\n${marker}继续检查。`,
+      startedAtMs: 1,
+      nowMs: 3,
+    }).map(item => item.content)).toEqual([
+      marker,
+      '继续检查。',
+    ]);
+  });
+
   it('标题移除附件占位并按中文视觉宽度截断', () => {
     expect(codexAppProgressCardTitle('[图片 1] 帮我检查 botmux 部署')).toBe('帮我检查 botmux 部署');
     expect(codexAppProgressCardTitle('这是一段需要被截断的很长很长很长很长的用户问题', 10))

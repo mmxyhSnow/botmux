@@ -1,7 +1,7 @@
 /**
- * botmux-progress 结构化标记里 external 字段的解析与校验回归。
- * 契约：external 必须是 {label,status} 的数组；任一项缺字段或超界则整段标记作废，
- * 不得污染看板，也不得把非法输入当成外部成功。
+ * botmux-progress 结构化标记的解析、清洗与 external 字段校验回归。
+ * 契约：内部标记及流式残片不得进入可见正文；external 任一项缺字段或超界则
+ * 整段标记作废，不得污染看板，也不得把非法输入当成外部成功。
  */
 import { describe, expect, it } from 'vitest';
 import { parseCodexAppProgress } from '../src/services/codex-app-progress-structure.js';
@@ -10,7 +10,7 @@ function marker(overview: Record<string, unknown>): string {
   return `进展。<!--botmux-progress:${JSON.stringify(overview)}-->`;
 }
 
-describe('botmux-progress external 字段解析', () => {
+describe('botmux-progress 结构化标记解析', () => {
   it('解析合法 external 并从正文剥离标记', () => {
     const parsed = parseCodexAppProgress(marker({
       stage: '触发 HAR', current: 'HAR 已触发', completed: [], next: '等待终态',
@@ -57,5 +57,18 @@ describe('botmux-progress external 字段解析', () => {
     }));
     expect(parsed.overview).toBeDefined();
     expect(parsed.overview?.external).toBeUndefined();
+  });
+
+  it('清理旧流式分句留下的 <! 与残余标记，同时保留有效正文和看板字段', () => {
+    const overview = {
+      stage: '验证', current: '运行回归', completed: [], next: '构建',
+    };
+    const orphaned = parseCodexAppProgress(
+      `--botmux-progress:${JSON.stringify(overview)}-->继续检查。`,
+    );
+
+    expect(parseCodexAppProgress('<!').content).toBe('');
+    expect(orphaned.content).toBe('继续检查。');
+    expect(orphaned.overview).toMatchObject(overview);
   });
 });

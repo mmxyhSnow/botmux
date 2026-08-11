@@ -38,7 +38,10 @@ function isSentenceEnd(text: string, index: number): boolean {
 function nextCompleteSentence(text: string): { content: string; consumed: number } | undefined {
   const leadingWhitespace = text.match(/^\s*/)?.[0].length ?? 0;
   const markerStart = '<!--botmux-progress:';
-  if (text.slice(leadingWhitespace).startsWith(markerStart)) {
+  const remaining = text.slice(leadingWhitespace);
+  // 流式 delta 可能暂时只到达 `<!`；必须等待前缀完整，不能把其中的 `!` 当成句末。
+  if (markerStart.startsWith(remaining)) return undefined;
+  if (remaining.startsWith(markerStart)) {
     const markerEnd = text.indexOf('-->', leadingWhitespace + markerStart.length);
     if (markerEnd >= 0) {
       const consumed = markerEnd + 3;
