@@ -822,6 +822,7 @@ export interface RelayRequest {
   contentFile?: unknown;
   preparedContentFile?: unknown;
   cardFile?: unknown;
+  crPreviewFile?: unknown;
   attachments?: unknown;
   videos?: unknown;
   videoCovers?: unknown;
@@ -842,6 +843,7 @@ export interface ValidatedRelay {
   contentName: string;
   preparedContentName?: string;
   cardName?: string;
+  crPreviewName?: string;
   attachmentNames: string[];
   videoNames: string[];
   videoCoverNames: string[];
@@ -880,6 +882,13 @@ export function validateRelayRequest(req: RelayRequest): { ok: true; value: Vali
       ? req.cardFile
       : null;
   if (cardName === null) return { ok: false, error: 'cardFile must be a plain outbox basename' };
+  const crPreviewName = req.crPreviewFile === undefined
+    ? undefined
+    : safeName(req.crPreviewFile)
+      ? req.crPreviewFile
+      : null;
+  if (crPreviewName === null) return { ok: false, error: 'crPreviewFile must be a plain outbox basename' };
+  if (cardName && crPreviewName) return { ok: false, error: 'cardFile and crPreviewFile are mutually exclusive' };
   const attachmentNames: string[] = [];
   for (const a of Array.isArray(req.attachments) ? req.attachments : []) {
     if (!safeName(a)) return { ok: false, error: 'attachment must be a plain outbox basename' };
@@ -942,6 +951,7 @@ export function validateRelayRequest(req: RelayRequest): { ok: true; value: Vali
       contentName: req.contentFile,
       preparedContentName,
       cardName,
+      crPreviewName,
       attachmentNames,
       videoNames,
       videoCoverNames,
@@ -1100,6 +1110,15 @@ export function startOutboxWatcher(
         }
         staged.push(cardPath);
       }
+      let crPreviewPath: string | undefined;
+      if (v.value.crPreviewName) {
+        crPreviewPath = join(staging, `${id}.cr-preview.json`);
+        if (!materializeOutboxFile(outbox, v.value.crPreviewName, crPreviewPath)) {
+          finish(id, reqPath, name, staged, 1, '', 'relay rejected: CR preview spec not a regular file in outbox');
+          continue;
+        }
+        staged.push(crPreviewPath);
+      }
       let attBad = false;
       const attPaths: string[] = [];
       v.value.attachmentNames.forEach((an, i) => {
@@ -1130,7 +1149,11 @@ export function startOutboxWatcher(
 
       const hostArgs = [
         ...v.value.flags,
-        ...(cardPath ? ['--card-file', cardPath] : ['--content-file', contentDest]),
+        ...(crPreviewPath
+          ? ['--cr-preview-file', crPreviewPath]
+          : cardPath
+            ? ['--card-file', cardPath]
+            : ['--content-file', contentDest]),
         ...attPaths.flatMap(a => ['--files', a]),
         ...videoPaths.flatMap(a => ['--videos', a]),
         ...videoCoverPaths.flatMap(a => ['--video-covers', a]),

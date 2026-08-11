@@ -16,10 +16,20 @@ describe('built-in botmux-send skill', () => {
     expect(skill!.content).toContain('Set-Content -LiteralPath $msg -Encoding utf8');
     expect(skill!.content).toContain('不要把中文直接通过 here-string');
     expect(skill!.content).toContain('botmux send [content]` 接收原始正文');
-    expect(skill!.content).toContain('只有 `--card-json` / `--card-file` 的卡片输入才按 JSON 解析');
+    expect(skill!.content).toContain('`--card-json` / `--card-file` 按卡片 JSON 解析');
     expect(skill!.content).toContain('JSON.stringify');
     expect(skill!.content).toContain('外层工具协议会自行编码命令字符串');
     expect(skill!.content).toContain('字面量 `\\n` 反解成换行');
+  });
+
+  it('teaches the trusted editable frontend CR preview flow', () => {
+    const skill = BUILTIN_SKILLS.find(s => s.name === 'botmux-send');
+    expect(skill).toBeDefined();
+    expect(skill!.content).toContain('--cr-preview-file');
+    expect(skill!.content).toContain('targetChatId');
+    expect(skill!.content).toContain('正式卡没有输入框和按钮');
+    expect(skill!.content).toContain('完整保留表单原文');
+    expect(skill!.content).toContain('服务端受保护记录');
   });
 
   it('warns that mention-back/no-mention are switches without values', () => {

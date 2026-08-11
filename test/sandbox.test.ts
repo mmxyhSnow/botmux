@@ -199,6 +199,27 @@ describe('validateRelayRequest', () => {
     expect(r.value.flags).toEqual(['--no-mention']);
   });
 
+  it('accepts one CR preview spec file and rejects ambiguous or traversing inputs', () => {
+    const r = validateRelayRequest({
+      contentFile: 'c.content',
+      crPreviewFile: 'preview.json',
+      flags: ['--no-mention'],
+    });
+    expect(r).toMatchObject({
+      ok: true,
+      value: { contentName: 'c.content', crPreviewName: 'preview.json' },
+    });
+    expect(validateRelayRequest({
+      contentFile: 'c.content',
+      crPreviewFile: '../preview.json',
+    }).ok).toBe(false);
+    expect(validateRelayRequest({
+      contentFile: 'c.content',
+      cardFile: 'card.json',
+      crPreviewFile: 'preview.json',
+    }).ok).toBe(false);
+  });
+
   it('validates and preserves a frozen relay origin', () => {
     const r = validateRelayRequest({
       contentFile: 'c.content',
