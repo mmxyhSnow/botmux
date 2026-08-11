@@ -1,6 +1,7 @@
 /** 通用可编辑预览测试共享规格。 */
 export const rawEditableSpec = {
   targetChatId: 'oc_target123',
+  targetChatDisplayName: '示例评审群',
   preview: {
     title: '示例 · 可编辑预览',
     note: '链接和真实 @ 不可编辑。',

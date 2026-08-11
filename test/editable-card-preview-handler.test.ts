@@ -76,6 +76,8 @@ describe('通用可编辑卡片预览回调', () => {
     const replacement = readEditableCardPreview(dataDir, old.replacementPreviewId!)!;
     expect(replacement.status).toBe('active');
     expect(replacement.editable.summary).toBe('修改摘要');
+    expect(replacement.targetChatId).toBe('oc_target123');
+    expect(replacement.definition.targetChatDisplayName).toBe('示例评审群');
     expect((result.card as any).data.header.title.content).toContain('已重新生成');
   });
 

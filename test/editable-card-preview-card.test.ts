@@ -26,6 +26,7 @@ describe('通用可编辑卡片预览', () => {
   it('解析业务无关的字段和静态模板', () => {
     const spec = parseEditableCardPreviewSpec(rawEditableSpec);
     expect(spec.targetChatId).toBe('oc_target123');
+    expect(spec.definition.targetChatDisplayName).toBe('示例评审群');
     expect(spec.definition.fields.map(field => field.name)).toEqual(['title', 'summary', 'status', 'channels']);
     expect(spec.editable.title).toBe('初始标题');
     expect(JSON.stringify(spec)).not.toContain('frontend_cr');
@@ -45,6 +46,15 @@ describe('通用可编辑卡片预览', () => {
     ]);
     expect(JSON.stringify(card)).toContain('<at id=ou_author123></at>');
     expect(JSON.stringify(card)).toContain('发送目标已锁定');
+    expect(JSON.stringify(card)).toContain('示例评审群');
+    expect(JSON.stringify(card)).not.toContain('oc_target123');
+  });
+
+  it('未提供目标群展示名时兼容显示 chat_id', () => {
+    const { targetChatDisplayName: _targetChatDisplayName, ...legacySpec } = rawEditableSpec;
+    const spec = parseEditableCardPreviewSpec(legacySpec);
+    const card = buildEditableCardPreviewCard({ previewId: 'preview-legacy', ...spec });
+    expect(card).toContain('oc_target123');
   });
 
   it('正式卡使用修改值且不含任何表单控件', () => {
@@ -84,5 +94,6 @@ describe('通用可编辑卡片预览', () => {
       fields: [...rawEditableSpec.fields, rawEditableSpec.fields[0]],
     })).toThrow(/重复/);
     expect(() => parseEditableCardPreviewSpec({ ...rawEditableSpec, targetChatId: 'ou_user' })).toThrow(/chat_id/);
+    expect(() => parseEditableCardPreviewSpec({ ...rawEditableSpec, targetChatDisplayName: '' })).toThrow(/展示名/);
   });
 });

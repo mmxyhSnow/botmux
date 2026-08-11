@@ -77,6 +77,7 @@ function actionButton(
 /** 构造只允许发起人提交的结构化编辑预览。 */
 export function buildEditableCardPreviewCard(input: EditableCardPreviewCardInput): string {
   const definition = input.definition;
+  const targetChatDisplay = definition.targetChatDisplayName ?? input.targetChatId;
   const sendButton = actionButton(input.previewId, EDITABLE_CARD_PREVIEW_SEND_ACTION, '发送', 'primary');
   const regenerateButton = actionButton(
     input.previewId,
@@ -86,7 +87,7 @@ export function buildEditableCardPreviewCard(input: EditableCardPreviewCardInput
   );
   const note = [
     definition.previewNote,
-    `发送目标已锁定：${inlineCode(input.targetChatId)}；静态模板和目标不可由回调修改。`,
+    `发送目标已锁定：${inlineCode(targetChatDisplay)}；静态模板和目标不可由回调修改。`,
   ].filter(Boolean).join('\n');
   return JSON.stringify({
     schema: '2.0',
