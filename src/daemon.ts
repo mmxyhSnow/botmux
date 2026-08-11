@@ -63,7 +63,7 @@ import {
 import { readSupervisorProcessStartIdentity } from './core/process-start-identity.js';
 import { statSync } from 'node:fs';
 import { addReaction, deleteMessage, getChatContext, getChatMode, getChatNameAndMode, getMessageChatId, listChatMemberOpenIds, MessageWithdrawnError, replyMessage, resolveAllowedUsersWithMap, sendMessage, sendUserMessage, updateMessage, type EntryResolveStatus } from './im/lark/client.js';
-import { handleFrontendCrPreviewAction } from './im/lark/frontend-cr-preview-handler.js';
+import { handleEditableCardPreviewAction } from './im/lark/editable-card-preview-handler.js';
 import { resolveGroupJoinPrompt, waitForAllowedUserInChat } from './core/auto-start.js';
 import {
   loadBotConfigAtIndex,
@@ -5051,7 +5051,7 @@ const cardDeps: CardHandlerDeps = {
       eventId: data.action?.value?.event_id,
     });
   },
-  frontendCrPreviewCardAction: (data, appId) => handleFrontendCrPreviewAction(data, {
+  editableCardPreviewAction: (data, appId) => handleEditableCardPreviewAction(data, {
     dataDir: config.session.dataDir,
     larkAppId: appId,
     sendFormal: (targetChatId, cardJson, providerKey) =>

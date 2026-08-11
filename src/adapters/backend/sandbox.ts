@@ -822,7 +822,7 @@ export interface RelayRequest {
   contentFile?: unknown;
   preparedContentFile?: unknown;
   cardFile?: unknown;
-  crPreviewFile?: unknown;
+  editableCardFile?: unknown;
   attachments?: unknown;
   videos?: unknown;
   videoCovers?: unknown;
@@ -843,7 +843,7 @@ export interface ValidatedRelay {
   contentName: string;
   preparedContentName?: string;
   cardName?: string;
-  crPreviewName?: string;
+  editableCardName?: string;
   attachmentNames: string[];
   videoNames: string[];
   videoCoverNames: string[];
@@ -882,13 +882,17 @@ export function validateRelayRequest(req: RelayRequest): { ok: true; value: Vali
       ? req.cardFile
       : null;
   if (cardName === null) return { ok: false, error: 'cardFile must be a plain outbox basename' };
-  const crPreviewName = req.crPreviewFile === undefined
+  const editableCardName = req.editableCardFile === undefined
     ? undefined
-    : safeName(req.crPreviewFile)
-      ? req.crPreviewFile
+    : safeName(req.editableCardFile)
+      ? req.editableCardFile
       : null;
-  if (crPreviewName === null) return { ok: false, error: 'crPreviewFile must be a plain outbox basename' };
-  if (cardName && crPreviewName) return { ok: false, error: 'cardFile and crPreviewFile are mutually exclusive' };
+  if (editableCardName === null) {
+    return { ok: false, error: 'editableCardFile must be a plain outbox basename' };
+  }
+  if (cardName && editableCardName) {
+    return { ok: false, error: 'cardFile and editableCardFile are mutually exclusive' };
+  }
   const attachmentNames: string[] = [];
   for (const a of Array.isArray(req.attachments) ? req.attachments : []) {
     if (!safeName(a)) return { ok: false, error: 'attachment must be a plain outbox basename' };
@@ -951,7 +955,7 @@ export function validateRelayRequest(req: RelayRequest): { ok: true; value: Vali
       contentName: req.contentFile,
       preparedContentName,
       cardName,
-      crPreviewName,
+      editableCardName,
       attachmentNames,
       videoNames,
       videoCoverNames,
@@ -1110,14 +1114,14 @@ export function startOutboxWatcher(
         }
         staged.push(cardPath);
       }
-      let crPreviewPath: string | undefined;
-      if (v.value.crPreviewName) {
-        crPreviewPath = join(staging, `${id}.cr-preview.json`);
-        if (!materializeOutboxFile(outbox, v.value.crPreviewName, crPreviewPath)) {
-          finish(id, reqPath, name, staged, 1, '', 'relay rejected: CR preview spec not a regular file in outbox');
+      let editableCardPath: string | undefined;
+      if (v.value.editableCardName) {
+        editableCardPath = join(staging, `${id}.editable-card.json`);
+        if (!materializeOutboxFile(outbox, v.value.editableCardName, editableCardPath)) {
+          finish(id, reqPath, name, staged, 1, '', 'relay rejected: editable card spec not a regular file in outbox');
           continue;
         }
-        staged.push(crPreviewPath);
+        staged.push(editableCardPath);
       }
       let attBad = false;
       const attPaths: string[] = [];
@@ -1149,8 +1153,8 @@ export function startOutboxWatcher(
 
       const hostArgs = [
         ...v.value.flags,
-        ...(crPreviewPath
-          ? ['--cr-preview-file', crPreviewPath]
+        ...(editableCardPath
+          ? ['--editable-card-file', editableCardPath]
           : cardPath
             ? ['--card-file', cardPath]
             : ['--content-file', contentDest]),

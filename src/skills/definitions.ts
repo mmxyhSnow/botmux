@@ -316,7 +316,7 @@ botmux send --attention=blocked --mention-back "缺 TOS 上传密钥，拿不到
 
 ### 纯文本（最常见）
 
-**正文输入契约**：\`botmux send [content]\` 接收原始正文，不是 JSON；\`--card-json\` / \`--card-file\` 按卡片 JSON 解析，\`--cr-preview-file\` 按前端 CR 结构化规格解析。不要先对普通正文执行 \`JSON.stringify\`、把换行手动替换成 \`\\n\`，再把结果塞进位置参数；外层工具协议会自行编码命令字符串，shell / botmux 也不会把字面量 \`\\n\` 反解成换行。
+**正文输入契约**：\`botmux send [content]\` 接收原始正文，不是 JSON；\`--card-json\` / \`--card-file\` 按卡片 JSON 解析，\`--editable-card-file\` 按受限可编辑卡规格解析。不要先对普通正文执行 \`JSON.stringify\`、把换行手动替换成 \`\\n\`，再把结果塞进位置参数；外层工具协议会自行编码命令字符串，shell / botmux 也不会把字面量 \`\\n\` 反解成换行。
 
 位置参数只用于单行正文。多行正文不要写成 \`botmux send "第一行\\n第二行"\`，必须直接走 quoted heredoc / stdin；在 Windows/PowerShell 里发送包含中文或 emoji 的多行内容时，必须先写 UTF-8 文件，再用 \`--content-file\`，不要把中文直接通过 here-string、\`echo\` 或管道送进 stdin。
 
@@ -427,31 +427,15 @@ botmux send --card-file /tmp/card.json --no-mention
 botmux send --card-json '{"schema":"2.0","body":{"direction":"vertical","elements":[{"tag":"markdown","content":"**Done**"}]}}' --mention-back
 \`\`\`
 
-### 可编辑的前端 CR 预览
+### 受限可编辑预览
 
-用户要求“生成前端 CR 通知”且给出目标通知群时，先写结构化规格，再用专用入口发送预览；不要用 \`--card-file\` 手写 input/callback（普通自定义卡会继续拒绝交互控件）。预览生成时锁定本轮触发者和 \`targetChatId\`，必须使用 \`--no-mention\`；MR URL、作者与评审人的真实 mention 会进入服务端受保护记录，不从按钮回调取值。
+\`--editable-card-file <path>\` 从结构化规格生成带文字输入框、“发送”和“重新生成”按钮的预览。它是业务无关的安全底座：规格声明标题、字段和 markdown/hr 模板；创建时锁定本轮触发者、目标群和静态模板，回调只能提交已声明字段的文字值。
 
-\`\`\`json
-{
-  "targetChatId": "oc_xxx",
-  "authorOpenId": "ou_author",
-  "mrUrl": "https://code.example.com/team/repo/merge_requests/123",
-  "mrTitle": "feat: 示例改动",
-  "reviewerOpenIds": ["ou_reviewer_1", "ou_reviewer_2"],
-  "summary": "一句话需求总结与改动说明。",
-  "status": "测试中",
-  "releaseStatus": "跟版 v1.2.3",
-  "channels": ["channel_a", "channel_b"]
-}
-\`\`\`
+该入口只供经过审查的 Skill 或宿主流程使用，不要把用户提供的原始 JSON 原样转发。调用时必须使用 \`--no-mention\`；真正的 mention 应写在锁定模板里。正式发送卡不含输入框或按钮，旧预览在发送或重新生成后失效。
 
 \`\`\`bash
-botmux send --cr-preview-file /tmp/frontend-cr-preview.json --no-mention
+botmux send --editable-card-file /tmp/editable-preview.json --no-mention
 \`\`\`
-
-- “发送”使用表单中的最新文字直接向已锁定目标群发送纯通知卡；正式卡没有输入框和按钮。
-- “重新生成”完整保留表单原文，新发一张可编辑预览并使旧卡失效，不让 AI 再次润色。
-- 只有创建预览的本轮触发者能操作；重复点击、旧卡和伪造源消息均由服务端拒绝。
 
 ### @mention 其他机器人协作
 
@@ -536,7 +520,7 @@ botmux send --top-level --chat-id oc_xxxxxxxxxxxx "📦 自动推送内容..."
 | \`--video-covers <path>\` | 视频封面图片，可重复，按顺序对应 \`--videos\` |
 | \`--card-file <path>\` | 直接发送 interactive card JSON 文件（纯展示 + open_url，交互控件被拒） |
 | \`--card-json <json>\` | 直接发送 interactive card JSON 字符串（纯展示 + open_url，交互控件被拒） |
-| \`--cr-preview-file <path>\` | 从结构化规格生成前端 CR 可编辑预览；仅本轮触发者可操作，目标群在创建时锁定 |
+| \`--editable-card-file <path>\` | 从受限结构化规格生成通用可编辑预览；仅本轮触发者可操作，目标和模板创建时锁定 |
 | \`--mention <open_id[:name]>\` | @mention，可重复。带 \`:name\` 时文本里的 \`@name\` 会被替换成 \<at\> 标签；只传 open_id 则在消息末尾追加 @。用 \`botmux bots list\` 查 open_id |
 | \`--mention-back\` | @ 回本轮触发消息的发送者（open_id 自动从会话取）。满足 @ 硬门 |
 | \`--no-mention\` | 明确声明本条不 @ 任何人。满足 @ 硬门 |

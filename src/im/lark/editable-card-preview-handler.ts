@@ -1,51 +1,51 @@
 /**
- * 前端 CR 预览卡回调处理器。
+ * 通用可编辑卡片预览回调处理器。
  *
- * 处理器先用服务端记录校验应用、发起人和源消息，再认领一次性动作；卡片回传
- * 的 action.value 只用于定位 preview_id，任何目标群或 mention 都不会从回调读取。
+ * 处理器先用服务端记录校验应用、发起人和源消息，再认领一次性动作；
+ * action.value 只用于定位 preview_id，不承载目标或模板。
  */
 
 import { createHash } from 'node:crypto';
 import type { CardActionData } from './card-handler.js';
 import {
-  buildFrontendCrNotificationCard,
-  buildFrontendCrPreviewCard,
-  buildFrontendCrPreviewTerminalCard,
-} from './frontend-cr-preview-card.js';
+  buildEditableCardNotificationCard,
+  buildEditableCardPreviewCard,
+  buildEditableCardPreviewTerminalCard,
+} from './editable-card-preview-card.js';
 import {
-  FRONTEND_CR_PREVIEW_REGENERATE_ACTION,
-  FRONTEND_CR_PREVIEW_SEND_ACTION,
-  FrontendCrPreviewValidationError,
-  normalizeFrontendCrFormValue,
-} from '../../services/frontend-cr-preview-model.js';
+  EDITABLE_CARD_PREVIEW_REGENERATE_ACTION,
+  EDITABLE_CARD_PREVIEW_SEND_ACTION,
+  EditableCardPreviewValidationError,
+  normalizeEditableCardFormValue,
+} from '../../services/editable-card-preview-model.js';
 import {
-  bindFrontendCrPreviewMessage,
-  claimFrontendCrPreviewAction,
-  createFrontendCrPreviewDraft,
-  failFrontendCrPreviewDraft,
-  finishFrontendCrPreviewRegenerate,
-  finishFrontendCrPreviewSend,
-  restoreFrontendCrPreviewActive,
-} from '../../services/frontend-cr-preview-store.js';
+  bindEditableCardPreviewMessage,
+  claimEditableCardPreviewAction,
+  createEditableCardPreviewDraft,
+  failEditableCardPreviewDraft,
+  finishEditableCardPreviewRegenerate,
+  finishEditableCardPreviewSend,
+  restoreEditableCardPreviewActive,
+} from '../../services/editable-card-preview-store.js';
 
-export interface FrontendCrPreviewHandlerDeps {
+export interface EditableCardPreviewHandlerDeps {
   dataDir: string;
   larkAppId: string;
   sendFormal: (targetChatId: string, cardJson: string, providerKey: string) => Promise<string>;
   sendReplacement: (sourceMessageId: string, cardJson: string, providerKey: string) => Promise<string>;
 }
 
-/** 判断动作是否属于 CR 预览专用命名空间。 */
-export function isFrontendCrPreviewAction(
+/** 判断动作是否属于通用可编辑预览命名空间。 */
+export function isEditableCardPreviewAction(
   action: unknown,
-): action is typeof FRONTEND_CR_PREVIEW_SEND_ACTION | typeof FRONTEND_CR_PREVIEW_REGENERATE_ACTION {
-  return action === FRONTEND_CR_PREVIEW_SEND_ACTION
-    || action === FRONTEND_CR_PREVIEW_REGENERATE_ACTION;
+): action is typeof EDITABLE_CARD_PREVIEW_SEND_ACTION | typeof EDITABLE_CARD_PREVIEW_REGENERATE_ACTION {
+  return action === EDITABLE_CARD_PREVIEW_SEND_ACTION
+    || action === EDITABLE_CARD_PREVIEW_REGENERATE_ACTION;
 }
 
 /** 同一旧预览永远映射到同一个替代 ID，崩溃重试不会制造多张新卡。 */
 function deriveReplacementPreviewId(previewId: string): string {
-  const hex = createHash('sha256').update(`frontend-cr-replacement\0${previewId}`).digest('hex');
+  const hex = createHash('sha256').update(`editable-card-replacement\0${previewId}`).digest('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
@@ -69,21 +69,21 @@ function claimFailure(kind: string): Record<string, unknown> {
 }
 
 /** 执行发送或重新生成，并把旧预览终态化。 */
-export async function handleFrontendCrPreviewAction(
+export async function handleEditableCardPreviewAction(
   data: CardActionData,
-  deps: FrontendCrPreviewHandlerDeps,
+  deps: EditableCardPreviewHandlerDeps,
 ): Promise<Record<string, unknown>> {
   const action = data.action?.value?.action;
   const previewId = data.action?.value?.preview_id;
   const operatorOpenId = data.operator?.open_id;
   const sourceMessageId = data.context?.open_message_id ?? data.open_message_id;
-  if (!isFrontendCrPreviewAction(action) || !previewId || !operatorOpenId || !sourceMessageId) {
-    return toast('error', 'CR 预览回调参数不完整');
+  if (!isEditableCardPreviewAction(action) || !previewId || !operatorOpenId || !sourceMessageId) {
+    return toast('error', '可编辑卡片预览回调参数不完整');
   }
 
   let claim;
   try {
-    claim = claimFrontendCrPreviewAction(deps.dataDir, {
+    claim = claimEditableCardPreviewAction(deps.dataDir, {
       previewId,
       larkAppId: deps.larkAppId,
       operatorOpenId,
@@ -91,78 +91,67 @@ export async function handleFrontendCrPreviewAction(
       action,
     });
   } catch (error) {
-    return toast('error', `CR 预览状态无效：${error instanceof Error ? error.message : String(error)}`);
+    return toast('error', `可编辑卡片预览状态无效：${error instanceof Error ? error.message : String(error)}`);
   }
   if (claim.kind !== 'claimed') return claimFailure(claim.kind);
   const record = claim.record;
   let editable;
   try {
-    editable = normalizeFrontendCrFormValue(data.action?.form_value, record.editable);
+    editable = normalizeEditableCardFormValue(
+      data.action?.form_value,
+      record.editable,
+      record.definition.fields,
+    );
   } catch (error) {
-    const message = error instanceof FrontendCrPreviewValidationError
+    const message = error instanceof EditableCardPreviewValidationError
       ? error.message
       : `表单内容无效：${error instanceof Error ? error.message : String(error)}`;
-    restoreFrontendCrPreviewActive(deps.dataDir, previewId, action, message);
+    restoreEditableCardPreviewActive(deps.dataDir, previewId, action, message);
     return toast('warning', message);
   }
 
-  if (action === FRONTEND_CR_PREVIEW_SEND_ACTION) {
+  if (action === EDITABLE_CARD_PREVIEW_SEND_ACTION) {
     try {
-      const card = buildFrontendCrNotificationCard(editable, record.protected);
+      const card = buildEditableCardNotificationCard(editable, record.definition);
       const formalMessageId = await deps.sendFormal(
         record.targetChatId,
         card,
-        `fcr-send-${previewId}`,
+        `ecp-send-${previewId}`,
       );
-      finishFrontendCrPreviewSend(
-        deps.dataDir,
-        previewId,
-        action,
-        editable,
-        formalMessageId,
-      );
+      finishEditableCardPreviewSend(deps.dataDir, previewId, action, editable, formalMessageId);
       return rawCard(
-        buildFrontendCrPreviewTerminalCard('sent', formalMessageId),
-        'CR 通知已发送',
+        buildEditableCardPreviewTerminalCard(record.definition, 'sent', formalMessageId),
+        '通知已发送',
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      restoreFrontendCrPreviewActive(deps.dataDir, previewId, action, message);
+      restoreEditableCardPreviewActive(deps.dataDir, previewId, action, message);
       return toast('error', `发送失败：${message}`);
     }
   }
 
   let replacementPreviewId: string | undefined;
   try {
-    const replacement = createFrontendCrPreviewDraft(deps.dataDir, {
+    const replacement = createEditableCardPreviewDraft(deps.dataDir, {
       larkAppId: deps.larkAppId,
       initiatorOpenId: record.initiatorOpenId,
       targetChatId: record.targetChatId,
       editable,
-      protected: record.protected,
+      definition: record.definition,
       previewId: deriveReplacementPreviewId(previewId),
     });
     replacementPreviewId = replacement.previewId;
     let replacementMessageId = replacement.previewMessageId;
     if (!replacementMessageId) {
-      const replacementCard = buildFrontendCrPreviewCard({
-        previewId: replacement.previewId,
-        targetChatId: replacement.targetChatId,
-        editable: replacement.editable,
-        protected: replacement.protected,
-      });
+      const replacementCard = buildEditableCardPreviewCard(replacement);
       replacementMessageId = await deps.sendReplacement(
         sourceMessageId,
         replacementCard,
-        `fcr-preview-${replacement.previewId}`,
+        `ecp-preview-${replacement.previewId}`,
       );
-      bindFrontendCrPreviewMessage(
-        deps.dataDir,
-        replacement.previewId,
-        replacementMessageId,
-      );
+      bindEditableCardPreviewMessage(deps.dataDir, replacement.previewId, replacementMessageId);
     }
-    finishFrontendCrPreviewRegenerate(
+    finishEditableCardPreviewRegenerate(
       deps.dataDir,
       previewId,
       action,
@@ -171,15 +160,15 @@ export async function handleFrontendCrPreviewAction(
       replacementMessageId,
     );
     return rawCard(
-      buildFrontendCrPreviewTerminalCard('regenerated', replacementMessageId),
+      buildEditableCardPreviewTerminalCard(record.definition, 'regenerated', replacementMessageId),
       '已生成新的可编辑预览',
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (replacementPreviewId) {
-      failFrontendCrPreviewDraft(deps.dataDir, replacementPreviewId, message);
+      failEditableCardPreviewDraft(deps.dataDir, replacementPreviewId, message);
     }
-    restoreFrontendCrPreviewActive(deps.dataDir, previewId, action, message);
+    restoreEditableCardPreviewActive(deps.dataDir, previewId, action, message);
     return toast('error', `重新生成失败：${message}`);
   }
 }

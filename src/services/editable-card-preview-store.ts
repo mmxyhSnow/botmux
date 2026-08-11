@@ -1,8 +1,8 @@
 /**
- * 前端 CR 预览的跨进程持久化状态。
+ * 通用可编辑卡片预览的跨进程持久化状态机。
  *
- * CLI 负责创建并绑定预览消息，daemon 回调在同一文件锁下认领动作；这样即使
- * 重复点击、事件重投或多 daemon 竞争，也只有一个发送或重新生成副作用。
+ * CLI 创建并绑定预览消息，daemon 在同一文件锁下认领动作，保证重复点击、
+ * 事件重投和多进程竞争只产生一个可恢复副作用。
  */
 
 import { randomUUID } from 'node:crypto';
@@ -10,30 +10,28 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { withFileLockSync } from '../utils/file-lock.js';
-import type {
-  FrontendCrEditableFields,
-} from './frontend-cr-preview-model.js';
+import type { EditableCardValues } from './editable-card-preview-model.js';
 import {
-  FRONTEND_CR_PREVIEW_SCHEMA_VERSION,
-  type CreateFrontendCrPreviewDraftInput,
-  type FrontendCrPreviewClaimResult,
-  type FrontendCrPreviewRecord,
-  type FrontendCrPreviewStatus,
-} from './frontend-cr-preview-store-types.js';
+  EDITABLE_CARD_PREVIEW_SCHEMA_VERSION,
+  type CreateEditableCardPreviewDraftInput,
+  type EditableCardPreviewClaimResult,
+  type EditableCardPreviewRecord,
+  type EditableCardPreviewStatus,
+} from './editable-card-preview-store-types.js';
 
 export type {
-  CreateFrontendCrPreviewDraftInput,
-  FrontendCrPreviewClaimResult,
-  FrontendCrPreviewRecord,
-  FrontendCrPreviewStatus,
-} from './frontend-cr-preview-store-types.js';
+  CreateEditableCardPreviewDraftInput,
+  EditableCardPreviewClaimResult,
+  EditableCardPreviewRecord,
+  EditableCardPreviewStatus,
+} from './editable-card-preview-store-types.js';
 
-const STORE_DIR = 'frontend-cr-previews';
+const STORE_DIR = 'editable-card-previews';
 const PREVIEW_TTL_MS = 14 * 24 * 60 * 60 * 1_000;
 const PROCESSING_LEASE_MS = 2 * 60 * 1_000;
 const SAFE_ID = /^[0-9a-f-]{36}$/i;
 
-function cloneRecord(record: FrontendCrPreviewRecord): FrontendCrPreviewRecord {
+function cloneRecord(record: EditableCardPreviewRecord): EditableCardPreviewRecord {
   return structuredClone(record);
 }
 
@@ -42,11 +40,11 @@ function storePath(dataDir: string, previewId: string): string {
   return join(dataDir, STORE_DIR, `${previewId}.json`);
 }
 
-function readRecordFile(path: string): FrontendCrPreviewRecord | undefined {
+function readRecordFile(path: string): EditableCardPreviewRecord | undefined {
   if (!existsSync(path)) return undefined;
-  const value = JSON.parse(readFileSync(path, 'utf-8')) as FrontendCrPreviewRecord;
+  const value = JSON.parse(readFileSync(path, 'utf-8')) as EditableCardPreviewRecord;
   if (
-    value?.schemaVersion !== FRONTEND_CR_PREVIEW_SCHEMA_VERSION
+    value?.schemaVersion !== EDITABLE_CARD_PREVIEW_SCHEMA_VERSION
     || !SAFE_ID.test(value.previewId)
     || typeof value.larkAppId !== 'string'
     || typeof value.initiatorOpenId !== 'string'
@@ -54,11 +52,11 @@ function readRecordFile(path: string): FrontendCrPreviewRecord | undefined {
     || typeof value.createdAt !== 'number'
     || typeof value.updatedAt !== 'number'
     || typeof value.expiresAt !== 'number'
-  ) throw new Error('CR 预览状态文件损坏');
+  ) throw new Error('可编辑卡片预览状态文件损坏');
   return value;
 }
 
-function writeRecord(path: string, record: FrontendCrPreviewRecord): void {
+function writeRecord(path: string, record: EditableCardPreviewRecord): void {
   atomicWriteFileSync(path, `${JSON.stringify(record, null, 2)}\n`, {
     mode: 0o600,
     durable: true,
@@ -67,10 +65,10 @@ function writeRecord(path: string, record: FrontendCrPreviewRecord): void {
 }
 
 /** 创建尚未绑定飞书消息的预览草稿。 */
-export function createFrontendCrPreviewDraft(
+export function createEditableCardPreviewDraft(
   dataDir: string,
-  input: CreateFrontendCrPreviewDraftInput,
-): FrontendCrPreviewRecord {
+  input: CreateEditableCardPreviewDraftInput,
+): EditableCardPreviewRecord {
   const now = input.now ?? Date.now();
   const previewId = input.previewId ?? randomUUID();
   const dir = join(dataDir, STORE_DIR);
@@ -82,7 +80,7 @@ export function createFrontendCrPreviewDraft(
       const sameScope = existing.larkAppId === input.larkAppId
         && existing.initiatorOpenId === input.initiatorOpenId
         && existing.targetChatId === input.targetChatId
-        && JSON.stringify(existing.protected) === JSON.stringify(input.protected);
+        && JSON.stringify(existing.definition) === JSON.stringify(input.definition);
       if (!sameScope) throw new Error('preview_id 已被其它预览占用');
       if (existing.status === 'active') return cloneRecord(existing);
       if (existing.status !== 'creating' && existing.status !== 'failed') {
@@ -97,15 +95,15 @@ export function createFrontendCrPreviewDraft(
       writeRecord(path, existing);
       return cloneRecord(existing);
     }
-    const record: FrontendCrPreviewRecord = {
-      schemaVersion: FRONTEND_CR_PREVIEW_SCHEMA_VERSION,
+    const record: EditableCardPreviewRecord = {
+      schemaVersion: EDITABLE_CARD_PREVIEW_SCHEMA_VERSION,
       previewId,
       larkAppId: input.larkAppId,
       initiatorOpenId: input.initiatorOpenId,
       targetChatId: input.targetChatId,
       status: 'creating',
       editable: structuredClone(input.editable),
-      protected: structuredClone(input.protected),
+      definition: structuredClone(input.definition),
       createdAt: now,
       updatedAt: now,
       expiresAt: now + PREVIEW_TTL_MS,
@@ -116,18 +114,18 @@ export function createFrontendCrPreviewDraft(
 }
 
 /** 发送成功后把草稿与唯一的飞书预览消息绑定。 */
-export function bindFrontendCrPreviewMessage(
+export function bindEditableCardPreviewMessage(
   dataDir: string,
   previewId: string,
   messageId: string,
   now = Date.now(),
-): FrontendCrPreviewRecord {
+): EditableCardPreviewRecord {
   const path = storePath(dataDir, previewId);
   return withFileLockSync(path, () => {
     const record = readRecordFile(path);
-    if (!record) throw new Error('CR 预览草稿不存在');
+    if (!record) throw new Error('可编辑卡片预览草稿不存在');
     if (record.status === 'active' && record.previewMessageId === messageId) return cloneRecord(record);
-    if (record.status !== 'creating' || record.previewMessageId) throw new Error('CR 预览草稿状态不可绑定');
+    if (record.status !== 'creating' || record.previewMessageId) throw new Error('预览草稿状态不可绑定');
     record.previewMessageId = messageId;
     record.status = 'active';
     record.updatedAt = now;
@@ -137,16 +135,16 @@ export function bindFrontendCrPreviewMessage(
 }
 
 /** 回读预览状态，供回调和验收使用。 */
-export function readFrontendCrPreview(
+export function readEditableCardPreview(
   dataDir: string,
   previewId: string,
-): FrontendCrPreviewRecord | undefined {
+): EditableCardPreviewRecord | undefined {
   const record = readRecordFile(storePath(dataDir, previewId));
   return record ? cloneRecord(record) : undefined;
 }
 
 /** 在身份、应用和源消息全部匹配后原子认领一次动作。 */
-export function claimFrontendCrPreviewAction(
+export function claimEditableCardPreviewAction(
   dataDir: string,
   input: {
     previewId: string;
@@ -156,7 +154,7 @@ export function claimFrontendCrPreviewAction(
     action: string;
     now?: number;
   },
-): FrontendCrPreviewClaimResult {
+): EditableCardPreviewClaimResult {
   const path = storePath(dataDir, input.previewId);
   if (!existsSync(path)) return { kind: 'not_found' };
   return withFileLockSync(path, () => {
@@ -194,7 +192,7 @@ export function claimFrontendCrPreviewAction(
 }
 
 /** 副作用失败时释放动作认领，允许用户修正后重试。 */
-export function restoreFrontendCrPreviewActive(
+export function restoreEditableCardPreviewActive(
   dataDir: string,
   previewId: string,
   action: string,
@@ -213,15 +211,15 @@ export function restoreFrontendCrPreviewActive(
   });
 }
 
-/** 完成正式发送并固化最终可编辑字段。 */
-export function finishFrontendCrPreviewSend(
+/** 完成正式发送并固化最终字段。 */
+export function finishEditableCardPreviewSend(
   dataDir: string,
   previewId: string,
   action: string,
-  editable: FrontendCrEditableFields,
+  editable: EditableCardValues,
   formalMessageId: string,
   now = Date.now(),
-): FrontendCrPreviewRecord {
+): EditableCardPreviewRecord {
   return finishAction(dataDir, previewId, action, now, record => {
     record.status = 'sent';
     record.editable = structuredClone(editable);
@@ -230,15 +228,15 @@ export function finishFrontendCrPreviewSend(
 }
 
 /** 完成重新生成并把旧预览绑定到唯一替代卡。 */
-export function finishFrontendCrPreviewRegenerate(
+export function finishEditableCardPreviewRegenerate(
   dataDir: string,
   previewId: string,
   action: string,
-  editable: FrontendCrEditableFields,
+  editable: EditableCardValues,
   replacementPreviewId: string,
   replacementMessageId: string,
   now = Date.now(),
-): FrontendCrPreviewRecord {
+): EditableCardPreviewRecord {
   return finishAction(dataDir, previewId, action, now, record => {
     record.status = 'regenerated';
     record.editable = structuredClone(editable);
@@ -252,13 +250,13 @@ function finishAction(
   previewId: string,
   action: string,
   now: number,
-  mutate: (record: FrontendCrPreviewRecord) => void,
-): FrontendCrPreviewRecord {
+  mutate: (record: EditableCardPreviewRecord) => void,
+): EditableCardPreviewRecord {
   const path = storePath(dataDir, previewId);
   return withFileLockSync(path, () => {
     const record = readRecordFile(path);
     if (!record || record.status !== 'processing' || record.processingAction !== action) {
-      throw new Error('CR 预览动作完成状态不匹配');
+      throw new Error('可编辑卡片预览动作完成状态不匹配');
     }
     mutate(record);
     record.processingAction = undefined;
@@ -270,7 +268,7 @@ function finishAction(
 }
 
 /** 预览投递失败时保留可审计失败状态，不留下可点击的幽灵草稿。 */
-export function failFrontendCrPreviewDraft(
+export function failEditableCardPreviewDraft(
   dataDir: string,
   previewId: string,
   error: string,

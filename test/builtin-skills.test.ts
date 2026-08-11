@@ -22,14 +22,13 @@ describe('built-in botmux-send skill', () => {
     expect(skill!.content).toContain('字面量 `\\n` 反解成换行');
   });
 
-  it('teaches the trusted editable frontend CR preview flow', () => {
+  it('teaches the generic trusted editable preview boundary without business coupling', () => {
     const skill = BUILTIN_SKILLS.find(s => s.name === 'botmux-send');
     expect(skill).toBeDefined();
-    expect(skill!.content).toContain('--cr-preview-file');
-    expect(skill!.content).toContain('targetChatId');
-    expect(skill!.content).toContain('正式卡没有输入框和按钮');
-    expect(skill!.content).toContain('完整保留表单原文');
-    expect(skill!.content).toContain('服务端受保护记录');
+    expect(skill!.content).toContain('--editable-card-file');
+    expect(skill!.content).toContain('业务无关的安全底座');
+    expect(skill!.content).toContain('正式发送卡不含输入框或按钮');
+    expect(skill!.content).not.toContain('前端 CR');
   });
 
   it('warns that mention-back/no-mention are switches without values', () => {
