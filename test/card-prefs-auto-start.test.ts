@@ -62,10 +62,27 @@ describe('card-prefs store — 主动开工 fields', () => {
     expect(prefs.autoStartOnGroupJoin).toBe(false);
     expect(prefs.autoStartOnNewTopic).toBe(false);
     expect(prefs.codexAppCleanInput).toBe(false);
+    expect(prefs.codexAppImmediateProgressCard).toBe(true);
     expect(prefs.autoStartOnGroupJoinPrompt).toBe('');
     expect(prefs.regularGroupReplyMode).toBe('chat-topic');
     expect(prefs.regularGroupMentionMode).toBe('always');
     expect(prefs.askReminderPolicy).toBe('auto-recommend');
+  });
+
+  it('immediate progress card is default-on and persists only explicit off', async () => {
+    writeConfig({ cliId: 'codex-app' });
+    const { registry, store } = await freshModules();
+    registry.loadBotConfigs().forEach(c => registry.registerBot(c));
+
+    const off = await store.updateBotCardPrefs('app_default', { codexAppImmediateProgressCard: false });
+    expect(off.ok && off.prefs.codexAppImmediateProgressCard).toBe(false);
+    expect(readConfig().codexAppImmediateProgressCard).toBe(false);
+    expect(registry.getBot('app_default').config.codexAppImmediateProgressCard).toBe(false);
+
+    const on = await store.updateBotCardPrefs('app_default', { codexAppImmediateProgressCard: true });
+    expect(on.ok && on.prefs.codexAppImmediateProgressCard).toBe(true);
+    expect(readConfig().codexAppImmediateProgressCard).toBeUndefined();
+    expect(registry.getBot('app_default').config.codexAppImmediateProgressCard).toBeUndefined();
   });
 
   it('persists toggles + prompt to bots.json and syncs in-memory config (FR-9)', async () => {

@@ -92,6 +92,8 @@ export function botDefaultsPayload(bot: DashboardBotDescriptor, j?: any, error?:
     disableStreamingCard: j?.disableStreamingCard === true,
     silentTurnReactions: j?.silentTurnReactions === true,
     codexAppCleanInput: j?.codexAppCleanInput === true,
+    codexAppImmediateProgressCard: j?.codexAppImmediateProgressCard !== false,
+    askReminderPolicy: j?.askReminderPolicy === 'repeat-reminder' ? 'repeat-reminder' : 'auto-recommend',
     writableTerminalLinkInCard: j?.writableTerminalLinkInCard === true,
     privateCard: j?.privateCard === true,
     overloadAlert: j?.overloadAlert === true,

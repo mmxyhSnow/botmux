@@ -44,6 +44,8 @@ export interface BotCardPrefs {
    * legacy full-prompt UserMessage; true moves Botmux metadata to hidden
    * app-server context for newly dispatched turns. */
   codexAppCleanInput: boolean;
+  /** 收到消息后是否立即创建并持续更新单张结构化进度卡；默认开启。 */
+  codexAppImmediateProgressCard: boolean;
   /** ASK 后续问题策略；缺省为方案 1。 */
   askReminderPolicy: AskReminderPolicy;
   writableTerminalLinkInCard: boolean;
@@ -84,6 +86,7 @@ export function getBotCardPrefs(larkAppId: string): BotCardPrefs {
       disableStreamingCard: c.disableStreamingCard === true,
       silentTurnReactions: c.silentTurnReactions === true,
       codexAppCleanInput: c.codexAppCleanInput === true,
+      codexAppImmediateProgressCard: c.codexAppImmediateProgressCard !== false,
       askReminderPolicy: c.askReminderPolicy === 'repeat-reminder' ? 'repeat-reminder' : 'auto-recommend',
       writableTerminalLinkInCard: c.writableTerminalLinkInCard === true,
       privateCard: c.privateCard === true,
@@ -105,6 +108,7 @@ export function getBotCardPrefs(larkAppId: string): BotCardPrefs {
       disableStreamingCard: false,
       silentTurnReactions: false,
       codexAppCleanInput: false,
+      codexAppImmediateProgressCard: true,
       askReminderPolicy: 'auto-recommend',
       writableTerminalLinkInCard: false,
       privateCard: false,
@@ -192,6 +196,7 @@ export async function updateBotCardPrefs(
     apply(entry, 'disableStreamingCard', patch.disableStreamingCard);
     apply(entry, 'silentTurnReactions', patch.silentTurnReactions);
     apply(entry, 'codexAppCleanInput', patch.codexAppCleanInput);
+    applyDefaultTrue(entry, 'codexAppImmediateProgressCard', patch.codexAppImmediateProgressCard);
     applyAskReminderPolicy(entry, 'askReminderPolicy', patch.askReminderPolicy);
     apply(entry, 'writableTerminalLinkInCard', patch.writableTerminalLinkInCard);
     apply(entry, 'privateCard', patch.privateCard);
@@ -212,6 +217,7 @@ export async function updateBotCardPrefs(
         disableStreamingCard: entry.disableStreamingCard === true,
         silentTurnReactions: entry.silentTurnReactions === true,
         codexAppCleanInput: entry.codexAppCleanInput === true,
+        codexAppImmediateProgressCard: entry.codexAppImmediateProgressCard !== false,
         askReminderPolicy: entry.askReminderPolicy === 'repeat-reminder' ? 'repeat-reminder' : 'auto-recommend',
         writableTerminalLinkInCard: entry.writableTerminalLinkInCard === true,
         privateCard: entry.privateCard === true,
@@ -249,6 +255,9 @@ export async function updateBotCardPrefs(
   }
   if (patch.codexAppCleanInput !== undefined) {
     bot.config.codexAppCleanInput = patch.codexAppCleanInput || undefined;
+  }
+  if (patch.codexAppImmediateProgressCard !== undefined) {
+    bot.config.codexAppImmediateProgressCard = patch.codexAppImmediateProgressCard === false ? false : undefined;
   }
   if (patch.askReminderPolicy !== undefined) {
     bot.config.askReminderPolicy = patch.askReminderPolicy === 'repeat-reminder'
@@ -301,6 +310,7 @@ export async function updateBotCardPrefs(
     `disableStreamingCard=${r.result.disableStreamingCard} ` +
     `silentTurnReactions=${r.result.silentTurnReactions} ` +
     `codexAppCleanInput=${r.result.codexAppCleanInput} ` +
+    `codexAppImmediateProgressCard=${r.result.codexAppImmediateProgressCard} ` +
     `askReminderPolicy=${r.result.askReminderPolicy} ` +
     `writableTerminalLinkInCard=${r.result.writableTerminalLinkInCard} privateCard=${r.result.privateCard} ` +
     `overloadAlert=${r.result.overloadAlert} ` +

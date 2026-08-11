@@ -77,6 +77,7 @@ export type BotDefaultsRow = {
   disableStreamingCard?: boolean;
   silentTurnReactions?: boolean;
   codexAppCleanInput?: boolean;
+  codexAppImmediateProgressCard?: boolean;
   askReminderPolicy?: 'auto-recommend' | 'repeat-reminder';
   writableTerminalLinkInCard?: boolean;
   privateCard?: boolean;

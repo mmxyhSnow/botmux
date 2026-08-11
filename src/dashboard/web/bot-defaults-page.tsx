@@ -488,6 +488,7 @@ function patchCardPrefsFromBody(bot: BotDefaultsRow, body: any): BotDefaultsRow 
     disableStreamingCard: body.disableStreamingCard,
     silentTurnReactions: body.silentTurnReactions,
     codexAppCleanInput: body.codexAppCleanInput,
+    codexAppImmediateProgressCard: body.codexAppImmediateProgressCard,
     askReminderPolicy: body.askReminderPolicy,
     writableTerminalLinkInCard: body.writableTerminalLinkInCard,
     privateCard: body.privateCard,

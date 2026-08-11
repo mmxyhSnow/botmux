@@ -88,6 +88,7 @@ const MANAGE_ROUTES = [
   'connectors',
   'insights',
   'whiteboards',
+  'custom-capabilities',
 ];
 
 const NAV_ITEMS: NavItem[] = [
@@ -152,6 +153,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'team', href: '#/team', labelKey: 'nav.team', manage: true, icon: <><circle cx="8" cy="8" r="6.2" /><path d="M1.8 8h12.4M8 1.8c-2 1.8-2 10.6 0 12.4 2-1.8 2-10.6 0-12.4z" /></> },
   { id: 'connectors', href: '#/connectors', labelKey: 'nav.connectors', manage: true, icon: <><path d="M5.5 6.5v-3a2.5 2.5 0 0 1 5 0v3" /><rect x="3.5" y="6.5" width="9" height="7" rx="2" /></> },
   { id: 'settings', href: '#/settings', labelKey: 'nav.settings', icon: <><path d="M8 1.75 9.35 2.05 10 3.28l1.38.3 1.04-.96.96.96-.96 1.04.3 1.38 1.23.65L14.25 8l-.3 1.35-1.23.65-.3 1.38.96 1.04-.96.96-1.04-.96-1.38.3-.65 1.23L8 14.25l-1.35-.3L6 12.72l-1.38-.3-1.04.96-.96-.96.96-1.04-.3-1.38-1.23-.65L1.75 8l.3-1.35 1.23-.65.3-1.38-.96-1.04.96-.96 1.04.96 1.38-.3.65-1.23z" /><circle cx="8" cy="8" r="2" /></> },
+  { id: 'custom-capabilities', href: '#/custom-capabilities', labelKey: 'nav.customCapabilities', manage: true, icon: <><path d="M8 1.8l1.25 3.05L12.3 6.1 9.25 7.35 8 10.4 6.75 7.35 3.7 6.1l3.05-1.25z" /><path d="M12.4 9.3l.6 1.45 1.45.6-1.45.6-.6 1.45-.6-1.45-1.45-.6 1.45-.6z" /></> },
 ];
 
 let pinnedPluginNavItems: NavItem[] = [];

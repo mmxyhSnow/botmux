@@ -17,6 +17,7 @@ describe('dashboard bot payload helpers', () => {
       'agentSelectionKey', 'autoGrantRequestCards', 'autoStartOnGroupJoin',
       'autoStartOnGroupJoinPrompt', 'autoStartOnNewTopic', 'backendType',
       'botToBotSameDir', 'brandLabel', 'canTalkDaemonCommands', 'cliRuntime', 'codexAppCleanInput',
+      'codexAppImmediateProgressCard', 'askReminderPolicy',
       'customPassthroughCommands', 'defaultOncall', 'defaultWorkingDir',
       'defaultWorkingDirAutoWorktree', 'disableStreamingCard', 'docSubscribeDefaultMode',
       'env', 'grantDefaultDurationMs', 'launchShell', 'maxLiveWorkers', 'messageQuotaDefaultLimit', 'model',
@@ -27,6 +28,20 @@ describe('dashboard bot payload helpers', () => {
       'summaryMemory', 'summaryMemoryPath', 'summaryRange', 'writableTerminalLinkInCard',
     ];
     expect(Object.keys(row)).toEqual(expect.arrayContaining(editableFields));
+  });
+
+  it('projects custom capability controls with backward-compatible defaults', () => {
+    expect(botDefaultsPayload({ larkAppId: 'cli_a' }, {})).toMatchObject({
+      codexAppImmediateProgressCard: true,
+      askReminderPolicy: 'auto-recommend',
+    });
+    expect(botDefaultsPayload({ larkAppId: 'cli_a' }, {
+      codexAppImmediateProgressCard: false,
+      askReminderPolicy: 'repeat-reminder',
+    })).toMatchObject({
+      codexAppImmediateProgressCard: false,
+      askReminderPolicy: 'repeat-reminder',
+    });
   });
 
   it('defaults topic status display to off and preserves opt-in modes', () => {

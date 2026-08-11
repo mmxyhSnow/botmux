@@ -39,6 +39,7 @@ import {
   proxyDashboardAskAnswer,
 } from './dashboard/desktop-asks.js';
 import { createDebugTerminalManager } from './dashboard/debug-terminal.js';
+import { customCapabilitiesDashboardPayload } from './dashboard/custom-capabilities.js';
 import { pickCreatorForGroup } from './dashboard/operator-selector.js';
 import { buildTeamGroupCreatePayload, planGroupCreator } from './dashboard/team-group.js';
 import { jsonRes } from './dashboard/http.js';
@@ -4796,6 +4797,11 @@ const server = createServer(async (req, res) => {
         const result = await unbindOncall(chatId, appId, groupsActionDeps);
         return writeHandlerResult(res, result);
       }
+    }
+
+    // 自定义能力全景直接投影升级契约清单；控制值仍由各 Bot 的既有配置 API 提供。
+    if (req.method === 'GET' && url.pathname === '/api/custom-capabilities') {
+      return jsonRes(res, 200, customCapabilitiesDashboardPayload());
     }
 
     // ─── Per-bot defaults (Bot Defaults tab) ─────────────────────────────────
