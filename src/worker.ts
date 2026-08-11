@@ -320,6 +320,7 @@ import { resolveCodexAppFinalTurnIdentity } from './adapters/cli/codex-app-turn.
 import { RunnerControlDecoder } from './adapters/cli/runner-control-channel.js';
 import {
   normalizeCodexAppLifecycleEvent,
+  normalizeCodexAppProgressMarker,
   normalizeFinalUsage,
 } from './services/codex-app-runner-protocol.js';
 import { resolveTrustedCodexAppReplyTurnId } from './services/codex-app-final-outbox.js';
@@ -8350,6 +8351,22 @@ async function handleTrustedCodexAppMarker(
       isPromptReady = false;
       idleDetector?.reset();
     }
+    return true;
+  }
+
+  // runner 只允许把已由当前 worker 提交的飞书回合进度投递给 daemon。
+  // 非法字段或跨回合标识属于签名协议错误，必须拒绝且不能污染其它进度卡。
+  if (kind === 'progress' && lastInitConfig?.cliId === 'codex-app') {
+    const progress = normalizeCodexAppProgressMarker(payload);
+    if (!progress || !submittedCodexAppReplyTurnIds.has(progress.replyTurnId)) {
+      rejectCodexAppControlMarker('invalid signed progress');
+      return false;
+    }
+    send({
+      type: 'progress_output',
+      content: progress.content,
+      turnId: progress.replyTurnId,
+    });
     return true;
   }
 
