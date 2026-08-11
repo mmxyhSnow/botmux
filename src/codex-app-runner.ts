@@ -87,6 +87,8 @@ interface ActiveTurn {
   itemText: Map<string, string>;
   /** 按 item 记录 assistant 消息阶段，只允许 commentary 进入进度卡。 */
   itemPhases: Map<string, string>;
+  /** 记录每个 commentary item 已投递的字符数，补齐只在 completed 才出现 phase 的协议形态。 */
+  itemProgressLengths: Map<string, number>;
   /** 当前原生 turn 已接收的 commentary 全文，用于按完整句子增量投递。 */
   progressText: string;
   progress: CodexAppProgressThrottler;
@@ -745,6 +747,7 @@ function makeTurn(clientUserMessageId: string | undefined, requestKind: 'start' 
     allAgentText: '',
     itemText: new Map(),
     itemPhases: new Map(),
+    itemProgressLengths: new Map(),
     progressText: '',
     // commentary 本身已是低频显式进展；关闭时间节流，避免分片标记在 item
     // 完成前没有后续事件可触发而永久滞留。
@@ -763,7 +766,11 @@ const TURN_ACTIVITY_MARKER_MIN_INTERVAL_MS = 5_000;
  * notifications can arrive many times per second; submitted/completed edges
  * are always emitted.
  */
-function emitTurnActivity(turn: ActiveTurn, phase: 'submitted' | 'progress' | 'completed', force = false): void {
+function emitTurnActivity(
+  turn: ActiveTurn,
+  phase: 'submitted' | 'progress' | 'waiting' | 'completed',
+  force = false,
+): void {
   const atMs = Date.now();
   if (!force && atMs - turn.lastActivityMarkerAtMs < TURN_ACTIVITY_MARKER_MIN_INTERVAL_MS) return;
   turn.lastActivityMarkerAtMs = atMs;
@@ -807,9 +814,21 @@ function handleServerRequest(msg: JsonObject): boolean {
     return true;
   }
   if (method === 'item/tool/requestUserInput') {
+    const waitingTurn = activeTurn;
+    if (waitingTurn) emitTurnActivity(waitingTurn, 'waiting', true);
     dispatchCodexAppUserInput(msg.params, userInputContext, {
-      respond: result => client.respond(msg.id, result),
-      interrupt: (threadId, turnId) => client.request('turn/interrupt', { threadId, turnId }),
+      respond: result => {
+        if (waitingTurn && activeTurn === waitingTurn && !waitingTurn.completed) {
+          emitTurnActivity(waitingTurn, 'progress', true);
+        }
+        client.respond(msg.id, result);
+      },
+      interrupt: (threadId, turnId) => {
+        if (waitingTurn && activeTurn === waitingTurn && !waitingTurn.completed) {
+          emitTurnActivity(waitingTurn, 'progress', true);
+        }
+        return client.request('turn/interrupt', { threadId, turnId });
+      },
       log: writeLine,
     });
     return true;
@@ -1202,6 +1221,10 @@ function handleNotification(msg: JsonObject, replayedAfterResponse = false): voi
     output.display(delta);
     if (turn.itemPhases.get(itemId) === 'commentary') {
       turn.progressText += delta;
+      turn.itemProgressLengths.set(
+        itemId,
+        (turn.itemProgressLengths.get(itemId) ?? 0) + delta.length,
+      );
       emitAssistantProgress(turn);
     }
     return;
@@ -1216,12 +1239,17 @@ function handleNotification(msg: JsonObject, replayedAfterResponse = false): voi
     const item = params.item;
     if (item?.type === 'agentMessage') {
       if (item.phase === 'final_answer') turn.finalText = String(item.text ?? '');
-      else if (!turn.itemText.has(item.id) && item.text) {
-        turn.allAgentText += String(item.text);
-        if (item.phase === 'commentary') {
-          turn.progressText += String(item.text);
+      else if (item.phase === 'commentary') {
+        const itemId = typeof item.id === 'string' ? item.id : '';
+        const text = String(item.text ?? (itemId ? turn.itemText.get(itemId) : '') ?? '');
+        const emittedLength = itemId ? (turn.itemProgressLengths.get(itemId) ?? 0) : 0;
+        if (!turn.itemText.has(itemId) && text) turn.allAgentText += text;
+        if (text.length > emittedLength) {
+          turn.progressText += text.slice(emittedLength);
+          if (itemId) turn.itemProgressLengths.set(itemId, text.length);
           emitAssistantProgress(turn);
         }
+        if (itemId) turn.itemPhases.set(itemId, 'commentary');
       }
     }
     return;

@@ -296,6 +296,30 @@ describe('CodexAppTurnLiveness', () => {
     });
   });
 
+  it('pauses the stall clock while waiting for an explicit user choice and restarts on resume', () => {
+    const tracker = new CodexAppTurnLiveness(1_000);
+    tracker.begin('turn-choice', 10_000);
+
+    expect(applyTrustedCodexAppActivityMarker(tracker, {
+      phase: 'waiting',
+      atMs: 10_500,
+    }, 10_500)).toMatchObject({ accepted: true, phase: 'waiting' });
+    expect(tracker.poll(20_000)).toEqual({
+      active: true,
+      stalled: false,
+      newlyStalled: false,
+      shouldNotify: false,
+      turnId: 'turn-choice',
+    });
+
+    applyTrustedCodexAppActivityMarker(tracker, {
+      phase: 'progress',
+      atMs: 20_000,
+    }, 20_000);
+    expect(tracker.poll(20_999).stalled).toBe(false);
+    expect(tracker.poll(21_000)).toMatchObject({ stalled: true, newlyStalled: true });
+  });
+
   it('uses runner activity as the clock and clears a stalled projection on recovery', () => {
     const tracker = new CodexAppTurnLiveness(1_000);
     tracker.begin('turn-1', 10_000);

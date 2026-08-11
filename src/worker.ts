@@ -372,7 +372,6 @@ import { AsyncSerialQueue } from './utils/async-serial-queue.js';
 import {
   applyTrustedCodexAppActivityMarker,
   applyTrustedCodexAppStateMarker,
-  CODEX_APP_NO_PROGRESS_TIMEOUT_MS,
   CodexAppFlushPromptReplay,
   CodexAppReadyAuthority,
   CodexAppTurnLiveness,
@@ -3634,9 +3633,8 @@ function rejectCodexAppControlMarker(kind: string): void {
 type RuntimeScreenStatus = Exclude<ScreenStatus, 'limited'>;
 
 /**
- * Project an explicit Codex App no-progress state above the screen heuristic.
- * The warning is once-per-turn and intentionally does not restart or replay
- * anything: both actions could duplicate model/tool side effects.
+ * 把真实停滞只投影到既有会话状态卡；不再额外发送文本提醒打断正常对话。
+ * ASK 等待由签名 waiting marker 暂停计时，选择恢复后重新从 progress 起算。
  */
 function codexAppLivenessStatus(base: RuntimeScreenStatus, nowMs = Date.now()): RuntimeScreenStatus {
   if (lastInitConfig?.cliId !== 'codex-app') return base;
@@ -3646,19 +3644,6 @@ function codexAppLivenessStatus(base: RuntimeScreenStatus, nowMs = Date.now()): 
     inputReady: codexAppInputReady,
   });
   const liveness = codexAppTurnLiveness.poll(nowMs);
-  if (liveness.shouldNotify) {
-    send({
-      type: 'user_notify',
-      turnId: liveness.turnId ?? currentBotmuxTurnId,
-      ...(liveness.turnId === currentBotmuxTurnId
-        && currentBotmuxDispatchAttempt !== undefined
-        ? { dispatchAttempt: currentBotmuxDispatchAttempt }
-        : {}),
-      message: t('worker.codex_app.no_progress', {
-        seconds: Math.round(CODEX_APP_NO_PROGRESS_TIMEOUT_MS / 1000),
-      }),
-    });
-  }
   if (liveness.stalled) return 'stalled';
   return liveness.active && base === 'idle' ? 'working' : base;
 }

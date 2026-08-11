@@ -63,6 +63,7 @@ describe('topic status display', () => {
 
   it('keeps external jobs visible after the AI turn ends', () => {
     expect(progressStateTopicPhase({ phase: 'running' } as any)).toBe('running');
+    expect(progressStateTopicPhase({ phase: 'running', waitingForUser: true } as any)).toBe('waiting');
     expect(progressStateTopicPhase({ phase: 'running', overview: { blocker: '需要授权' } } as any)).toBe('blocked');
     expect(progressStateTopicPhase({ phase: 'failed' } as any)).toBe('failed');
     expect(progressStateTopicPhase({ phase: 'interrupted' } as any)).toBe('interrupted');

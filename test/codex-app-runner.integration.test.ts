@@ -549,7 +549,7 @@ function readRequests(logPath: string): Array<Record<string, any>> {
 
 async function exerciseRunner(opts: {
   version: string;
-  behavior?: 'success' | 'capability-error' | 'generic-error' | 'osc-injection' | 'empty-final' | 'start-response-last' | 'commentary-progress';
+  behavior?: 'success' | 'capability-error' | 'generic-error' | 'osc-injection' | 'empty-final' | 'start-response-last' | 'commentary-progress' | 'commentary-completed-phase-only';
   includeMissingImage?: boolean;
   includeSidecar?: boolean;
   turnCount?: number;
@@ -807,6 +807,17 @@ describe('codex-app-runner app-server protocol integration', () => {
     const finalStartIndex = result.markers.findIndex(marker => marker.kind === 'final-start');
     expect(lastProgressIndex).toBeGreaterThan(-1);
     expect(finalStartIndex).toBeGreaterThan(lastProgressIndex);
+  });
+
+  it('recovers commentary when the app-server exposes its phase only on item completion', async () => {
+    const result = await exerciseRunner({
+      version: '0.146.0',
+      behavior: 'commentary-completed-phase-only',
+    });
+    expect(result.progresses.map(progress => progress.content)).toEqual([
+      '已锁定根因。',
+      '<!--botmux-progress:{"title":"修复进度","stage":"定位","current":"补回投递"}-->',
+    ]);
   });
 
   it('emits a zero-chunk final transaction for an empty answer before the signed idle boundary', async () => {

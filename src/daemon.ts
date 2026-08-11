@@ -5582,6 +5582,7 @@ ipcRoute('POST', '/api/asks', async (req, res) => {
     questions: boundAsk.questions,
     timeoutMs: boundAsk.timeoutMs,
     chatType: askChatType,
+    flowId: boundAsk.flowId,
     // Invocation identity (from the hook; enables cross-restart re-attach).
     requestId: boundAsk.requestId,
     originKind: boundAsk.originKind,
@@ -20390,9 +20391,9 @@ export async function startDaemon(botIndex?: number): Promise<void> {
           : 'running';
       return formatTopicStatusLine(phase, title);
     },
-    onWaitingChange: (ask: import('./core/ask-types.js').PendingAsk, waiting: boolean): void => {
+    onWaitingChange: (ask: import('./core/ask-types.js').PendingAsk, waiting: boolean): Promise<void> | undefined => {
       const ds = findActiveBySessionId(ask.sessionId);
-      if (ds) setTopicStatusWaiting(ds, waiting);
+      return ds ? setTopicStatusWaiting(ds, waiting) : undefined;
     },
   };
   setAskCardDispatcher(createLarkAskCardDispatcher(askCardDispatcherDeps));

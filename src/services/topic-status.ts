@@ -113,8 +113,9 @@ export function buildTopicStatusRootCard(phase: TopicTaskPhase, title: unknown):
 
 /** 从权威进度状态推导列表状态；外部作业未终态时不能误标已结束。 */
 export function progressStateTopicPhase(
-  state: Pick<CodexAppProgressCardSessionState, 'phase' | 'overview'>,
+  state: Pick<CodexAppProgressCardSessionState, 'phase' | 'overview' | 'waitingForUser'>,
 ): TopicTaskPhase {
+  if (state.phase === 'running' && state.waitingForUser) return 'waiting';
   if (state.phase === 'running') return state.overview?.blocker ? 'blocked' : 'running';
   if (state.phase === 'failed') return 'failed';
   if (state.phase === 'interrupted') return 'interrupted';

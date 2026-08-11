@@ -52,6 +52,7 @@ class ControlCollector {
   readonly bootstrap;
   readonly socketPath: string;
   readonly states: Array<Record<string, any>> = [];
+  readonly activities: Array<Record<string, any>> = [];
   readonly finals: Array<Record<string, any>> = [];
   private readonly server: Server;
   private readonly sockets = new Set<Socket>();
@@ -129,8 +130,9 @@ class ControlCollector {
           socket.destroy();
           continue;
         }
-        if (assembled.status === 'not-final' && record.kind === 'state') {
-          this.states.push(record.payload);
+        if (assembled.status === 'not-final') {
+          if (record.kind === 'state') this.states.push(record.payload);
+          if (record.kind === 'activity') this.activities.push(record.payload);
         } else if (assembled.status === 'complete') {
           this.finals.push(assembled.payload);
         }
@@ -372,6 +374,12 @@ describe('Codex App request_user_input bridge', () => {
       expect(readRequests(logPath).find(request => request.id === 9100)?.result).toEqual({
         answers: { choice: { answers: ['执行'] } },
       });
+      const waitingIndex = control.activities.findIndex(activity => activity.phase === 'waiting');
+      const resumedIndex = control.activities.findIndex(
+        (activity, index) => index > waitingIndex && activity.phase === 'progress',
+      );
+      expect(waitingIndex).toBeGreaterThan(-1);
+      expect(resumedIndex).toBeGreaterThan(waitingIndex);
       await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
       expect(requestPaths).toContain('/api/ask-flows/complete');
       expect(askBodies.find((_body, index) => requestPaths[index] === '/api/ask-flows/complete'))
