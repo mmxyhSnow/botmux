@@ -15,7 +15,8 @@ export interface ParsedCodexAppProgress {
   overview?: CodexAppProgressOverview;
 }
 
-const PROGRESS_MARKER = /<!--botmux-progress:([\s\S]*?)-->/g;
+const PROGRESS_MARKER_START = '<!--botmux-progress:';
+const PROGRESS_MARKER = /(?:<!--|--)botmux-progress:([\s\S]*?)-->/g;
 const MAX_TITLE_CHARS = 40;
 const MAX_FIELD_CHARS = 240;
 const MAX_STATUS_CHARS = 40;
@@ -38,6 +39,17 @@ function boundedList(value: unknown): string[] | undefined {
     items.push(normalized);
   }
   return items;
+}
+
+/** 清除完整标记后，再丢弃旧流式分句可能单独留下的行尾标记前缀。 */
+function cleanProgressContent(content: string): string {
+  const withoutMarkers = content.replace(PROGRESS_MARKER, '').trimEnd();
+  const lastLineStart = withoutMarkers.lastIndexOf('\n') + 1;
+  const trailingLine = withoutMarkers.slice(lastLineStart).trim();
+  if (trailingLine && PROGRESS_MARKER_START.startsWith(trailingLine)) {
+    return withoutMarkers.slice(0, lastLineStart).trim();
+  }
+  return withoutMarkers.trim();
 }
 
 /** 校验外部作业列表；每项必须同时给出可读标识和结构化状态，缺一即整体拒绝。 */
@@ -123,7 +135,7 @@ export function parseCodexAppProgress(content: string): ParsedCodexAppProgress {
       // 非法 JSON 不得中断普通进度投影。
     }
   }
-  const clean = content.replace(PROGRESS_MARKER, '').trim();
+  const clean = cleanProgressContent(content);
   return {
     content: clean,
     ...(parsed?.title ? { title: parsed.title } : {}),
