@@ -8,8 +8,20 @@
   "capabilities": [
     {
       "id": "progress-card",
+      "name": "即时进度卡",
+      "nameEn": "Immediate progress card",
+      "category": "interaction",
       "criticality": "release-blocking",
       "description": "结构化进度、终态、完整报告与外部任务状态投影。",
+      "descriptionEn": "Structured progress, terminal state, full reports, and external-job state projection.",
+      "controls": [
+        {
+          "key": "codexAppImmediateProgressCard",
+          "scope": "bot",
+          "kind": "boolean",
+          "defaultValue": true
+        }
+      ],
       "entrypoints": [
         {
           "path": "src/core/worker-pool.ts",
@@ -37,8 +49,21 @@
     },
     {
       "id": "request-user-input",
+      "name": "原生提问卡",
+      "nameEn": "Native question card",
+      "category": "interaction",
       "criticality": "release-blocking",
       "description": "Codex App 原生选择题、ASK 单卡流与回答回灌。",
+      "descriptionEn": "Native Codex App choices, a single-card ASK flow, and answer injection into the active turn.",
+      "controls": [
+        {
+          "key": "askReminderPolicy",
+          "scope": "bot",
+          "kind": "enum",
+          "defaultValue": "auto-recommend",
+          "options": ["auto-recommend", "repeat-reminder"]
+        }
+      ],
       "entrypoints": [
         {
           "path": "src/im/lark/ask-card-flow.ts",
@@ -64,8 +89,12 @@
     },
     {
       "id": "final-reply-actions",
+      "name": "最终回复动作",
+      "nameEn": "Final reply actions",
+      "category": "interaction",
       "criticality": "release-blocking",
       "description": "最终回复 v2 推荐动作、一次性回调与可靠投递。",
+      "descriptionEn": "Final-reply v2 suggested actions, one-shot callbacks, and reliable delivery.",
       "entrypoints": [
         {
           "path": "src/services/final-reply-actions.ts",
@@ -91,8 +120,12 @@
     },
     {
       "id": "durable-turn-recovery",
+      "name": "Turn 可靠恢复",
+      "nameEn": "Durable turn recovery",
+      "category": "reliability",
       "criticality": "release-blocking",
       "description": "终态账本、重启恢复、重复投递抑制和未闭环任务追溯。",
+      "descriptionEn": "A terminal ledger, restart recovery, duplicate suppression, and unfinished-turn tracing.",
       "entrypoints": [
         {
           "path": "src/services/turn-delivery-ledger.ts",
@@ -118,8 +151,21 @@
     },
     {
       "id": "topic-status",
+      "name": "话题状态投影",
+      "nameEn": "Topic status projection",
+      "category": "interaction",
       "criticality": "release-blocking",
       "description": "话题列表 reply-preview 与 bot-root 状态投影。",
+      "descriptionEn": "Reply-preview and bot-root task-state projection for topic lists.",
+      "controls": [
+        {
+          "key": "topicStatusDisplay",
+          "scope": "bot",
+          "kind": "enum",
+          "defaultValue": "off",
+          "options": ["off", "reply-preview", "bot-root"]
+        }
+      ],
       "entrypoints": [
         {
           "path": "src/services/topic-status.ts",
@@ -144,8 +190,12 @@
     },
     {
       "id": "owner-notices",
+      "name": "Owner 主动通知",
+      "nameEn": "Owner notices",
+      "category": "reliability",
       "criticality": "release-blocking",
       "description": "Owner 主动通知统一策略、卡片槽位与重启新卡。",
+      "descriptionEn": "Unified owner-notice policy, card slots, and fresh maintenance cards after restarts.",
       "entrypoints": [
         {
           "path": "src/services/owner-notice.ts",
@@ -170,8 +220,12 @@
     },
     {
       "id": "custom-release-lifecycle",
+      "name": "自定义发布状态机",
+      "nameEn": "Custom release lifecycle",
+      "category": "release",
       "criticality": "release-blocking",
       "description": "custom/dev、候选、custom/prod、deploy 的授权发布状态机。",
+      "descriptionEn": "The authorization-gated release state machine across custom/dev, candidates, custom/prod, and deploy.",
       "entrypoints": [
         {
           "path": "scripts/custom-release.mjs",
@@ -199,8 +253,12 @@
     },
     {
       "id": "versioned-runtime-rollback",
+      "name": "版本化运行时与回滚",
+      "nameEn": "Versioned runtime and rollback",
+      "category": "release",
       "criticality": "release-blocking",
       "description": "不可变运行目录、current/controller 指针和安全回滚。",
+      "descriptionEn": "Immutable runtime directories, current/controller pointers, and safe rollback.",
       "entrypoints": [
         {
           "path": "src/cli/runtime-rollback.ts",
@@ -226,8 +284,12 @@
     },
     {
       "id": "production-skill-sync",
+      "name": "生产 Skill 同步",
+      "nameEn": "Production Skill sync",
+      "category": "release",
       "criticality": "release-blocking",
       "description": "维护 Skill 与真实 custom/prod 运行提交同版对齐。",
+      "descriptionEn": "Aligns the maintenance Skill with the actual custom/prod runtime commit.",
       "entrypoints": [
         {
           "path": "src/core/production-skill-sync.ts",
@@ -247,8 +309,12 @@
     },
     {
       "id": "official-source-update-gates",
+      "name": "官方同步分段门禁",
+      "nameEn": "Official sync stage gates",
+      "category": "release",
       "criticality": "release-blocking",
       "description": "官方同步 prepare、verify、promote 分段门禁与失败隔离。",
+      "descriptionEn": "Prepare, verify, and promote stage gates with failure isolation for official-source syncs.",
       "entrypoints": [
         {
           "path": "scripts/sync-official-source.mjs",

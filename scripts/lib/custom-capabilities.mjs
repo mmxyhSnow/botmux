@@ -7,6 +7,14 @@ import { join, resolve } from 'node:path';
 
 export const CUSTOM_CAPABILITIES_FILE = 'custom-capabilities.json';
 const ID_PATTERN = /^[a-z][a-z0-9-]{2,63}$/;
+const CAPABILITY_CATEGORIES = new Set(['interaction', 'reliability', 'release']);
+const CONTROL_SCOPES = new Set(['bot']);
+const CONTROL_KINDS = new Set(['boolean', 'enum']);
+const CONTROL_KEYS = new Set([
+  'askReminderPolicy',
+  'codexAppImmediateProgressCard',
+  'topicStatusDisplay',
+]);
 
 function nonEmptyStrings(value) {
   return Array.isArray(value)
@@ -63,8 +71,39 @@ export function auditCustomCapabilityManifest(root, manifest) {
     if (capability?.criticality !== 'release-blocking') {
       violations.push(`${prefix} P0 清单只允许 release-blocking`);
     }
+    if (typeof capability?.name !== 'string' || !capability.name.trim()) {
+      violations.push(`${prefix} name 不能为空`);
+    }
+    if (typeof capability?.nameEn !== 'string' || !capability.nameEn.trim()) {
+      violations.push(`${prefix} nameEn 不能为空`);
+    }
+    if (!CAPABILITY_CATEGORIES.has(capability?.category)) {
+      violations.push(`${prefix} category 无效`);
+    }
     if (typeof capability?.description !== 'string' || !capability.description.trim()) {
       violations.push(`${prefix} description 不能为空`);
+    }
+    if (typeof capability?.descriptionEn !== 'string' || !capability.descriptionEn.trim()) {
+      violations.push(`${prefix} descriptionEn 不能为空`);
+    }
+    if (capability?.controls !== undefined) {
+      if (!Array.isArray(capability.controls) || capability.controls.length === 0) {
+        violations.push(`${prefix} controls 必须为非空数组`);
+      } else {
+        for (const control of capability.controls) {
+          const controlPrefix = `${prefix} control(${String(control?.key)})`;
+          if (!CONTROL_KEYS.has(control?.key)) violations.push(`${controlPrefix} key 无效`);
+          if (!CONTROL_SCOPES.has(control?.scope)) violations.push(`${controlPrefix} scope 无效`);
+          if (!CONTROL_KINDS.has(control?.kind)) violations.push(`${controlPrefix} kind 无效`);
+          if (control?.kind === 'boolean' && typeof control?.defaultValue !== 'boolean') {
+            violations.push(`${controlPrefix} boolean defaultValue 无效`);
+          }
+          if (control?.kind === 'enum'
+            && (!nonEmptyStrings(control?.options) || !control.options.includes(control.defaultValue))) {
+            violations.push(`${controlPrefix} enum options/defaultValue 无效`);
+          }
+        }
+      }
     }
     if (!nonEmptyStrings(capability?.contracts)) violations.push(`${prefix} contracts 不能为空`);
     if (!nonEmptyStrings(capability?.runtimeProbes)) violations.push(`${prefix} runtimeProbes 不能为空`);

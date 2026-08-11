@@ -686,6 +686,7 @@ describe('PUT /api/bot-card-prefs — Codex App clean history', () => {
 
       const initial = await (await fetch(`${base}/api/bot-default-oncall`)).json();
       expect(initial.codexAppCleanInput).toBe(false);
+      expect(initial.codexAppImmediateProgressCard).toBe(true);
 
       const on = await fetch(`${base}/api/bot-card-prefs`, {
         method: 'PUT',
@@ -704,6 +705,24 @@ describe('PUT /api/bot-card-prefs — Codex App clean history', () => {
       expect(off.status).toBe(200);
       expect(await off.json()).toMatchObject({ ok: true, codexAppCleanInput: false });
       expect(JSON.parse(readFileSync(configPath, 'utf-8'))[0].codexAppCleanInput).toBeUndefined();
+
+      const progressOff = await fetch(`${base}/api/bot-card-prefs`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ codexAppImmediateProgressCard: false }),
+      });
+      expect(progressOff.status).toBe(200);
+      expect(await progressOff.json()).toMatchObject({ ok: true, codexAppImmediateProgressCard: false });
+      expect(JSON.parse(readFileSync(configPath, 'utf-8'))[0].codexAppImmediateProgressCard).toBe(false);
+
+      const progressOn = await fetch(`${base}/api/bot-card-prefs`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ codexAppImmediateProgressCard: true }),
+      });
+      expect(progressOn.status).toBe(200);
+      expect(await progressOn.json()).toMatchObject({ ok: true, codexAppImmediateProgressCard: true });
+      expect(JSON.parse(readFileSync(configPath, 'utf-8'))[0].codexAppImmediateProgressCard).toBeUndefined();
     } finally {
       if (handle) await handle.close();
       handle = null;

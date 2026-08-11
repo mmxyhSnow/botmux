@@ -22736,6 +22736,134 @@ dialog select[multiple]:hover:not(:disabled) {
   align-self: center;
 }
 
+/* 自定义能力全景：清单卡片与现有 Bot 级控制共用一个稳定入口。 */
+.custom-capabilities-page {
+  container-type: inline-size;
+}
+
+.custom-capabilities-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(240px, 420px) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.custom-capabilities-toolbar > div {
+  display: grid;
+  gap: 3px;
+}
+
+.custom-capabilities-toolbar strong { font-size: 13px; }
+.custom-capabilities-toolbar small,
+.custom-capabilities-baseline { color: var(--muted); font-size: 11px; }
+
+.custom-capabilities-toolbar select,
+.custom-capability-control select {
+  min-width: 0;
+  height: 36px;
+  padding: 0 34px 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--fg);
+}
+
+.custom-capabilities-baseline {
+  justify-self: end;
+  padding: 5px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+.custom-capability-group { display: grid; gap: 10px; }
+.custom-capability-group > h2 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 720;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.custom-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.custom-capability-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 168px;
+  padding: 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.custom-capability-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.custom-capability-head h3 { margin: 0; font-size: 15px; }
+.custom-capability-head > span {
+  flex: none;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.custom-capability-card > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.custom-capability-static,
+.custom-capability-control {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.custom-capability-control > label:not(.toggle-row) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, auto);
+  align-items: center;
+  gap: 12px;
+}
+
+.custom-capability-control .toggle-row { padding: 0; }
+.custom-capability-control > small { display: block; margin-top: 6px; line-height: 1.5; }
+.custom-capability-control > small.ok { color: var(--success, #2f9e68); }
+.custom-capability-control > small.error,
+.custom-capabilities-error { color: var(--danger, #d34848); }
+.custom-capabilities-loading,
+.custom-capabilities-error { padding: 18px; border: 1px solid var(--border-soft); border-radius: var(--radius-lg); }
+
+@container (max-width: 760px) {
+  .custom-capabilities-toolbar { grid-template-columns: 1fr; }
+  .custom-capabilities-baseline { justify-self: start; }
+  .custom-capability-grid { grid-template-columns: 1fr; }
+}
+
 .bot-defaults-page .bd-roster {
   top: 0;
 }

@@ -18,6 +18,12 @@ describe('custom capability audit', () => {
       'custom-release-lifecycle',
       'official-source-update-gates',
     ]));
+    expect(result.manifest.capabilities.flatMap((item: { controls?: Array<{ key: string }> }) =>
+      item.controls?.map(control => control.key) ?? [])).toEqual([
+      'codexAppImmediateProgressCard',
+      'askReminderPolicy',
+      'topicStatusDisplay',
+    ]);
   });
 
   it('接入符号漂移时阻断升级验收', () => {

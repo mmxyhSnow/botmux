@@ -42,6 +42,7 @@ export const dashboardRoutes: DashboardRoute[] = [
   pageRoute('workflows', '#/workflows', () => import('./v3-page.js'), 'renderV3RunsPage'),
   pageRoute('groups', '#/groups', () => import('./groups-page.js'), 'renderGroupsPage'),
   pageRoute('settings', '#/settings', () => import('./settings-page.js'), 'renderSettingsPage'),
+  pageRoute('custom-capabilities', '#/custom-capabilities', () => import('./custom-capabilities-page.js'), 'renderCustomCapabilitiesPage'),
   pageRoute('bot-defaults', '#/bot-defaults', () => import('./bot-defaults-page.js'), 'renderBotDefaultsPage'),
   pageRoute('skills', '#/skills', () => import('./skills-page.js'), 'renderSkillsPage'),
   pageRoute('connectors-logs', '#/connectors/logs', () => import('./connectors-page.js'), 'renderConnectorsLogsPage'),
