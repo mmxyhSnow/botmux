@@ -63,6 +63,7 @@ import {
 import { readSupervisorProcessStartIdentity } from './core/process-start-identity.js';
 import { statSync } from 'node:fs';
 import { addReaction, deleteMessage, getChatContext, getChatMode, getChatNameAndMode, getMessageChatId, listChatMemberOpenIds, MessageWithdrawnError, replyMessage, resolveAllowedUsersWithMap, sendMessage, sendUserMessage, updateMessage, type EntryResolveStatus } from './im/lark/client.js';
+import { handleFrontendCrPreviewAction } from './im/lark/frontend-cr-preview-handler.js';
 import { resolveGroupJoinPrompt, waitForAllowedUserInChat } from './core/auto-start.js';
 import {
   loadBotConfigAtIndex,
@@ -5050,6 +5051,14 @@ const cardDeps: CardHandlerDeps = {
       eventId: data.action?.value?.event_id,
     });
   },
+  frontendCrPreviewCardAction: (data, appId) => handleFrontendCrPreviewAction(data, {
+    dataDir: config.session.dataDir,
+    larkAppId: appId,
+    sendFormal: (targetChatId, cardJson, providerKey) =>
+      sendMessage(appId, targetChatId, cardJson, 'interactive', providerKey),
+    sendReplacement: (sourceMessageId, cardJson, providerKey) =>
+      replyMessage(appId, sourceMessageId, cardJson, 'interactive', false, providerKey),
+  }),
   v3GateDeps: {
     driveRun: (runId) => v3GateRunner.driveDetached(runId),
     // 审批权限：复用 canOperate（话题 owner / allowedUsers / oncall）。无 binding（corrupt /
