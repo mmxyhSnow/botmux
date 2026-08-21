@@ -420,6 +420,13 @@ export class CodexBridgeQueue {
   }
 
   private ingestOne(ev: CodexBridgeEvent, bufferUnmatched: boolean): void {
+    // Mid-turn assistant progress is not a queue-side signal: it never opens or
+    // closes a pending turn, never resets seen tracking beyond the mark uuid
+    // record below, and never contributes to HOL-drop. Worker.ts reads
+    // `assistant_progress` off the drain result before this ingest call and
+    // pipes it through the progress-card throttler. Early-return here so the
+    // FIFO invariants (started/collecting/finalText) stay untouched.
+    if (ev.kind === 'assistant_progress') return;
     if (ev.kind === 'user') {
       // First decide whether this user event is a REAL turn-start: either it
       // matches the head pending Lark turn's fingerprint (and isn't tooOld),
@@ -576,6 +583,18 @@ export class CodexBridgeQueue {
   /** Test helper — peek the queue without mutating. */
   peek(): readonly CodexPendingTurn[] {
     return this.queue;
+  }
+
+  /** Lark reply turnId of the currently-collecting turn (i.e. the mark whose
+   *  transcript user-event fired and whose assistant_final has NOT arrived
+   *  yet). Returns undefined between turns. Used by the worker's progress
+   *  card path to attribute a mid-turn `assistant_progress` chunk to the
+   *  right Lark turn — the daemon-side card requires the Lark om_ id, not
+   *  the transcript's native turn_id. */
+  activeReplyTurnId(): string | undefined {
+    if (!this.collecting) return undefined;
+    if (this.collecting.finalText !== undefined) return undefined;
+    return this.collecting.turnId;
   }
 }
 

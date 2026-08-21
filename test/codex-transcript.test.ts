@@ -648,12 +648,26 @@ describe('drainCodexRollout', () => {
       ev({ type: 'response_item', payload: { type: 'function_call', name: 'shell' } }) +
       ev({ type: 'response_item', payload: { type: 'function_call_output' } }) +
       ev({ type: 'event_msg', payload: { type: 'token_count', total: 42 } }) +
-      ev({ type: 'event_msg', payload: { type: 'agent_message', message: 'mid-turn chatter' } }) +
       ev(userResponseItem('actual prompt')));
     const r = drainCodexRollout(path, 0);
     expect(r.events).toHaveLength(1);
     expect(r.events[0].kind).toBe('user');
     expect(r.events[0].text).toBe('actual prompt');
+  });
+
+  it('surfaces event_msg/agent_message as assistant_progress (mid-turn commentary)', () => {
+    writeFileSync(path,
+      ev(userResponseItem('go')) +
+      ev({ type: 'event_msg', payload: { type: 'agent_message', message: 'first chunk', phase: 'commentary' } }) +
+      ev({ type: 'event_msg', payload: { type: 'agent_message', message: 'second chunk', phase: 'commentary' } }) +
+      ev({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 't1', last_agent_message: 'done' } }));
+    const r = drainCodexRollout(path, 0);
+    expect(r.events.map(e => ({ kind: e.kind, text: e.text }))).toEqual([
+      { kind: 'user', text: 'go' },
+      { kind: 'assistant_progress', text: 'first chunk' },
+      { kind: 'assistant_progress', text: 'second chunk' },
+      { kind: 'assistant_final', text: 'done' },
+    ]);
   });
 
   it('extracts turn_aborted as a no-output terminal edge', () => {

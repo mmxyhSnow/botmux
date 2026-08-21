@@ -143,6 +143,7 @@ import {
 import { buildBotmuxLarkNativeSessionTitle } from './core/session-title.js';
 import { CODEX_AUTH_ERROR_CODE, CODEX_CONNECTION_ERROR_CODE, CODEX_INVALID_REQUEST_ERROR_CODE, CODEX_RATE_LIMIT_ERROR_CODE, drainCodexRollout, findCodexRolloutBySessionId, findCodexRolloutByPid, findCodexRolloutSetByPid, codexHistorySidIsOwned, splitCodexEventsByCutoff, extractLastCodexTurn, codexSessionIdFromRolloutPath, isCodexRateLimitEvent, scanCodexThreadSettings, readLatestCodexRuntime, type CodexBridgeEvent, type CodexDrainResult } from './services/codex-transcript.js';
 import { CodexServiceTierTracker, resolveCodexServiceTierSnapshot } from './services/codex-service-tier.js';
+import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
 import { WORKER_IPC_HANDLER_READY_EVENT } from './worker-ipc-preload.js';
 import { drainTraexRollout, findTraexRolloutBySessionId, findTraexRolloutByPid, findTraexRolloutSetByPid, readLatestTraexRuntime, traexHistorySidIsOwned, type TraexDrainResult, type TraexRuntimeSnapshot } from './services/traex-transcript.js';
 import { parseTraexUserInputQuestions } from './services/traex-user-input.js';
@@ -3846,6 +3847,16 @@ let activeRuntimePublished = false;
 const codexBridgeQueue = new CodexBridgeQueue();
 let codexBridgeWatcher: FSWatcher | null = null;
 let codexBridgeTimer: NodeJS.Timeout | null = null;
+/** Per-Lark-reply-turn accumulator that turns transcript `assistant_progress`
+ *  chunks (traex / codex mid-turn `event_msg/agent_message`) into full-sentence
+ *  progress-card snapshots. codex-app has its own signed runner-side path
+ *  (worker.ts:8365) — this bridge covers the OTHER structured CLIs so the
+ *  daemon-side card sees real intermediate updates instead of just the
+ *  initial "已收到" and the final settle entry. Keyed by Lark om_ turnId. */
+const structuredBridgeProgressByTurnId = new Map<
+  string,
+  { throttler: CodexAppProgressThrottler; text: string; startedAtMs: number }
+>();
 /** Settings are observed on the same append-only cursor as bridge output.
  *  The tracker owns rollout-generation clear/update semantics and publishes a
  *  dedicated IPC event, independent of PTY redraw frequency. */
@@ -5410,7 +5421,7 @@ function hermesBridgeIngest(): void {
     log(`Hermes bridge dropped ${drop.kind} ${drop.uuid} from sourceSessionId=${drop.sourceSessionId ?? '?'} expected=${drop.expectedSourceSessionId ?? hermesBridgeSourceSessionId ?? 'unbound'} reason=${drop.reason}`);
   }
   if (filtered.events.length > 0) lastStructuredBridgeActivityAtMs = Date.now();
-  codexBridgeQueue.ingest(filtered.events);
+  structuredBridgeIngestWithProgress(filtered.events);
   pruneExpiredStructuredHeadsAndEmit('Hermes ingest');
   if (filtered.events.some(event => event.kind === 'assistant_final')) {
     idleDetector?.fireIdle();
@@ -5450,7 +5461,7 @@ function mtrBridgeIngest(): void {
   const result = drainMtrSession(mtrBridgeSource, mtrBridgeOffset);
   mtrBridgeOffset = result.newOffset;
   if (result.events.length > 0) lastStructuredBridgeActivityAtMs = Date.now();
-  codexBridgeQueue.ingest(result.events);
+  structuredBridgeIngestWithProgress(result.events);
   pruneExpiredStructuredHeadsAndEmit('MTR ingest');
   if (result.events.some(event => event.kind === 'assistant_final')) {
     idleDetector?.fireIdle();
@@ -5994,7 +6005,7 @@ function codexBridgeIngest(opts: {
     maybeEmitCodexStructuredRateLimit(result.events);
   }
   if (result.events.length > 0) lastStructuredBridgeActivityAtMs = Date.now();
-  codexBridgeQueue.ingest(result.events);
+  structuredBridgeIngestWithProgress(result.events);
   pruneExpiredStructuredHeadsAndEmit('structured ingest');
   // Transcript-driven idle: a normal `assistant_final` or no-output
   // `turn_aborted` is Codex declaring end-of-turn, far more reliable than the screen-pattern heuristic
@@ -6024,6 +6035,61 @@ function maybeEmitCodexStructuredRateLimit(events: readonly CodexBridgeEvent[]):
     });
     log(`Structured rate-limit detected in Codex transcript (uuid=${ev.uuid.substring(0, 8)}, retryLabel=${usageLimit.retryLabel}) → emitted limited state.`);
     return;
+  }
+}
+
+/** Route mid-turn `assistant_progress` chunks (traex/codex commentary) into the
+ *  daemon-side progress card. Codex-app has its own signed runner path
+ *  (worker.ts progress marker forwarding) — this covers non-codex-app CLIs.
+ *
+ *  Ordering matters: the queue's `activeReplyTurnId()` only returns the current
+ *  Lark turnId AFTER its `ingestOne` has seen the `user` event for that turn.
+ *  So this must run interleaved with ingest, not as a separate pre/post pass —
+ *  ingest each event in order, then (for `assistant_progress`) read the freshly-
+ *  set collecting turnId and forward. Events are batched per Lark reply turnId
+ *  and fed through `CodexAppProgressThrottler` (min interval 1s, up to 8
+ *  snapshots per drain) so full-sentence updates hit the daemon-side
+ *  `progress_output` handler. Fingerprint dedup lives on the daemon side. */
+function structuredBridgeIngestWithProgress(events: readonly CodexBridgeEvent[]): void {
+  if (events.length === 0) return;
+  const now = Date.now();
+  for (const ev of events) {
+    // Capture the currently-collecting reply turnId BEFORE ingest — an
+    // assistant_final / turn_aborted resets `collecting` to null inside
+    // ingestOne, so we need the pre-ingest snapshot to reap the accumulator.
+    const preIngestReplyTurnId = codexBridgeQueue.activeReplyTurnId();
+    codexBridgeQueue.ingest([ev]);
+    if (ev.kind === 'assistant_progress') {
+      // Post-ingest read: for the very first progress chunk within a turn the
+      // pre-ingest snapshot IS the right value; but assistant_progress does
+      // not mutate `collecting`, so pre and post are identical here.
+      const replyTurnId = codexBridgeQueue.activeReplyTurnId();
+      if (!replyTurnId) continue;
+      let entry = structuredBridgeProgressByTurnId.get(replyTurnId);
+      if (!entry) {
+        entry = {
+          throttler: new CodexAppProgressThrottler({ minIntervalMs: 0 }),
+          text: '',
+          startedAtMs: ev.timestampMs,
+        };
+        structuredBridgeProgressByTurnId.set(replyTurnId, entry);
+      }
+      const separator = entry.text && !entry.text.endsWith('\n') ? '\n' : '';
+      entry.text = `${entry.text}${separator}${ev.text}`;
+      const snapshots = entry.throttler.drainSnapshots({
+        turnId: replyTurnId,
+        text: entry.text,
+        startedAtMs: entry.startedAtMs,
+        nowMs: now,
+      });
+      for (const snapshot of snapshots) {
+        send({ type: 'progress_output', content: snapshot.content, turnId: replyTurnId });
+      }
+      continue;
+    }
+    if ((ev.kind === 'assistant_final' || ev.kind === 'turn_aborted') && preIngestReplyTurnId) {
+      structuredBridgeProgressByTurnId.delete(preIngestReplyTurnId);
+    }
   }
 }
 

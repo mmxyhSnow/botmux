@@ -160,6 +160,36 @@ export function drainTraexRollout(path: string, fromOffset: number): TraexDrainR
       if (userText) events.push({ ...base, kind: 'user', text: userText });
       continue;
     }
+    // TraeX >=0.201.x writes user input as a flat `event_msg/user_message`
+    // record (text in `payload.message`, a plain string) and no longer emits
+    // the `response_item/role=user` record older versions used for turn-start.
+    // Without this branch no `kind:'user'` event is produced, the pending
+    // structured head never starts, and the progress card expires stuck at its
+    // initial "received" state. Recognise both shapes so cards keep updating
+    // across the CLI format change.
+    if (obj.type === 'event_msg'
+      && payload.type === 'user_message'
+      && typeof payload.message === 'string') {
+      const userText = payload.message;
+      if (userText) events.push({ ...base, kind: 'user', text: userText });
+      continue;
+    }
+    // Mid-turn commentary — assistant text that traex emits repeatedly while
+    // the turn is in flight (`event_msg / agent_message`, `payload.message`).
+    // Not a turn boundary — task_complete still terminates — but worker.ts
+    // routes these into the progress-card throttler so the daemon-side card
+    // gets real intermediate updates instead of only "已收到" + final.
+    if (obj.type === 'event_msg'
+      && payload.type === 'agent_message'
+      && typeof payload.message === 'string'
+      && payload.message.length > 0) {
+      events.push({
+        ...base,
+        kind: 'assistant_progress',
+        text: payload.message,
+      });
+      continue;
+    }
     if (obj.type === 'event_msg'
       && payload.type === 'task_complete'
       && typeof payload.turn_id === 'string'
