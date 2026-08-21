@@ -11,7 +11,6 @@
 import { randomUUID } from 'node:crypto';
 
 import { logger } from '../utils/logger.js';
-import { createAskBrokerActions } from './ask-broker-actions.js';
 import {
   askKeyFor,
   dispatchUuidForKey,
@@ -22,7 +21,6 @@ import {
 import type {
   AskCardDispatcher,
   AskClickOutcome,
-  AskFlowStep,
   AskResult,
   CreateAskInput,
   PendingAsk,
@@ -58,8 +56,6 @@ interface InternalPending extends Omit<PendingAsk, 'selections'> {
   timeoutHandle: NodeJS.Timeout;
   /** epoch ms when settle ran; undefined while still pending. */
   settledAt?: number;
-  /** 结算态卡片更新；最终完成态必须等待它结束，避免旧状态后写覆盖。 */
-  settlePatch?: Promise<void>;
   /** Terminal result, retained briefly after settle so a same-requestId replay
    *  in the ambiguous window gets the identical answer instead of a stale/new
    *  ask (codex P1-1). */
@@ -80,26 +76,9 @@ interface InternalPending extends Omit<PendingAsk, 'selections'> {
    * 按问题序号（questionIndex）累积的勾选 key 集合。
    */
   selections: Map<number, Set<string>>;
-  /** 连续提问标识；具体历史集中保存在 flows，避免每个 ask 复制可变状态。 */
-  flowId?: string;
 }
+
 const pending = new Map<string, InternalPending>();
-interface InternalFlow {
-  cardMessageId?: string;
-  lastAskId?: string;
-  questionOffset: number;
-  steps: AskFlowStep[];
-  previousSegment?: {
-    cardMessageId: string;
-    questionOffset: number;
-    steps: AskFlowStep[];
-  };
-}
-const flows = new Map<string, InternalFlow>();
-const MAX_FLOW_QUESTIONS_PER_CARD = 5;
-function flowKey(sessionId: string, flowId: string): string {
-  return `${sessionId}\u0000${flowId}`;
-}
 let dispatcher: AskCardDispatcher | null = null;
 
 /** Injected durable store (codex P1-4: no global-dataDir reads from the broker).
@@ -153,18 +132,19 @@ export interface AskAnswerActor {
 let canTalkChecker:
   | ((larkAppId: string, chatId: string, openId: string, chatType?: 'group' | 'p2p', actor?: AskAnswerActor) => boolean)
   | null = null;
+
 /** Wire the canTalk predicate. Called once during daemon bootstrap. */
 export function setCanTalkChecker(
   fn: (larkAppId: string, chatId: string, openId: string, chatType?: 'group' | 'p2p', actor?: AskAnswerActor) => boolean,
 ): void {
   canTalkChecker = fn;
 }
+
 /** A click is authorized iff the clicker may `canTalk` to the bot in this chat.
  *  `botmux ask` is a talk-level interaction (answering the agent's question),
  *  so it follows the canTalk gate — not the stricter canOperate / allowedUsers.
  *  `actor` is only supplied by the text-reply path; card clicks omit it. */
 function isAuthorizedToAnswer(ask: InternalPending, by: string, actor?: AskAnswerActor): boolean {
-  if (ask.approvers?.length && !ask.approvers.includes(by)) return false;
   return canTalkChecker?.(ask.larkAppId, ask.chatId, by, ask.chatType, actor) ?? false;
 }
 
@@ -263,37 +243,8 @@ export function registerAsk(input: CreateAskInput): Promise<AskResult> {
 
   const askId = randomUUID();
   const nonce = randomUUID().slice(0, 8);
-  const projectionId = randomUUID();
   const createdAt = Date.now();
   const deadlineAt = createdAt + input.timeoutMs;
-  let flow: InternalFlow | undefined;
-  if (input.flowId) {
-    const key = flowKey(input.sessionId, input.flowId);
-    flow = flows.get(key);
-    if (!flow) {
-      flow = { questionOffset: 0, steps: [] };
-      flows.set(key, flow);
-    }
-    const currentQuestionCount = flow.steps.reduce(
-      (total, step) => total + step.questions.length,
-      0,
-    );
-    if (
-      currentQuestionCount > 0
-      && currentQuestionCount + input.questions.length > MAX_FLOW_QUESTIONS_PER_CARD
-    ) {
-      if (flow.cardMessageId) {
-        flow.previousSegment = {
-          cardMessageId: flow.cardMessageId,
-          questionOffset: flow.questionOffset,
-          steps: flow.steps,
-        };
-      }
-      flow.questionOffset += currentQuestionCount;
-      flow.steps = [];
-      flow.cardMessageId = undefined;
-    }
-  }
 
   return new Promise<AskResult>((resolve) => {
     const timeoutHandle = setTimeout(() => {
@@ -311,15 +262,12 @@ export function registerAsk(input: CreateAskInput): Promise<AskResult> {
       originKind,
       resumable,
       nonce,
-      projectionId,
       larkAppId: input.larkAppId,
       chatId: input.chatId,
       rootMessageId: input.rootMessageId,
       sessionId: input.sessionId,
       chatType: input.chatType,
       questions: input.questions,
-      ...(input.approvers?.length ? { approvers: [...input.approvers] } : {}),
-      ...(input.flowId ? { flowId: input.flowId } : {}),
       createdAt,
       deadlineAt,
       settled: false,
@@ -328,7 +276,6 @@ export function registerAsk(input: CreateAskInput): Promise<AskResult> {
       selections,
     };
     pending.set(askId, ask);
-    if (flow) flow.lastAskId = askId;
     // Persist ONLY resumable origins (codex P1-4). A restart before the card
     // lands still leaves a resumable record; restore/re-attach re-sends.
     if (resumable) {
@@ -399,13 +346,6 @@ function sendCardForAsk(ask: InternalPending): void {
         const cur = pending.get(ask.askId);
         if (cur && !cur.settled) {
           cur.cardMessageId = messageId;
-          if (cur.flowId) {
-            const flow = flows.get(flowKey(cur.sessionId, cur.flowId));
-            if (flow?.lastAskId === cur.askId) {
-              flow.cardMessageId = messageId;
-              flow.previousSegment = undefined;
-            }
-          }
           if (cur.resumable) persistFromInternal(cur);
         }
         return; // sent (or server-deduped to the original) — done
@@ -518,24 +458,173 @@ function persistFromInternal(ask: InternalPending): void {
 }
 
 /**
- * ASK 新卡发送成功后原子切换当前投影身份和 messageId。
- * 发送期间若问题已结算或又被替换则拒绝，调用方负责把孤儿新卡改成失效态。
+ * 勾选/取消勾选某问题的某个选项（累积模式，不 settle）。
+ *
+ * 校验同 `tryResolveAsk`：askId 存在 / nonce 匹配 / 未 settle / 已授权 /
+ * questionIndex 合法 / key 在该问题的 options 中。
+ *
+ * 对于单选问题（multiSelect:false），翻转时 Set 内只保留该 key（相当于"换选"）。
+ * 对于多选问题（multiSelect:true），翻转规则：已在 Set 中则移除，否则添加。
+ *
+ * 成功返回 `'toggled'`；非法返回对应 AskClickOutcome。
  */
-export function replaceAskCardProjection(input: {
+export function toggleAsk(args: {
   askId: string;
-  expectedProjectionId: string;
-  projectionId: string;
-  messageId: string;
-}): boolean {
-  const ask = pending.get(input.askId);
-  if (!ask || ask.settled || ask.projectionId !== input.expectedProjectionId) return false;
-  ask.projectionId = input.projectionId;
-  ask.cardMessageId = input.messageId;
-  if (ask.flowId) {
-    const flow = flows.get(flowKey(ask.sessionId, ask.flowId));
-    if (flow?.lastAskId === ask.askId) flow.cardMessageId = input.messageId;
+  nonce: string;
+  questionIndex: number;
+  key: string;
+  by: string;
+}): AskClickOutcome {
+  gcSettled();
+  const ask = pending.get(args.askId);
+  if (!ask) return 'stale';
+  if (ask.nonce !== args.nonce) return 'stale';
+  if (ask.settled) return 'already_settled';
+  if (!isAuthorizedToAnswer(ask, args.by)) return 'unauthorized';
+
+  const question = ask.questions[args.questionIndex];
+  if (!question) return 'stale';
+  if (!question.options.some((o) => o.key === args.key)) return 'stale';
+
+  const sel = ask.selections.get(args.questionIndex)!;
+
+  if (question.multiSelect) {
+    // 多选：有则删、无则加
+    if (sel.has(args.key)) {
+      sel.delete(args.key);
+    } else {
+      sel.add(args.key);
+    }
+  } else {
+    // 单选：清空后只保留该 key（等价于"换选"，再次 toggle 同一 key 也保留）
+    sel.clear();
+    sel.add(args.key);
   }
-  return true;
+
+  // Persist the updated checkbox state so a restart mid-multi-select keeps the
+  // boxes the user already ticked (best-effort; never blocks the toggle).
+  persistFromInternal(ask);
+
+  return 'toggled';
+}
+
+/**
+ * 提交答案并 settle。
+ *
+ * `selections` 显式传入时直接使用（按钮单选 / 一次性表单提交场景）；
+ * 否则使用 `toggleAsk` 累积的勾选状态。
+ *
+ * 对于 `multiSelect:false` 的问题，要求恰好 1 个选中，否则返回 `'stale'`。
+ * 校验通过则 settle 并返回 `'accepted'`；非法返回对应 AskClickOutcome。
+ */
+export function submitAsk(args: {
+  askId: string;
+  nonce: string;
+  by: string;
+  selections?: ReadonlyArray<ReadonlyArray<string>>;
+  /** 空提交二次确认已通过（用户在 arm 卡片上再点了一次）。仅影响「全多选 + 全空」
+   *  这一种可确认的空提交；其它情形不看它。缺省 false。 */
+  confirmEmpty?: boolean;
+}): AskClickOutcome {
+  gcSettled();
+  const ask = pending.get(args.askId);
+  if (!ask) return 'stale';
+  if (ask.nonce !== args.nonce) return 'stale';
+  if (ask.settled) return 'already_settled';
+  if (!isAuthorizedToAnswer(ask, args.by)) return 'unauthorized';
+
+  // 构建最终答案数组（严格按 ask.questions 规范化，长度恒 = questions.length）
+  let answers: ReadonlyArray<ReadonlyArray<string>>;
+
+  if (args.selections !== undefined) {
+    // 显式传入：拒绝超出真实问题数的输入（form_value 是外部输入，未绑定真实 question
+    // 的额外槽既不能影响确认策略、也不能进入结果）；缺失的尾部按空集补齐（兼容旧 form
+    // 只回传前 N 问的情形）。随后逐问按 canonical 槽校验单选约束 + key 合法性。
+    if (args.selections.length > ask.questions.length) return 'stale';
+    const canonical: string[][] = [];
+    for (let i = 0; i < ask.questions.length; i++) {
+      const q = ask.questions[i]!;
+      const sel = args.selections[i] ?? [];
+      if (!q.multiSelect && sel.length !== 1) return 'stale';
+      for (const key of sel) {
+        if (!q.options.some((o) => o.key === key)) return 'stale';
+      }
+      canonical.push([...sel]);
+    }
+    answers = canonical;
+  } else {
+    // 使用累积的勾选状态
+    const built: string[][] = [];
+    for (let i = 0; i < ask.questions.length; i++) {
+      const q = ask.questions[i]!;
+      const sel = ask.selections.get(i)!;
+      if (!q.multiSelect && sel.size !== 1) return 'stale';
+      built.push([...sel]);
+    }
+    answers = built;
+  }
+
+  // 空提交二次确认（防手滑）：鉴权 + nonce + 单选约束都过了，若「每个问题都允许空集
+  // （全多选）」且当前所有问题都没选任何 key，第一次提交先不 settle，返回
+  // needs_empty_confirm 让卡片 arm 一个确认按钮；带 confirmEmpty 再点才真正落空答案。
+  // 只在全多选时触发：只要有一个单选问题，空集在上面的单选约束里已被判 stale，空提交
+  // 本就不是有效答案，不进二次确认（否则 arm 后二次点击必然 stale，形成死路）。
+  // answers 已按 questions 规范化（长度恒等、无越界槽），故 every() 只看真实问题。
+  if (!args.confirmEmpty
+      && ask.questions.length > 0
+      && ask.questions.every((q) => q.multiSelect)
+      && answers.every((keys) => keys.length === 0)) {
+    return 'needs_empty_confirm';
+  }
+
+  settle(args.askId, {
+    kind: 'answered',
+    answers,
+    by: args.by,
+    comment: null,
+    timedOut: false,
+  });
+  return 'accepted';
+}
+
+/**
+ * 提交一段自定义回复（用户在话题里直接打字作答，替代点按钮）并 settle。
+ *
+ * 校验：askId 存在 / 未 settle / `by` 可 canTalk / text trim 后非空。
+ * settle 为 `kind:'answered'`，各问 `answers` 为空数组、`comment` 携带 trim 后原文
+ * （替代语义：没有任何选项被选中，CLI 侧 formatAnswer 用 comment 回落作答）。
+ *
+ * 不需要 nonce：调用方（daemon 消息路由）用 `findPendingAskByAnchor` 从在线
+ * pending 表按话题 anchor 查到 askId，本身就排除了「重启后的陈旧卡片」场景。
+ *
+ * `actor`：文字作答路径拿得到完整消息事件，把 bot / union context 传进来，让 talk
+ * 判定与 dispatcher 外层闸 / quota 复查同源（bot → evaluateBotTalk，人 → evaluateTalk
+ * 的 teamMember union 腿）。不传则退化为纯 open_id 判定（与卡片点击一致）。
+ *
+ * 成功返回 `'accepted'`；非法返回对应 AskClickOutcome。
+ */
+export function submitCustomReply(args: {
+  askId: string;
+  by: string;
+  text: string;
+  actor?: AskAnswerActor;
+}): AskClickOutcome {
+  gcSettled();
+  const ask = pending.get(args.askId);
+  if (!ask) return 'stale';
+  if (ask.settled) return 'already_settled';
+  if (!isAuthorizedToAnswer(ask, args.by, args.actor)) return 'unauthorized';
+  const text = args.text.trim();
+  if (!text) return 'stale';
+
+  settle(args.askId, {
+    kind: 'answered',
+    answers: ask.questions.map(() => []),
+    by: args.by,
+    comment: text,
+    timedOut: false,
+  });
+  return 'accepted';
 }
 
 /**
@@ -565,11 +654,34 @@ export function findPendingAskByAnchor(args: {
   return undefined;
 }
 
-/**
- * 使所有待答 ASK 失效，供 daemon 关闭或重启时解除 CLI 子进程等待。
+/** Resolve attempt from a card-button click. Returns one of the §10 outcomes;
+ *  caller (card click handler) maps to user-facing toast.
  *
- * 返回本次实际结算的数量；竞态窗口里已结算但仍保留的记录会被跳过。
- */
+ *  v0.1.8 起退化为单问单选的便捷封装：等价于
+ *  `submitAsk({..., selections:[[selected]]})`.
+ *  使 `botmux ask buttons` 与其已有测试零回归。
+ *
+ *  All four "no-op" outcomes (`unauthorized`/`stale`/`already_settled`) leave
+ *  the broker state unchanged so the original CLI Promise keeps waiting for
+ *  the real winner or the deadline. */
+export function tryResolveAsk(args: {
+  askId: string;
+  nonce: string;
+  selected: string;
+  by: string;
+}): AskClickOutcome {
+  return submitAsk({
+    askId: args.askId,
+    nonce: args.nonce,
+    by: args.by,
+    selections: [[args.selected]],
+  });
+}
+
+/** Invalidate every pending ask. Intended for daemon shutdown / restart paths
+ *  so CLI subprocesses unblock with `kind:'invalidated'` instead of waiting
+ *  forever on a dead daemon. Returns the number of asks actually settled
+ *  (settled-but-retained entries from the race window are skipped). */
 export function invalidateAll(reason: string): number {
   const ids = [...pending.entries()]
     .filter(([, ask]) => !ask.settled)
@@ -588,42 +700,6 @@ export function invalidateAll(reason: string): number {
     logger.info?.(`ask-broker: invalidated ${ids.length} pending ask(s): ${reason}`);
   }
   return ids.length;
-}
-
-/**
- * 使所有待答 ASK 失效，并等待对应卡片完成失效态回写。
- *
- * daemon 关闭时必须先完成这一步，再断开飞书回调服务，避免群里留下仍可点击、
- * 点击后却只提示“目标回调服务当前未在线”的旧卡片。等待有上限，防止飞书接口
- * 异常时阻塞进程退出。
- */
-export async function invalidateAllAndWait(
-  reason: string,
-  timeoutMs = 2_000,
-): Promise<number> {
-  const activeAsks = [...pending.values()].filter(ask => !ask.settled);
-  const invalidatedCount = invalidateAll(reason);
-  const settlePatches = activeAsks
-    .map(ask => ask.settlePatch)
-    .filter((patch): patch is Promise<void> => patch !== undefined);
-  if (settlePatches.length === 0) return invalidatedCount;
-
-  let timeoutHandle: NodeJS.Timeout | undefined;
-  const completed = await Promise.race([
-    Promise.allSettled(settlePatches).then(() => true),
-    new Promise<boolean>(resolve => {
-      timeoutHandle = setTimeout(() => resolve(false), Math.max(1, timeoutMs));
-      timeoutHandle.unref?.();
-    }),
-  ]);
-  if (timeoutHandle) clearTimeout(timeoutHandle);
-  if (!completed) {
-    logger.warn?.(
-      `ask-broker: timed out after ${timeoutMs}ms waiting for `
-      + `${settlePatches.length} invalidated card patch(es)`,
-    );
-  }
-  return invalidatedCount;
 }
 
 /**
@@ -678,7 +754,6 @@ export function restorePersistedAsks(now: number = Date.now(), larkAppId?: strin
       originKind: p.originKind,
       resumable: true, // only resumable origins were ever persisted
       nonce: p.nonce,
-      projectionId: randomUUID(),
       larkAppId: p.larkAppId,
       chatId: p.chatId,
       rootMessageId: p.rootMessageId,
@@ -760,25 +835,6 @@ function settle(askId: string, result: AskResult): void {
   ask.settledAt = Date.now();
   ask.terminalResult = result; // retained for a same-requestId replay in the ambiguous window
   clearTimeout(ask.timeoutHandle);
-  if (ask.flowId) {
-    const flow = flows.get(flowKey(ask.sessionId, ask.flowId));
-    if (flow) {
-      if (result.kind === 'answered' && result.action === 'undo') {
-        flow.steps.pop();
-      } else {
-        flow.steps.push({
-          questions: ask.questions.map(question => ({
-            ...question,
-            options: question.options.map(option => ({ ...option })),
-          })),
-          result,
-        });
-      }
-    }
-  }
-  // 顺便清理旧终态，避免为极小集合单独维护 GC 定时器。
-  gcSettled();
-
   // The durable record's job is done the moment the ask leaves the pending
   // state (delivered to live waiters, or a terminal non-answer) — drop it so a
   // later restart doesn't resurrect a settled ask.
@@ -809,7 +865,7 @@ function settle(askId: string, result: AskResult): void {
 function notifyOnSettle(ask: InternalPending, result: AskResult): void {
   if (!dispatcher?.onSettle) return;
   try {
-    ask.settlePatch = Promise.resolve(dispatcher.onSettle(snapshot(ask), result)).catch((err) => {
+    void Promise.resolve(dispatcher.onSettle(snapshot(ask), result)).catch((err) => {
       logger.warn?.(
         `ask-broker: ${ask.askId} onSettle failed: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -831,7 +887,6 @@ function snapshot(ask: InternalPending): PendingAsk {
     dormant: _dm, answeredResult: _ar, terminalResult: _tr,
     ...rest
   } = ask;
-  const flow = ask.flowId ? flows.get(flowKey(ask.sessionId, ask.flowId)) : undefined;
   return {
     ...rest,
     selections: ask.questions.map((_, i) => [...(ask.selections.get(i) ?? new Set<string>())]),
@@ -842,37 +897,6 @@ function snapshot(ask: InternalPending): PendingAsk {
     // `resumable` gates only cross-restart persistence, NOT intra-process
     // dispatch idempotency, so explicit / PTY asks (which also retry) dedupe too.
     dispatchUuid: dispatchUuidForKey(ask.askKey),
-    ...(ask.flowId && flow
-      ? {
-          flow: {
-            flowId: ask.flowId,
-            ...(flow.cardMessageId ? { cardMessageId: flow.cardMessageId } : {}),
-            questionOffset: flow.questionOffset,
-            steps: flow.steps.map(step => ({
-              questions: step.questions.map(question => ({
-                ...question,
-                options: question.options.map(option => ({ ...option })),
-              })),
-              result: step.result,
-            })),
-            ...(flow.previousSegment
-              ? {
-                  previousSegment: {
-                    cardMessageId: flow.previousSegment.cardMessageId,
-                    questionOffset: flow.previousSegment.questionOffset,
-                    steps: flow.previousSegment.steps.map(step => ({
-                      questions: step.questions.map(question => ({
-                        ...question,
-                        options: question.options.map(option => ({ ...option })),
-                      })),
-                      result: step.result,
-                    })),
-                  },
-                }
-              : {}),
-          },
-        }
-      : {}),
   };
 }
 
@@ -948,44 +972,43 @@ export function listPendingAsks(): PendingAsk[] {
   return out;
 }
 
-/** Codex turn 完成时，按 flowId 把最后一段卡片切换为完成态。 */
-export async function completeAskFlow(flowId: string, sessionId: string): Promise<boolean> {
-  const key = flowKey(sessionId, flowId);
-  const flow = flows.get(key);
-  const ask = flow?.lastAskId ? pending.get(flow.lastAskId) : undefined;
-  if (!flow || !ask || !ask.settled || !dispatcher?.completeFlow) return false;
-  await ask.settlePatch;
-  await dispatcher.completeFlow(snapshot(ask));
-  flows.delete(key);
-  return true;
-}
+/**
+ * Desktop / trusted-host answer path. Bypasses canTalk (no Feishu openId) —
+ * caller must be authenticated as the local dashboard/desktop operator.
+ */
+export function submitAskFromDesktop(args: {
+  askId: string;
+  /** Selected option keys per question (same shape as submitAsk selections). */
+  selections: ReadonlyArray<ReadonlyArray<string>>;
+  by?: string;
+}): AskClickOutcome {
+  gcSettled();
+  const ask = pending.get(args.askId);
+  if (!ask) return 'stale';
+  if (ask.settled) return 'already_settled';
 
-/** 用户动作与状态仓解耦；对外导出名称保持兼容。 */
-const brokerActions = createAskBrokerActions({
-  gc: gcSettled,
-  getAsk: askId => pending.get(askId),
-  isAuthorized: (ask, by, actor) => isAuthorizedToAnswer(ask as InternalPending, by, actor),
-  settle,
-  hasFlowSteps: ask => !!ask.flowId
-    && (flows.get(flowKey(ask.sessionId, ask.flowId))?.steps.length ?? 0) > 0,
-});
-
-export const {
-  submitAsk,
-  submitCustomReply,
-  submitUndoAsk,
-  tryResolveAsk,
-  submitAskFromDesktop,
-} = brokerActions;
-
-/** 多选状态切换后同步持久化，保证 daemon 重启时不会丢失已经勾选的选项。 */
-export function toggleAsk(args: Parameters<typeof brokerActions.toggleAsk>[0]): AskClickOutcome {
-  const outcome = brokerActions.toggleAsk(args);
-  if (outcome === 'toggled') {
-    const ask = pending.get(args.askId);
-    if (ask) persistFromInternal(ask);
+  // 同 submitAsk：按 ask.questions 规范化，拒绝超长输入、缺失尾部补空集，越界槽不进结果。
+  if (args.selections.length > ask.questions.length) return 'stale';
+  const canonical: string[][] = [];
+  for (let i = 0; i < ask.questions.length; i++) {
+    const q = ask.questions[i]!;
+    const sel = args.selections[i] ?? [];
+    if (!q.multiSelect && sel.length !== 1) return 'stale';
+    for (const key of sel) {
+      if (!q.options.some((o) => o.key === key)) return 'stale';
+    }
+    canonical.push([...sel]);
   }
-  return outcome;
+  const answers = canonical;
+
+  settle(args.askId, {
+    kind: 'answered',
+    answers,
+    by: args.by ?? 'desktop',
+    comment: null,
+    timedOut: false,
+  });
+  return 'accepted';
 }
 
 /** Read a pending ask by id — for tests only. Returns a snapshot; mutating it
@@ -1008,7 +1031,6 @@ export function _resetForTest(): void {
     clearTimeout(ask.handoffExpiryHandle);
   }
   pending.clear();
-  flows.clear();
   dispatcher = null;
   canTalkChecker = null;
   handoffRetentionMs = HANDOFF_RETENTION_MS; // restore default retention

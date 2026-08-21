@@ -57,20 +57,4 @@ describe('buildPm2SpawnCommand', () => {
       args: ['/app/node_modules/pm2/bin/pm2', 'status'],
     });
   });
-
-  it('avoids Homebrew versioned Node paths that PM2 misreads as nvm versions', () => {
-    expect(buildPm2SpawnCommand(
-      '/app/node_modules/pm2/bin/pm2',
-      ['start', '/Users/test/.botmux/ecosystem.config.json'],
-      'darwin',
-      '/opt/homebrew/Cellar/node@22/22.23.2/bin/node',
-    )).toEqual({
-      command: '/opt/homebrew/bin/node',
-      args: [
-        '/app/node_modules/pm2/bin/pm2',
-        'start',
-        '/Users/test/.botmux/ecosystem.config.json',
-      ],
-    });
-  });
 });

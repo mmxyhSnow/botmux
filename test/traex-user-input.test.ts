@@ -80,21 +80,4 @@ describe('parseTraexUserInputQuestions', () => {
       reason: 'duplicate question id: choice',
     });
   });
-
-  it('rejects secret questions instead of rendering their choices into a Lark card', () => {
-    const result = parseTraexUserInputQuestions({
-      questions: [{
-        id: 'secret',
-        header: '凭据',
-        question: '选择凭据',
-        isSecret: true,
-        options: [{ label: 'A', description: 'first' }, { label: 'B', description: 'second' }],
-      }],
-    });
-
-    expect(result).toEqual({
-      kind: 'unsupported',
-      reason: 'question 1 is secret',
-    });
-  });
 });

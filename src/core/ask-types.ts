@@ -47,8 +47,6 @@ export type AskResult =
       by: string;
       /** 自定义回复原文（用户在话题里直接打字作答）；按钮选择时为 null。 */
       comment: string | null;
-      /** 连续提问卡上的控制动作；undo 要求模型重新提出上一问。 */
-      action?: 'undo';
       timedOut: false;
     }
   | {
@@ -118,36 +116,9 @@ export interface CreateAskInput {
   /** Absolute deadline; computed by caller from `--timeout`. Broker won't
    *  re-compute. */
   timeoutMs: number;
-  /** 非空时，点击人还必须属于该名单；不会绕过原有 canTalk 门禁。 */
-  approvers?: ReadonlyArray<string>;
-  /** 同一 Codex turn 内的连续提问共享该标识，用于复用并累积飞书卡片。 */
-  flowId?: string;
   /** 发起 ask 的会话类型。仅用于点击鉴权时把 chatType 喂给 canTalk（p2pOpen 腿）；
    *  缺省时该腿 fail-closed，鉴权退回原语义。 */
   chatType?: 'group' | 'p2p';
-}
-
-/** 连续提问卡片中已经完成的一步；保留原问题和答案以重绘锁定态。 */
-export interface AskFlowStep {
-  questions: ReadonlyArray<AskQuestion>;
-  result: AskResult;
-}
-
-/** 自动分段时等待关闭的上一张卡片。 */
-export interface AskFlowSegmentSnapshot {
-  cardMessageId: string;
-  questionOffset: number;
-  steps: ReadonlyArray<AskFlowStep>;
-}
-
-/** ask 卡片读取的连续提问只读快照。 */
-export interface AskFlowSnapshot {
-  flowId: string;
-  cardMessageId?: string;
-  /** 当前分段之前已经完成的问题数，用于跨卡连续编号。 */
-  questionOffset: number;
-  steps: ReadonlyArray<AskFlowStep>;
-  previousSegment?: AskFlowSegmentSnapshot;
 }
 
 /** Daemon-internal state for a pending ask. Not exported on the IPC boundary —
@@ -160,8 +131,6 @@ export interface PendingAsk {
    *  whose nonce doesn't match → treated as stale (e.g. card from a previous
    *  daemon process before restart). */
   nonce: string;
-  /** 同一问题被后置成新卡时递增替换；旧投影回调必须按此字段失效。 */
-  projectionId: string;
   larkAppId: string;
   chatId: string;
   rootMessageId: string | null;
@@ -170,10 +139,6 @@ export interface PendingAsk {
   chatType?: 'group' | 'p2p';
   /** 问题列表，替代旧的 `options` + `prompt`。 */
   questions: ReadonlyArray<AskQuestion>;
-  /** 原生确认默认锁定到本轮提问对象；普通 botmux ask 留空以保持旧语义。 */
-  approvers?: ReadonlyArray<string>;
-  /** 连续提问状态；存在时卡片保留历史答案并复用同一条飞书消息。 */
-  flow?: AskFlowSnapshot;
   /** 当前已勾选答案快照。仅 daemon/card 内部使用；CLI IPC 边界不暴露。 */
   selections?: ReadonlyArray<ReadonlyArray<string>>;
   createdAt: number;
@@ -203,7 +168,11 @@ export type AskClickOutcome =
   /** Ask already settled (race winner exists or timed out). */
   | 'already_settled'
   /** 多选累积：用户勾选/取消某项，尚未 submit——不触发 settle。 */
-  | 'toggled';
+  | 'toggled'
+  /** 空提交二次确认：鉴权 + nonce 校验都通过，但当前一个选项都没勾、且每个问题
+   *  都允许空集（全多选），提交极可能是手滑——先不 settle，要求带 confirmEmpty 再点
+   *  一次。仅当所有问题都可空时才可能返回；任一单选未选走 `stale`（空非有效答案）。 */
+  | 'needs_empty_confirm';
 
 /** 旧单选语义兼容：仅当"单问且恰好选 1 个"时返回该 key，否则 null。
  *  `botmux ask buttons` 子命令与其测试据此保持单选行为不变。 */
@@ -235,8 +204,6 @@ export interface AskCardDispatcher {
     ask: PendingAsk,
     result: AskResult,
   ): void | Promise<void>;
-  /** Codex turn 完成后把最后一段累积卡切换为只读完成态。 */
-  completeFlow?(ask: PendingAsk): void | Promise<void>;
 }
 
 /**

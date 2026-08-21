@@ -1,8 +1,0 @@
-{
-  "schemaVersion": 1,
-  "productionBranch": "custom/prod",
-  "originRemote": "origin",
-  "originRepo": "mmxyhSnow/botmux",
-  "upstreamRemote": "upstream",
-  "upstreamRepo": "deepcoldy/botmux"
-}

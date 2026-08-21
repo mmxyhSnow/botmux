@@ -105,7 +105,6 @@ vi.mock('../src/bot-registry.js', () => ({
   })),
   getAllBots: vi.fn(() => []),
   getBotClient: vi.fn(),
-  findOncallChat: vi.fn(),
   getBotBrand: vi.fn(() => 'feishu'),
 }));
 
@@ -143,7 +142,6 @@ vi.mock('../src/core/worker-pool.js', async (importOriginal) => {
       void observer.notify('in_progress');
       return { attemptId: 'attempt-card', joined: false };
     }),
-    setCodexAppProgressDetailsExpanded: vi.fn(async () => true),
   };
 });
 
@@ -177,12 +175,10 @@ vi.mock('@larksuiteoapi/node-sdk', () => ({
 import { handleCardAction, type CardHandlerDeps } from '../src/im/lark/card-handler.js';
 import {
   closeSession as closeWorkerSession,
-  killWorker,
-  forkWorker,
-  requestSessionRestart,
   scheduleCardPatch,
   setActiveSessionsRegistry,
-  setCodexAppProgressDetailsExpanded,
+  forkWorker,
+  requestSessionRestart,
 } from '../src/core/worker-pool.js';
 import { activeSessionKey, sessionKey } from '../src/core/types.js';
 import type { DaemonSession } from '../src/core/types.js';
@@ -620,6 +616,93 @@ describe('Card integration: full event flow', () => {
       }
     });
 
+    it('close reports a residual instead of the ordinary closed card', async () => {
+      // The row DID close, so this is not a failure — but a remote session was
+      // deliberately left running (quarantined lineage cannot be cancelled safely).
+      // Sending the normal closed card here would tell the user it is all gone.
+      const clientMod = await import('../src/im/lark/client.js');
+      const ds = makeDaemonSession();
+      const sessions = new Map<string, DaemonSession>();
+      sessions.set(activeSessionKey(ds), ds);
+      const deps = makeDeps(sessions);
+      vi.mocked(closeWorkerSession).mockResolvedValueOnce({
+        ok: true,
+        outcome: 'closed_with_residual',
+        residual: { reason: 'mojo_lineage_quarantined', taskId: 'mojo-parked-9' },
+        alreadyClosed: false,
+        known: true,
+      } as never);
+
+      const result = await handleCardAction(
+        makeCloseEvent(ROOT_ID, 'ou_user', undefined, ds.session.sessionId),
+        deps,
+        APP_ID,
+      );
+
+      expect(result?.toast).toEqual(expect.objectContaining({
+        type: 'warning',
+        content: expect.stringContaining('mojo-parked-9'),
+      }));
+      expect(result?.toast?.content).toContain('未被取消');
+      // No ordinary "closed" card on either delivery path.
+      expect(vi.mocked(clientMod.sendEphemeralCard)).not.toHaveBeenCalled();
+      expect(deps.sessionReply).not.toHaveBeenCalled();
+    });
+
+    it('a LOCAL-subtree residual close toast points at the host process, not a phantom remote (round-11 P1-2)', async () => {
+      const ds = makeDaemonSession();
+      const sessions = new Map<string, DaemonSession>();
+      sessions.set(activeSessionKey(ds), ds);
+      const deps = makeDeps(sessions);
+      vi.mocked(closeWorkerSession).mockResolvedValueOnce({
+        ok: true,
+        outcome: 'closed_with_residual',
+        residual: { reason: 'local_subtree_boundary_unproven' }, // no taskId
+        alreadyClosed: false,
+        known: true,
+      } as never);
+
+      const result = await handleCardAction(
+        makeCloseEvent(ROOT_ID, 'ou_user', undefined, ds.session.sessionId),
+        deps,
+        APP_ID,
+      );
+
+      expect(result?.toast?.type).toBe('warning');
+      expect(result?.toast?.content).toContain('本机');
+      expect(result?.toast?.content).not.toContain('undefined');
+      expect(result?.toast?.content).not.toMatch(/远端会话.*未.*取消/);
+    });
+
+    it('close refusal reports the remote id and does not send a closed card', async () => {
+      const clientMod = await import('../src/im/lark/client.js');
+      const ds = makeDaemonSession();
+      const sessions = new Map<string, DaemonSession>();
+      sessions.set(activeSessionKey(ds), ds);
+      const deps = makeDeps(sessions);
+      vi.mocked(closeWorkerSession).mockResolvedValueOnce({
+        ok: false,
+        alreadyClosed: false,
+        error: 'mojo_close_reconciliation_required',
+        retryable: true,
+        taskId: 'mojo-uncertain-9',
+      } as never);
+
+      const result = await handleCardAction(
+        makeCloseEvent(ROOT_ID, 'ou_user', undefined, ds.session.sessionId),
+        deps,
+        APP_ID,
+      );
+
+      expect(result?.toast).toEqual(expect.objectContaining({
+        type: 'warning',
+        content: expect.stringContaining('mojo-uncertain-9'),
+      }));
+      expect(result?.toast?.content).toContain('mojo_close_reconciliation_required');
+      expect(vi.mocked(clientMod.sendEphemeralCard)).not.toHaveBeenCalled();
+      expect(deps.sessionReply).not.toHaveBeenCalled();
+    });
+
     it('close in private mode sends the closed card ephemeral to owners, not the group', async () => {
       const clientMod = await import('../src/im/lark/client.js');
       const botRegMod = await import('../src/bot-registry.js');
@@ -969,7 +1052,7 @@ describe('Card integration: full event flow', () => {
         ds.session.status = 'closed';
         signalCloseStarted();
         await closeCleanupPending;
-        return { ok: true, alreadyClosed: false, known: true };
+        return { ok: true, outcome: 'closed', alreadyClosed: false, known: true };
       });
 
       const closeAction = handleCardAction(makeCloseEvent(ROOT_ID), deps, APP_ID);
@@ -1384,95 +1467,5 @@ describe('Card integration: full event flow', () => {
       expect((ds.worker as any).send).not.toHaveBeenCalled();
       expect(deps.sessionReply).toHaveBeenCalled();
     });
-  });
-});
-
-describe('Codex App 进度卡查看动作', () => {
-  beforeEach(() => {
-    sessionReplyResults = [];
-    vi.clearAllMocks();
-  });
-
-  function progressSession(): DaemonSession {
-    return makeDaemonSession({
-      session: {
-        ...makeDaemonSession().session,
-        sessionId: 'sess-progress-actions',
-        codexAppProgressCard: {
-          phase: 'running',
-          activeTurnId: 'om_turn',
-          acceptedTurnIds: ['om_turn'],
-          pendingTurns: [],
-          sessionId: 'sess-progress-actions',
-          title: '优化进度卡',
-          content: Array.from(
-            { length: 8 },
-            (_, index) => `[19:0${index}:00] 第 ${index + 1} 条进展。`,
-          ).join('\n\n'),
-        },
-      },
-    });
-  }
-
-  function progressEvent(action: string, extra: Record<string, string> = {}): any {
-    return {
-      operator: { open_id: 'ou_user' },
-      action: {
-        value: {
-          action,
-          session_id: 'sess-progress-actions',
-          ...extra,
-        },
-      },
-    };
-  }
-
-  it('展开按钮更新主卡明细密度但不改变任务状态', async () => {
-    const ds = progressSession();
-    const sessions = new Map([[sessionKey(ROOT_ID, APP_ID), ds]]);
-    const result = await handleCardAction(
-      progressEvent('codex_progress_toggle_details', { expanded: '1' }),
-      makeDeps(sessions),
-      APP_ID,
-    );
-
-    expect(setCodexAppProgressDetailsExpanded).toHaveBeenCalledWith(ds, true);
-    expect(result).toMatchObject({
-      toast: { type: 'info', content: '进展已展开' },
-    });
-  });
-
-  it('查看完整历史会新发第一页历史卡', async () => {
-    const ds = progressSession();
-    const sessions = new Map([[sessionKey(ROOT_ID, APP_ID), ds]]);
-    const deps = makeDeps(sessions);
-    const result = await handleCardAction(
-      progressEvent('codex_progress_history_open', { page: '1' }),
-      deps,
-      APP_ID,
-    );
-
-    expect(result).toMatchObject({
-      toast: { type: 'info', content: '已打开完整历史' },
-    });
-    const call = (deps.sessionReply as Mock).mock.calls.at(-1);
-    expect(call?.[0]).toBe('oc_chat');
-    expect(call?.[2]).toBe('interactive');
-    expect(JSON.parse(call?.[1]).header.title.content).toContain('进度历史 1/2');
-  });
-
-  it('历史翻页直接替换当前历史卡且不新增消息', async () => {
-    const ds = progressSession();
-    const sessions = new Map([[sessionKey(ROOT_ID, APP_ID), ds]]);
-    const deps = makeDeps(sessions);
-    const result = await handleCardAction(
-      progressEvent('codex_progress_history_page', { page: '2' }),
-      deps,
-      APP_ID,
-    );
-
-    expect(result.card.type).toBe('raw');
-    expect(result.card.data.header.title.content).toContain('进度历史 2/2');
-    expect(deps.sessionReply).not.toHaveBeenCalled();
   });
 });

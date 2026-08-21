@@ -204,12 +204,8 @@ export interface CodexBridgeEvent {
   /** Discriminator for the queue layer:
    *   - 'user' starts a pending Lark turn (fingerprint-matched)
    *   - 'assistant_final' closes the currently-collecting turn with output
-   *   - 'turn_aborted' closes it without producing fallback output
-   *   - 'assistant_progress' is a mid-turn commentary chunk. The queue itself
-   *     ignores it (does not touch pending-turn state); worker.ts routes it
-   *     into the progress-card throttler so the daemon sees intermediate text
-   *     updates for non-codex-app CLIs (traex / codex). */
-  kind: 'user' | 'assistant_final' | 'turn_aborted' | 'assistant_progress';
+   *   - 'turn_aborted' closes it without producing fallback output */
+  kind: 'user' | 'assistant_final' | 'turn_aborted';
   /** Concatenated text from the message's content blocks (input_text for
    *  user, output_text for assistant). */
   text: string;
@@ -309,7 +305,10 @@ function codexFailureLeaf(error: unknown): unknown {
   return current;
 }
 
-function safeFailureSummary(error: unknown): string | undefined {
+/** Bounded, redacted user-facing summary of a structured task_complete error.
+ *  Exported for the TRAE drainer, which mirrors the Codex error→failed
+ *  terminal mapping on the same payload shape. */
+export function safeFailureSummary(error: unknown): string | undefined {
   const leaf = codexFailureLeaf(error);
   let message = '';
   let code = '';
@@ -393,7 +392,11 @@ function safeFailureSummary(error: unknown): string | undefined {
     : summary;
 }
 
-function codexTaskFailureCode(error: unknown): string {
+/** Classify a structured task_complete error into a stable failure code.
+ *  Shared with the TRAE drainer (traex-transcript.ts), whose task_complete
+ *  error payloads use the same Codex-family shape — keep one classifier so
+ *  both bridges map e.g. connection failures to the same code. */
+export function codexTaskFailureCode(error: unknown): string {
   let serialized = '';
   try { serialized = JSON.stringify(error); } catch { serialized = String(error ?? ''); }
   const normalized = serialized.toLowerCase();
@@ -427,7 +430,7 @@ export function isCodexRateLimitEvent(event: CodexBridgeEvent): boolean {
  *  undefined when either side is missing — typically a fresh session whose
  *  user typed something but the model hasn't replied yet. */
 export function extractLastCodexTurn(
-  events: readonly { kind: CodexBridgeEvent['kind']; text: string }[],
+  events: readonly { kind: 'user' | 'assistant_final' | 'turn_aborted'; text: string }[],
 ): { userText: string; assistantText: string } | undefined {
   let assistantIdx = -1;
   for (let i = events.length - 1; i >= 0; i--) {
@@ -739,7 +742,7 @@ export function drainCodexRollout(path: string, fromOffset: number): CodexDrainR
       continue;
     }
     // turn_context carries the executor model/effort on every turn (latest-wins,
-    // since /model and /effort change independently). Published via the same
+    // since Codex can change them independently). Published via the same
     // active_runtime channel TRAE uses.
     const runtime = runtimeFromCodexEntry(obj);
     if (runtime) {
@@ -759,25 +762,6 @@ export function drainCodexRollout(path: string, fromOffset: number): CodexDrainR
       const text = joinTextBlocks(p.content, 'input_text');
       if (!text) continue;
       events.push({ uuid: `${path}:${lineStart}`, timestampMs, kind: 'user', text });
-      continue;
-    }
-    // Mid-turn commentary: `event_msg / agent_message` carries a chunk of
-    // assistant text (`payload.message`) that codex/traex emits repeatedly
-    // while a turn is in flight. These do NOT close a turn — task_complete
-    // is still the sole terminal — but worker.ts feeds them into the
-    // progress-card throttler so the "第一条进度之后没有中间态" symptom
-    // goes away for non-codex-app CLIs. Skipped here would mean the daemon
-    // only ever sees the initial "已收到" and the final settle entry.
-    if (obj.type === 'event_msg'
-      && p.type === 'agent_message'
-      && typeof p.message === 'string'
-      && p.message.length > 0) {
-      events.push({
-        uuid: `${path}:${lineStart}`,
-        timestampMs,
-        kind: 'assistant_progress',
-        text: p.message,
-      });
       continue;
     }
     // Turn terminal: event_msg `task_complete` carries the final visible text
@@ -838,9 +822,9 @@ function codexThreadSettingsFromEvent(obj: any): CodexThreadSettings | undefined
   const serviceTier = raw?.service_tier;
   if (typeof serviceTier !== 'string' || !serviceTier) return undefined;
   const model = typeof raw?.model === 'string' && raw.model ? raw.model : undefined;
-  // Effort follows an in-session `/effort` switch. Codex records it both at the
-  // top level and under collaboration_mode.settings; take the top-level value
-  // first, matching the model precedence above.
+  // Effort follows in-session changes made through Codex's own model controls.
+  // Codex records it both at the top level and under collaboration_mode.settings;
+  // take the top-level value first, matching the model precedence above.
   const rawEffort = raw?.reasoning_effort
     ?? raw?.collaboration_mode?.settings?.reasoning_effort;
   const reasoningEffort = typeof rawEffort === 'string' && rawEffort.trim()

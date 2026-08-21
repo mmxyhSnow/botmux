@@ -1,4 +1,0 @@
-interface:
-  display_name: "维护 Botmux 自定义分支"
-  short_description: "处理 /feat、/opt、/fix 并维护 Botmux 自定义生产分支"
-  default_prompt: "使用 $maintain-botmux-fork 处理 Botmux 的功能新增、优化或修复，并给出验证证据。"

@@ -17,12 +17,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockExistsSync = vi.fn(() => true);
 const mockReadFileSync = vi.fn(() => '[]');
 const mockWriteFileSync = vi.fn();
+const mockCrossRefStatSync = vi.fn();
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
     existsSync: (...args: any[]) => mockExistsSync(...args),
     readFileSync: (...args: any[]) => mockReadFileSync(...args),
+    statSync: (path: any, ...args: any[]) => String(path).includes('bot-openids-')
+      ? mockCrossRefStatSync(path, ...args)
+      : (actual.statSync as any)(path, ...args),
     writeFileSync: (...args: any[]) => mockWriteFileSync(...args),
     mkdirSync: vi.fn(),
   };
@@ -153,6 +157,7 @@ import {
 import { getPendingGrantLimits, _resetForTest as _resetGrantPending } from '../src/im/lark/grant-pending.js';
 import { logger } from '../src/utils/logger.js';
 import { config } from '../src/config.js';
+import { __resetPeerCrossRefCacheForTest } from '../src/services/peer-cross-ref-store.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -163,6 +168,10 @@ const OTHER_BOT_APP_ID = 'app-bot-b';
 const USER_OPEN_ID = 'ou_user_123';
 
 beforeEach(() => {
+  __resetPeerCrossRefCacheForTest();
+  mockCrossRefStatSync.mockReset().mockReturnValue({
+    dev: 1, ino: 1, size: 1, mtimeMs: 1, ctimeMs: 1,
+  });
   capturedWsClientOptions = undefined;
   config.daemon.forwardFollowupWaitMs = 0;
   mockReadFileSync.mockReset().mockReturnValue('[]');
@@ -856,10 +865,8 @@ function setupBotState(opts?: {
   handleCardAction: ReturnType<typeof vi.fn>;
   isSessionOwner: ReturnType<typeof vi.fn>;
   onChatModeConverted: ReturnType<typeof vi.fn>;
-  resolveBotOwnedTopicAlias: ReturnType<typeof vi.fn>;
   resolveReplyThreadAlias: ReturnType<typeof vi.fn>;
   handleVcMeetingPush: ReturnType<typeof vi.fn>;
-  onBotMessageActivity: ReturnType<typeof vi.fn>;
 } {
   return {
     handleCardAction: vi.fn(async () => undefined),
@@ -867,10 +874,8 @@ function setupBotState(opts?: {
     handleThreadReply: vi.fn(async () => {}),
     handleVcMeetingPush: vi.fn(async () => {}),
     isSessionOwner: vi.fn(() => false),
-    resolveBotOwnedTopicAlias: vi.fn(() => null),
     resolveReplyThreadAlias: vi.fn(() => null),
     onChatModeConverted: vi.fn(),
-    onBotMessageActivity: vi.fn(),
   };
 }
 
@@ -1878,13 +1883,6 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
       scope: 'thread',
       larkAppId: MY_APP_ID,
     }));
-    expect(handlers.onBotMessageActivity).toHaveBeenCalledWith({
-      larkAppId: MY_APP_ID,
-      chatId: 'chat-001',
-      messageId: 'msg-001',
-      rootMessageId: 'root-thread-1',
-      inThread: true,
-    });
   });
 
   it('routes @mentioned bot message (via mentions array) to handleThreadReply', async () => {
@@ -1917,10 +1915,6 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
 
     expect(handlers.handleThreadReply).not.toHaveBeenCalled();
     expect(handlers.handleNewTopic).not.toHaveBeenCalled();
-    expect(handlers.onBotMessageActivity).toHaveBeenCalledWith(expect.objectContaining({
-      rootMessageId: 'root-thread-3',
-      inThread: true,
-    }));
   });
 
   it('routes non-mentioned bot messages through configured group listener', async () => {
@@ -3280,41 +3274,6 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
       anchor: 'root-keep',
       larkAppId: MY_APP_ID,
     }));
-  });
-
-  it('routes replies in original topic A to the bot-owned topic B session', async () => {
-    setupBotState({ allowedUsers: [USER_OPEN_ID], regularGroupMentionMode: 'topic' });
-    mockGetChatMode.mockResolvedValue('topic');
-    handlers.resolveBotOwnedTopicAlias.mockReturnValue({
-      chatId: 'chat-managed-topic',
-      sessionId: 'sess-managed-topic',
-      anchor: 'om_bot_root_b',
-    });
-    handlers.isSessionOwner.mockImplementation((anchor: string) => anchor === 'om_bot_root_b');
-    const event = makeUserMessageEvent({
-      senderOpenId: USER_OPEN_ID,
-      content: JSON.stringify({ text: 'continue from the original topic' }),
-      rootId: 'om_user_root_a',
-      threadId: 'omt_user_root_a',
-      messageId: 'om_reply_in_a',
-      chatId: 'chat-managed-topic',
-      chatType: 'group',
-    });
-
-    await capturedHandlers['im.message.receive_v1'](event);
-    await flushEventWork();
-
-    expect(handlers.resolveBotOwnedTopicAlias).toHaveBeenCalledWith(
-      'om_user_root_a',
-      'chat-managed-topic',
-      MY_APP_ID,
-    );
-    expect(handlers.handleThreadReply).toHaveBeenCalledWith(event, expect.objectContaining({
-      scope: 'thread',
-      anchor: 'om_bot_root_b',
-      larkAppId: MY_APP_ID,
-    }));
-    expect(handlers.handleNewTopic).not.toHaveBeenCalled();
   });
 
   it('ignores unmentioned replies when another bot owns the thread', async () => {
@@ -6820,6 +6779,40 @@ describe('card.action.trigger — ack-safe slow handlers', () => {
     startLarkEventDispatcher(MY_APP_ID, 'secret', handlers);
   });
 
+  it('uses empty ACK plus message.patch for a fast deferred complex-card update', async () => {
+    handlers.handleCardAction.mockResolvedValue({ deferredCard: { type: 'raw', data: { type: 'negative-followup-card' } } });
+
+    const result = await capturedHandlers['card.action.trigger']({
+      action: { value: { action: 'feedback_submit', result: 'incomplete' } },
+      operator: { open_id: USER_OPEN_ID },
+      context: { open_message_id: 'om_feedback_negative' },
+    });
+
+    expect(result).toEqual({});
+    expect(mockUpdateMessage).not.toHaveBeenCalled();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(mockUpdateMessage).toHaveBeenCalledWith(
+      MY_APP_ID,
+      'om_feedback_negative',
+      JSON.stringify({ type: 'negative-followup-card' }),
+    );
+  });
+
+  it('surfaces deferred patch failure as an empty ACK without returning an invalid card response', async () => {
+    mockUpdateMessage.mockRejectedValueOnce(new Error('HTTP 400 invalid card'));
+    handlers.handleCardAction.mockResolvedValue({ deferredCard: { type: 'raw', data: { type: 'invalid-negative-followup' } } });
+
+    const result = await capturedHandlers['card.action.trigger']({
+      action: { value: { action: 'feedback_submit', result: 'incomplete' } },
+      operator: { open_id: USER_OPEN_ID },
+      context: { open_message_id: 'om_feedback_invalid' },
+    });
+
+    expect(result).toEqual({});
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('HTTP 400 invalid card'));
+  });
+
   it('preserves immediate card action responses when the handler is fast', async () => {
     handlers.handleCardAction.mockResolvedValue({ type: 'updated-card' });
 
@@ -6844,6 +6837,22 @@ describe('card.action.trigger — ack-safe slow handlers', () => {
 
     expect(result).toEqual({});
     expect(mockUpdateMessage).not.toHaveBeenCalled();
+  });
+
+  it('wraps a truthy empty object into an invalid empty-body card patch (why resume must bare-return, not `return {}`)', async () => {
+    // Guards the resume-branch fix: a handler returning `{}` is truthy and gets
+    // shaped into `{card:{type:raw,data:{}}}` — an in-place patch with an empty
+    // card body, NOT a no-UI ACK. The resume branch must bare-return (→ undefined)
+    // to land on the genuine empty-ACK `{}` asserted in the test above.
+    handlers.handleCardAction.mockResolvedValue({});
+
+    const result = await capturedHandlers['card.action.trigger']({
+      action: { value: { action: 'repo_switch', root_id: 'root-empty-obj' } },
+      operator: { open_id: USER_OPEN_ID },
+      context: { open_message_id: 'om_empty_obj_card' },
+    });
+
+    expect(result).toEqual({ card: { type: 'raw', data: {} } });
   });
 
   it('still returns a valid empty ACK when a card handler rejects', async () => {
@@ -6879,6 +6888,56 @@ describe('card.action.trigger — ack-safe slow handlers', () => {
     vi.useRealTimers();
 
     expect(mockUpdateMessage).toHaveBeenCalledWith(MY_APP_ID, 'om_slow_card', JSON.stringify({ type: 'late-card' }));
+  });
+
+  // Regression: browser-restart slow-fail visibility.
+  // the browser-restart handler can run up to ~12s (quit-wait), well past the
+  // 2.5s ACK window. A slow handler that resolves to a CARD body must be patched
+  // into the message in the background (owner sees the failure). Contrast with
+  // the very next test: a slow TOAST-only result is dropped, which is exactly
+  // why the handler now returns a failure CARD instead of a toast.
+  it('patches a slow browser-restart FAILURE card in after ACK (visible failure)', async () => {
+    let release!: () => void;
+    const failureCard = { elements: [{ tag: 'note', elements: [{ tag: 'lark_md', content: '⚠️ **Arc**：已退出但重开失败' }] }] };
+    handlers.handleCardAction.mockReturnValue(new Promise(resolve => { release = () => resolve(failureCard); }) as any);
+
+    vi.useFakeTimers();
+    const call = capturedHandlers['card.action.trigger']({
+      action: { value: { action: 'overload_restart_browser', bundleId: 'company.thebrowser.Browser' } },
+      operator: { open_id: USER_OPEN_ID },
+      context: { open_message_id: 'om_browser_fail' },
+    });
+    await vi.advanceTimersByTimeAsync(2500);
+    await expect(call).resolves.toEqual({ toast: { type: 'info', content: '操作已收到，后台处理中' } });
+
+    release();
+    await vi.runAllTimersAsync();
+    vi.useRealTimers();
+
+    // The failure card is wrapped as a raw patch and applied to the message.
+    expect(mockUpdateMessage).toHaveBeenCalledWith(MY_APP_ID, 'om_browser_fail', JSON.stringify(failureCard));
+  });
+
+  it('drops a slow TOAST-only result after ACK (proves why failures must be cards)', async () => {
+    let release!: () => void;
+    handlers.handleCardAction.mockReturnValue(new Promise(resolve => { release = () => resolve({ toast: { type: 'error', content: 'too late' } }); }) as any);
+
+    vi.useFakeTimers();
+    const call = capturedHandlers['card.action.trigger']({
+      action: { value: { action: 'overload_restart_browser', bundleId: 'com.google.Chrome' } },
+      operator: { open_id: USER_OPEN_ID },
+      context: { open_message_id: 'om_toast_dropped' },
+    });
+    await vi.advanceTimersByTimeAsync(2500);
+    await expect(call).resolves.toEqual({ toast: { type: 'info', content: '操作已收到，后台处理中' } });
+
+    release();
+    await vi.runAllTimersAsync();
+    vi.useRealTimers();
+
+    // Toast-only slow result is NOT patched (dropped) — logged instead.
+    expect(mockUpdateMessage).not.toHaveBeenCalledWith(MY_APP_ID, 'om_toast_dropped', expect.anything());
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('slow handler resolved to a toast-only result'));
   });
 
   it('dedupes a repeated card action while the first copy is still running', async () => {

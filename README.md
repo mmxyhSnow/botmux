@@ -16,7 +16,6 @@
 <p align="center">
   <a href="https://deepcoldy.github.io/botmux/"><b>📖 文档</b></a> ·
   <a href="#5-分钟接入"><b>🚀 快速接入</b></a> ·
-  <a href="docs/custom-fork-quickstart.md"><b>🛠️ 自定义版部署</b></a> ·
   <a href="https://bytedance.larkoffice.com/wiki/UBOXwH01CixfxfkqxUpcKgvQnsg"><b>✨ 效果展示</b></a> ·
   <a href="README.en.md">English</a>
 </p>
@@ -28,8 +27,6 @@
 ---
 
 Daemon 监听飞书消息，为每个新会话自动 spawn 一个独立的会话进程，把 AI 编程 CLI / Agent 的输出实时流式回传成飞书卡片，并提供可交互的 Web 终端。它**不重造 Agent 能力**，而是直接桥接你已经在用的工具（**20+ CLI / Agent 适配器**，见 [支持的 CLI / Agent](#支持的-cli--agent)）。
-
-> 使用 `mmxyhSnow/botmux` 自定义版时，请从 `custom/prod` 源码部署，不要执行下方安装官方 npm 包的命令。完整步骤见[自定义版 5 分钟接入](docs/custom-fork-quickstart.md)。
 
 ## 它解决什么
 
@@ -52,7 +49,6 @@ botmux start                 # 启动 daemon（botmux autostart enable 设开机
 ## 核心场景
 
 - **[实时流式卡片](https://deepcoldy.github.io/botmux/cards)** — 每轮对话一张实时刷新的卡片，终端画面原样截图回传；一键显示/隐藏输出、翻屏、重启/关闭/接管会话。
-- **重启后结论补偿** — Daemon 重启后扫描持久化交付账本：仍在运行的任务继续跟踪，已产出但尚未投递的最终结论使用稳定飞书 UUID 补发到原线程；无法确认终态时明确报告“状态未确认”，不会静默结束或自动重放外部操作。
 - **[多机器人协作](https://deepcoldy.github.io/botmux/multi-bot)** — 同群多 bot @mention 路由，不同 CLI 背后不同模型，天然多样性；方案评审 / 代码 review / 技术选型让它们互相挑刺。
 - **[多话题并行编排](https://deepcoldy.github.io/botmux/multi-topic)** — 给编排者一个大任务，它自动在群里种话题、拉各 bot 起独立会话跑流水线，飞书任务面板一眼看完所有子任务进度。
 - **[可交互 Web 终端](https://deepcoldy.github.io/botmux/web-terminal)** — 不只是看输出，浏览器 / 手机直接操作 CLI，移动端带悬浮快捷键栏（Esc、Ctrl+C、方向键）。
@@ -64,11 +60,35 @@ botmux start                 # 启动 daemon（botmux autostart enable 设开机
 
 ## 支持的 CLI / Agent
 
-`bots.json` 里用 `cliId` 一键切换。**20+ 适配器**，覆盖本地 CLI（进程隔离，`tmux attach` 可直连）和 API / 云 Agent（如 Mira、riff——通过 API / 远端接入，非本地进程）。代表项：
+`bots.json` 里用 `cliId` 一键切换。**20+ 适配器**，覆盖本地 CLI（进程隔离，`tmux attach` 可直连）和 API / 云 Agent（如 Mira、riff——通过 API / 远端接入，非本地进程；mojo 为 API 驱动、默认在宿主机执行工具，可配 cloud: true 走云沙箱）。代表项：
 
-`claude-code` · `codex` · `gemini` · `cursor` · `opencode` · `antigravity` · `copilot` · `grok` · `kimi` · `kiro-cli` · `reasonix` · `aiden` · `coco`(TRAE) · `hermes` · `mira` · `riff`(云 Agent) …
+`claude-code` · `codex` · `gemini` · `cursor` · `opencode` · `opencode2` · `antigravity` · `copilot` · `grok` · `kimi` · `kiro-cli` · `reasonix` · `dsh` · `aiden` · `coco`(TRAE) · `hermes` · `mira` · `riff`(云 Agent) … · `mojo`(API 驱动,默认宿主机执行) …
 
 当前完整 `cliId` 以 [`src/adapters/cli/registry.ts`](https://github.com/deepcoldy/botmux/blob/master/src/adapters/cli/registry.ts) 为准；各 CLI 的配置与套 wrapper / 网关方法见 [多 CLI 适配器](https://deepcoldy.github.io/botmux/adapters)。
+
+### 最终回答反馈（按 bot、默认关闭）
+
+在单个 `bots.json` 条目中设置 `feedback.enabled: true`，可在最终回答卡片中收集固定三态语义 `positive / progress / negative` 的反馈；默认按钮为“结论可用 / 有效推进 / 结论有误”。按钮文案、样式、顺序、可见语义、负向原因、说明框与是否允许改选均可配置。默认关闭，`apiOnly` bot、进度卡、自定义卡、通知和语音不显示反馈控件。当前仅本次提问者可反馈，提交后原卡片原地更新，自由文本不会回显到群卡。
+
+```json
+{
+  "feedback": {
+    "enabled": true,
+    "visibleSemantics": ["positive", "progress", "negative"],
+    "buttons": [
+      { "key": "conclusive_usable", "label": "结论可用", "semantic": "positive", "style": "primary" },
+      { "key": "effective_progress", "label": "有效推进", "semantic": "progress", "style": "default" },
+      { "key": "incorrect", "label": "结论有误", "semantic": "negative", "style": "danger" }
+    ],
+    "negativeFollowup": {
+      "reasons": [{ "key": "wrong_result", "label": "结论或结果错误" }],
+      "comment": { "enabled": true, "required": false, "maxLength": 1000 }
+    }
+  }
+}
+```
+
+也可在 Dashboard 的「Bot 配置 → 卡片 → 最终回答反馈」编辑，或用 `/botconfig set feedback '<json>'` 热更新。策略支持本地团队 → bot → bot-scoped chat 分层，优先级为 chat > bot > team；Dashboard 可预览最终生效策略。策略修改只影响之后交付的新卡；已发送卡片继续使用发送时快照。Agent 主动发送可声明 `botmux send --response-kind progress ...` 或 `botmux send --response-kind final ...`；未声明时默认按 progress/非 final 发送，只有显式 final 才挂反馈。数据仅落在本机 `botmux-feedback.sqlite`；可选 webhook 通过 durable outbox 投递 `turn.completed` 与 `feedback.revised` 事件。完整实现和边界见 [`docs/feedback-capability-current-implementation.md`](docs/feedback-capability-current-implementation.md)。
 
 严格兼容 Codex 参数、交互与会话存储的独立发行版无需新增适配器：保留 `cliId: "codex"`，通过 `cliRuntime` 声明自己的 executable、展示名和更新源。BotMux 会按发行版隔离版本与会话身份，未知更新源不会回落到官方 Codex。详见 [Codex 兼容发行版](https://deepcoldy.github.io/botmux/adapters#codex-兼容发行版)。
 

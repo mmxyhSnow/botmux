@@ -1,12 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { emitHookEventMock, updateMessageMock, botConfigState } = vi.hoisted(() => ({
+const { emitHookEventMock } = vi.hoisted(() => ({
   emitHookEventMock: vi.fn(),
-  updateMessageMock: vi.fn(async () => {}),
-  botConfigState: {
-    value: { larkAppId: 'app_test', larkAppSecret: 'secret', cliId: 'claude-code' },
-  },
 }));
 
 vi.mock('../src/services/hook-runner.js', () => ({
@@ -18,7 +14,7 @@ vi.mock('../src/im/lark/client.js', () => {
     constructor(id: string) { super(`withdrawn: ${id}`); this.name = 'MessageWithdrawnError'; }
   }
   return {
-    updateMessage: updateMessageMock,
+    updateMessage: vi.fn(async () => {}),
     deleteMessage: vi.fn(async () => {}),
     MessageWithdrawnError,
   };
@@ -34,13 +30,12 @@ vi.mock('../src/im/lark/card-builder.js', () => ({
 
 vi.mock('../src/bot-registry.js', () => ({
   getBot: vi.fn(() => ({
-    config: botConfigState.value,
+    config: { larkAppId: 'app_test', larkAppSecret: 'secret', cliId: 'claude-code' },
     resolvedAllowedUsers: [],
     botOpenId: 'ou_bot',
     botName: 'TestBot',
   })),
   getAllBots: vi.fn(() => []),
-  resolveBrandLabel: vi.fn(() => ''),
 }));
 
 vi.mock('../src/config.js', () => ({
@@ -112,7 +107,6 @@ import {
   setSessionLifecycleShutdown,
 } from '../src/services/session-lifecycle-hooks.js';
 import {
-  beginCodexAppProgressTurn,
   detachWorkerForTransfer,
   initWorkerPool,
   __testOnly_setupWorkerHandlers,
@@ -174,11 +168,6 @@ beforeEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
   __testOnly_resetSessionLifecycleHooks();
-  botConfigState.value = {
-    larkAppId: 'app_test',
-    larkAppSecret: 'secret',
-    cliId: 'claude-code',
-  };
 });
 
 describe('session lifecycle hook helper', () => {
@@ -334,13 +323,7 @@ describe('worker-pool lifecycle hook integration', () => {
     }));
   });
 
-  it('routes accepted steer feedback when progress cards are explicitly disabled', async () => {
-    botConfigState.value = {
-      larkAppId: 'app_test',
-      larkAppSecret: 'secret',
-      cliId: 'claude-code',
-      codexAppImmediateProgressCard: false,
-    };
+  it('routes accepted steer feedback to its exact turn without raising attention', async () => {
     const sessionReply = vi.fn(async () => 'om_reply');
     initWorkerPool({
       sessionReply,
@@ -371,167 +354,6 @@ describe('worker-pool lifecycle hook integration', () => {
       'session.requires_attention',
       expect.anything(),
     );
-  });
-
-  it('Codex App defaults progress cards on and reuses one across accepted steer', async () => {
-    botConfigState.value = {
-      larkAppId: 'app_test',
-      larkAppSecret: 'secret',
-      cliId: 'codex-app',
-    };
-    const sessionReply = vi.fn(async () => 'om_progress_card');
-    initWorkerPool({
-      sessionReply,
-      getSessionWorkingDir: () => '/repo',
-      getActiveCount: () => 1,
-      closeSession: vi.fn(),
-    });
-    const worker = makeFakeWorker();
-    const ds = makeDs({ worker });
-    ds.session.cliId = 'codex-app';
-
-    await beginCodexAppProgressTurn(ds, 'om_first', '检查官方版本');
-    await beginCodexAppProgressTurn(ds, 'om_steer', '再补充一个要求');
-    __testOnly_setupWorkerHandlers(ds, worker);
-    worker.emit('message', {
-      type: 'steer_accepted',
-      appTurnId: 'app-turn',
-      turnId: 'om_steer',
-    });
-    worker.emit('message', {
-      type: 'progress_output',
-      turnId: 'om_steer',
-      content: '官方差异已经核验。',
-    });
-    worker.emit('message', {
-      type: 'final_output',
-      content: '这是独立发送的最终答案。',
-      lastUuid: 'app-turn',
-      turnId: 'om_steer',
-    });
-    await flush();
-    await flush();
-    worker.emit('message', {
-      type: 'turn_terminal',
-      sessionId: ds.session.sessionId,
-      turnId: 'om_steer',
-      status: 'completed',
-    });
-    await flush();
-    await flush();
-
-    expect(sessionReply).toHaveBeenCalledTimes(2);
-    expect(sessionReply).toHaveBeenNthCalledWith(
-      1,
-      'om_root',
-      expect.stringContaining('处理中'),
-      'interactive',
-      'app_test',
-      'om_first',
-    );
-    expect(sessionReply).toHaveBeenNthCalledWith(
-      2,
-      'om_root',
-      expect.stringContaining('这是独立发送的最终答案。'),
-      'interactive',
-      'app_test',
-      'om_steer',
-      undefined,
-    );
-    expect(updateMessageMock).toHaveBeenCalled();
-    expect(ds.session.codexAppProgressCard).toMatchObject({
-      phase: 'completed',
-      acceptedTurnIds: ['om_first', 'om_steer'],
-      messageId: 'om_progress_card',
-    });
-  });
-
-  it('keeps the first task summary stable while updating a CardKit root status', async () => {
-    botConfigState.value = {
-      larkAppId: 'app_test',
-      larkAppSecret: 'secret',
-      cliId: 'codex-app',
-      codexAppImmediateProgressCard: false,
-    };
-    const ds = makeDs({ worker: makeFakeWorker() });
-    ds.session.cliId = 'codex-app';
-    ds.session.topicStatusBinding = {
-      mode: 'bot-root',
-      originalRootMessageId: 'om_original',
-      botRootMessageId: 'om_root',
-      rootMessageType: 'interactive',
-      title: '根卡片状态模型优化',
-      phase: 'completed',
-      waitingForUser: false,
-      createdAt: '2026-08-05T00:00:00.000Z',
-      updatedAt: '2026-08-05T00:00:00.000Z',
-    };
-
-    await beginCodexAppProgressTurn(ds, 'om_followup', '这是后续进度概括');
-    await flush();
-
-    expect(ds.session.topicStatusBinding.title).toBe('根卡片状态模型优化');
-    const rootPatch = updateMessageMock.mock.calls.find(call => call[1] === 'om_root');
-    expect(rootPatch).toBeDefined();
-    const card = JSON.parse(String(rootPatch?.[2]));
-    expect(card.header.title.content).toBe(':Typing: 进行中｜根卡片状态模型优化');
-    expect(card.header.title.content).not.toContain('后续进度概括');
-  });
-
-  it('TraeX defaults progress cards on without switching the session CLI', async () => {
-    botConfigState.value = {
-      larkAppId: 'app_test',
-      larkAppSecret: 'secret',
-      cliId: 'traex',
-    };
-    const sessionReply = vi.fn(async () => 'om_progress_card');
-    initWorkerPool({
-      sessionReply,
-      getSessionWorkingDir: () => '/repo',
-      getActiveCount: () => 1,
-      closeSession: vi.fn(),
-    });
-    const ds = makeDs({ worker: makeFakeWorker() });
-    ds.session.cliId = 'traex';
-
-    await beginCodexAppProgressTurn(ds, 'om_traex', '保留 TraeX 执行器');
-
-    expect(sessionReply).toHaveBeenCalledWith(
-      'om_root',
-      expect.stringContaining('处理中'),
-      'interactive',
-      'app_test',
-      'om_traex',
-    );
-    expect(ds.session.cliId).toBe('traex');
-    expect(ds.session.codexAppProgressCard).toMatchObject({
-      phase: 'running',
-      acceptedTurnIds: ['om_traex'],
-      messageId: 'om_progress_card',
-    });
-  });
-
-  it('allows an explicit false to disable progress cards for any CLI', async () => {
-    botConfigState.value = {
-      larkAppId: 'app_test',
-      larkAppSecret: 'secret',
-      cliId: 'traex',
-      codexAppImmediateProgressCard: false,
-    };
-    const sessionReply = vi.fn(async () => 'om_progress_card');
-    initWorkerPool({
-      sessionReply,
-      getSessionWorkingDir: () => '/repo',
-      getActiveCount: () => 1,
-      closeSession: vi.fn(),
-    });
-    const ds = makeDs({ worker: makeFakeWorker() });
-    ds.session.cliId = 'traex';
-
-    await beginCodexAppProgressTurn(ds, 'om_disabled', '无需进度卡');
-
-    expect(sessionReply).not.toHaveBeenCalled();
-    expect(ds.session.codexAppProgressCard).toBeUndefined();
   });
 
   it('ignores accepted steer feedback from a replaced worker generation', async () => {

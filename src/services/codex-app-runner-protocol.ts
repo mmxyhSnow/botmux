@@ -18,7 +18,6 @@ export interface CodexAppRunnerInput {
 
 export interface CodexAppFinalMarker {
   content: string;
-  outcome?: 'completed' | 'failed' | 'interrupted';
   startedAtMs?: number;
   completedAtMs?: number;
   /** Codex app-server turn id, used for protocol matching and deduplication. */
@@ -36,13 +35,6 @@ export interface CodexAppFinalMarker {
     cacheReadTokens: number;
     cacheCreateTokens: number;
   };
-}
-
-/** runner 只允许输出经过句子边界筛选的 assistant commentary。 */
-export interface CodexAppProgressMarker {
-  content: string;
-  updatedAtMs: number;
-  replyTurnId: string;
 }
 
 interface CodexAppLifecycleBase {
@@ -163,41 +155,14 @@ export function decodeCodexAppRunnerInput(line: string): CodexAppRunnerInput | u
 
 export function normalizeAppRunnerFinalMarker(payload: unknown): CodexAppFinalMarker | undefined {
   if (!isRecord(payload) || typeof payload.content !== 'string') return undefined;
-  if (
-    payload.outcome !== undefined
-    && payload.outcome !== 'completed'
-    && payload.outcome !== 'failed'
-    && payload.outcome !== 'interrupted'
-  ) return undefined;
   return {
     content: payload.content,
-    ...(payload.outcome ? { outcome: payload.outcome } : {}),
     startedAtMs: optionalFiniteNumber(payload.startedAtMs),
     completedAtMs: optionalFiniteNumber(payload.completedAtMs),
     appTurnId: optionalNonEmptyString(payload.appTurnId),
     replyTurnId: optionalNonEmptyString(payload.replyTurnId),
     legacyTurnId: optionalNonEmptyString(payload.turnId),
     usage: normalizeFinalUsage(payload.usage),
-  };
-}
-
-export function normalizeCodexAppProgressMarker(payload: unknown): CodexAppProgressMarker | undefined {
-  if (!isRecord(payload)) return undefined;
-  const allowedKeys = new Set(['content', 'updatedAtMs', 'replyTurnId']);
-  if (Object.keys(payload).some(key => !allowedKeys.has(key))) return undefined;
-  const replyTurnId = optionalLifecycleId(payload.replyTurnId);
-  if (
-    typeof payload.content !== 'string'
-    || !payload.content.trim()
-    || !replyTurnId
-    || typeof payload.updatedAtMs !== 'number'
-    || !Number.isFinite(payload.updatedAtMs)
-    || payload.updatedAtMs < 0
-  ) return undefined;
-  return {
-    content: payload.content,
-    updatedAtMs: payload.updatedAtMs,
-    replyTurnId,
   };
 }
 

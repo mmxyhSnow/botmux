@@ -115,44 +115,6 @@ describe('sandbox relay watcher host handoff', () => {
     }
   });
 
-  it('materializes an editable card spec and re-executes only the specialized flag', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'botmux-relay-editable-card-'));
-    roots.push(root);
-    const outbox = join(root, 'outbox');
-    mkdirSync(outbox);
-    const fixture = join(root, 'editable-card-echo.mjs');
-    writeFileSync(fixture, `
-      import { readFileSync } from 'node:fs';
-      const argv = process.argv.slice(2);
-      const index = argv.indexOf('--editable-card-file');
-      const specPath = index >= 0 ? argv[index + 1] : undefined;
-      process.stdout.write(JSON.stringify({ argv, specPath, spec: readFileSync(specPath, 'utf8') }));
-    `);
-    const id = 'editable-card-1';
-    writeFileSync(join(outbox, `${id}.content`), '');
-    writeFileSync(join(outbox, `${id}.preview.json`), '{"targetChatId":"oc_target"}');
-    writeFileSync(join(outbox, `${id}.req.json`), JSON.stringify({
-      contentFile: `${id}.content`,
-      editableCardFile: `${id}.preview.json`,
-      flags: ['--no-mention'],
-    }));
-    const stop = startOutboxWatcher(outbox, { ...process.env }, 'forced-session', { cliPath: fixture });
-    try {
-      const responsePath = join(outbox, `${id}.res.json`);
-      await vi.waitFor(() => expect(existsSync(responsePath)).toBe(true), { timeout: 5_000 });
-      const response = JSON.parse(readFileSync(responsePath, 'utf8')) as { code: number; stdout: string; stderr: string };
-      expect(response.code, response.stderr).toBe(0);
-      const child = JSON.parse(response.stdout) as { argv: string[]; specPath: string; spec: string };
-      expect(child.argv).toContain('--editable-card-file');
-      expect(child.argv).not.toContain('--card-file');
-      expect(child.spec).toBe('{"targetChatId":"oc_target"}');
-      expect(dirname(child.specPath)).toBe(join(root, 'relay-staging'));
-      expect(existsSync(child.specPath)).toBe(false);
-    } finally {
-      stop();
-    }
-  });
-
   it('never promotes sandbox-supplied origin fields without host authorization (fail closed)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'botmux-relay-forged-'));
     roots.push(root);

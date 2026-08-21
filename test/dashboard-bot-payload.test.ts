@@ -17,39 +17,23 @@ describe('dashboard bot payload helpers', () => {
       'agentSelectionKey', 'autoGrantRequestCards', 'autoStartOnGroupJoin',
       'autoStartOnGroupJoinPrompt', 'autoStartOnNewTopic', 'backendType',
       'botToBotSameDir', 'brandLabel', 'canTalkDaemonCommands', 'cliRuntime', 'codexAppCleanInput',
-      'codexAppImmediateProgressCard', 'askReminderPolicy',
       'customPassthroughCommands', 'defaultOncall', 'defaultWorkingDir',
       'defaultWorkingDirAutoWorktree', 'disableStreamingCard', 'docSubscribeDefaultMode',
       'env', 'grantDefaultDurationMs', 'launchShell', 'maxLiveWorkers', 'messageQuotaDefaultLimit', 'model',
-      'overloadAlert', 'p2pMode', 'privateCard', 'regularGroupMentionMode',
-      'topicStatusDisplay',
+      'feedback',
+      'overloadAlert', 'p2pMode', 'p2pOpen', 'privateCard', 'regularGroupMentionMode',
       'regularGroupReplyMode', 'restrictGrantCommands', 'riff', 'sandbox', 'sandboxPaths',
       'silentTurnReactions', 'skillInjection', 'startupCommands', 'substituteMode',
       'summaryMemory', 'summaryMemoryPath', 'summaryRange', 'writableTerminalLinkInCard',
+      'sessionOwnerReminder',
     ];
     expect(Object.keys(row)).toEqual(expect.arrayContaining(editableFields));
   });
 
-  it('projects custom capability controls with backward-compatible defaults', () => {
-    expect(botDefaultsPayload({ larkAppId: 'cli_a' }, {})).toMatchObject({
-      codexAppImmediateProgressCard: true,
-      askReminderPolicy: 'auto-recommend',
-    });
-    expect(botDefaultsPayload({ larkAppId: 'cli_a' }, {
-      codexAppImmediateProgressCard: false,
-      askReminderPolicy: 'repeat-reminder',
-    })).toMatchObject({
-      codexAppImmediateProgressCard: false,
-      askReminderPolicy: 'repeat-reminder',
-    });
-  });
-
-  it('defaults topic status display to off and preserves opt-in modes', () => {
-    expect(botDefaultsPayload({ larkAppId: 'cli_a' }, {}).topicStatusDisplay).toBe('off');
-    expect(botDefaultsPayload({ larkAppId: 'cli_a' }, { topicStatusDisplay: 'reply-preview' }).topicStatusDisplay)
-      .toBe('reply-preview');
-    expect(botDefaultsPayload({ larkAppId: 'cli_a' }, { topicStatusDisplay: 'bot-root' }).topicStatusDisplay)
-      .toBe('bot-root');
+  it('exposes feedback policy only in private Bot Defaults payloads', () => {
+    const feedback = { enabled: true, audience: 'requester' };
+    expect(botDefaultsPayload({ larkAppId: 'app' }, { feedback })).toMatchObject({ feedback });
+    expect(botSummaryPayload({ larkAppId: 'app' })).not.toHaveProperty('feedback');
   });
 
   it('keeps executable runtime details out of public group roster summaries', () => {

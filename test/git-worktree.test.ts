@@ -14,7 +14,6 @@ import { tmpdir } from 'node:os';
 
 import { createRepoWorktree, removeRepoWorktree, slugFromWorktreeText } from '../src/services/git-worktree.js';
 import { localWorktreeSlugFromContext } from '../src/services/worktree-slug-ai.js';
-import { initGitRepository } from './helpers/git-repository.js';
 
 let tempRoot: string;
 
@@ -34,7 +33,7 @@ function git(cwd: string, ...args: string[]): string {
 function makeUpstream(name: string): string {
   const dir = join(tempRoot, name);
   mkdirSync(dir);
-  initGitRepository(dir, 'master');
+  git(dir, 'init', '-b', 'master');
   git(dir, 'commit', '--allow-empty', '-m', 'init');
   return dir;
 }
@@ -109,9 +108,9 @@ describe('createRepoWorktree', () => {
 
   it('skips a remote semantic branch instead of tracking it for auto-names', async () => {
     const upstream = makeUpstream('upstream');
-    git(upstream, 'checkout', '-b', 'wt/fix-repo-wt-naming');
+    git(upstream, 'switch', '-c', 'wt/fix-repo-wt-naming');
     git(upstream, 'commit', '--allow-empty', '-m', 'remote semantic branch');
-    git(upstream, 'checkout', 'master');
+    git(upstream, 'switch', 'master');
     const repo = makeClone(upstream, 'proj');
 
     const res = await createRepoWorktree(repo, { slug: 'Fix Repo WT naming!' });
@@ -183,10 +182,10 @@ describe('createRepoWorktree', () => {
 
   it('creates a local tracking branch when the explicit branch exists only on origin', async () => {
     const upstream = makeUpstream('upstream');
-    git(upstream, 'checkout', '-b', 'feat/remote-only');
+    git(upstream, 'switch', '-c', 'feat/remote-only');
     git(upstream, 'commit', '--allow-empty', '-m', 'remote branch');
     const remoteHead = git(upstream, 'rev-parse', 'HEAD');
-    git(upstream, 'checkout', 'master');
+    git(upstream, 'switch', 'master');
     const repo = makeClone(upstream, 'proj');
 
     const res = await createRepoWorktree(repo, { branch: 'feat/remote-only' });

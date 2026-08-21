@@ -128,7 +128,6 @@ describe('daemon session-scoped IPC route wiring', () => {
     expect(route).toMatch(
       /registerAskBroker\(\{\s*larkAppId: boundAsk\.larkAppId,[\s\S]*chatType: askChatType,/,
     );
-    expect(route).toContain('flowId: boundAsk.flowId,');
     expect(route).not.toMatch(
       /registerAskBroker\(\{\s*larkAppId: parsed\.larkAppId,/,
     );

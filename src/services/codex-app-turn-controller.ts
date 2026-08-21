@@ -6,10 +6,6 @@ import type {
   CodexAppRunnerInput,
 } from './codex-app-runner-protocol.js';
 import type { CodexAppTurnInput } from '../types.js';
-import {
-  CodexAppProgressThrottler,
-  type CodexAppProgressSnapshot,
-} from './codex-app-progress.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -53,7 +49,6 @@ export interface CodexAppTurnControllerDeps {
   isStartCapabilityError?(error: unknown): boolean;
   onTurnInput?(input: CodexAppRunnerInput, prepared: CodexAppPreparedInput): void;
   onOutput?(text: string): void;
-  onProgress?(snapshot: CodexAppProgressSnapshot): void;
   onDiagnostic?(message: string): void;
   onLifecycle?(event: CodexAppLifecycleEvent): void;
   onFinal(marker: CodexAppFinalMarker & { appTurnId: string }): void;
@@ -72,10 +67,6 @@ interface ActiveTurn {
   finalText: string;
   allAgentText: string;
   itemText: Map<string, string>;
-  itemPhases: Map<string, string>;
-  progressText: string;
-  progress: CodexAppProgressThrottler;
-  outcome: 'completed' | 'failed' | 'interrupted';
   completionSeen: boolean;
   serverStarted: boolean;
   steeringClosed: boolean;
@@ -170,11 +161,6 @@ export class CodexAppTurnController {
 
     if (message.method === 'item/started') {
       const item = isRecord(params.item) ? params.item : undefined;
-      if (item?.type === 'agentMessage') {
-        const itemId = stringField(item.id);
-        const phase = stringField(item.phase);
-        if (itemId && phase) turn.itemPhases.set(itemId, phase);
-      }
       if (item?.type === 'commandExecution') {
         this.deps.onOutput?.(`\n$ ${String(item.command ?? '')}\n`);
       } else if (item?.type === 'fileChange') {
@@ -189,10 +175,6 @@ export class CodexAppTurnController {
       turn.itemText.set(itemId, (turn.itemText.get(itemId) ?? '') + delta);
       turn.allAgentText += delta;
       this.deps.onOutput?.(delta);
-      if (turn.itemPhases.get(itemId) && turn.itemPhases.get(itemId) !== 'final_answer') {
-        turn.progressText += delta;
-        this.emitProgress(turn);
-      }
       return;
     }
 
@@ -206,11 +188,7 @@ export class CodexAppTurnController {
       if (item?.type === 'agentMessage') {
         const text = typeof item.text === 'string' ? item.text : '';
         if (item.phase === 'final_answer') turn.finalText = text;
-        else if (!turn.itemText.has(String(item.id ?? '')) && text) {
-          turn.allAgentText += text;
-          turn.progressText += text;
-          this.emitProgress(turn);
-        }
+        else if (!turn.itemText.has(String(item.id ?? '')) && text) turn.allAgentText += text;
       }
       return;
     }
@@ -219,17 +197,8 @@ export class CodexAppTurnController {
       if (notificationTurnId && !this.adoptAppTurnId(turn, notificationTurnId)) return;
       const completed = isRecord(params.turn) ? params.turn : undefined;
       const completedError = isRecord(completed?.error) ? completed.error : undefined;
-      const completedStatus = stringField(completed?.status);
       if (typeof completedError?.message === 'string' && !turn.finalText) {
         turn.finalText = `Codex App turn failed: ${completedError.message}`;
-        turn.outcome = 'failed';
-      } else if (completedStatus === 'failed') {
-        turn.outcome = 'failed';
-      } else if (completedStatus === 'interrupted' || completedStatus === 'cancelled') {
-        turn.outcome = 'interrupted';
-        if (!turn.finalText && !turn.allAgentText) {
-          turn.finalText = 'Codex App turn interrupted.';
-        }
       }
       if (turn.steerInFlight && turn.appTurnId && !turn.completionRaceEmitted) {
         turn.completionRaceEmitted = true;
@@ -323,10 +292,6 @@ export class CodexAppTurnController {
       finalText: '',
       allAgentText: '',
       itemText: new Map(),
-      itemPhases: new Map(),
-      progressText: '',
-      progress: new CodexAppProgressThrottler(),
-      outcome: 'completed',
       completionSeen: false,
       serverStarted: false,
       steeringClosed: false,
@@ -449,7 +414,6 @@ export class CodexAppTurnController {
       }
       if (this.queue[0] === input) this.queue.shift();
       turn.replyTurnId = input.replyTurnId ?? turn.replyTurnId;
-      turn.progress.resetTo(turn.progressText);
       this.deps.onTurnInput?.(input, prepared);
       this.emitLifecycle({
         kind: 'steer_accepted',
@@ -573,7 +537,6 @@ export class CodexAppTurnController {
         appTurnId,
         replyTurnId: turn.replyTurnId,
         content,
-        outcome: turn.outcome,
         startedAtMs: turn.startedAtMs,
         completedAtMs,
       });
@@ -593,7 +556,6 @@ export class CodexAppTurnController {
       appTurnId,
       replyTurnId,
       content,
-      outcome: 'failed',
       startedAtMs: turn.startedAtMs,
       completedAtMs,
     });
@@ -606,7 +568,6 @@ export class CodexAppTurnController {
       appTurnId: this.nextFailureId(now),
       replyTurnId: input.replyTurnId,
       content,
-      outcome: 'failed',
       startedAtMs: now,
       completedAtMs: now,
     });
@@ -634,18 +595,6 @@ export class CodexAppTurnController {
 
   private emitLifecycle(event: CodexAppLifecycleEvent): void {
     this.deps.onLifecycle?.(event);
-  }
-
-  private emitProgress(turn: ActiveTurn): void {
-    if (!turn.replyTurnId) return;
-    for (const snapshot of turn.progress.drainSnapshots({
-      turnId: turn.replyTurnId,
-      text: turn.progressText,
-      startedAtMs: turn.startedAtMs,
-      nowMs: this.now(),
-    })) {
-      this.deps.onProgress?.(snapshot);
-    }
   }
 
   private activeOperation(active: ActiveTurn | null): CodexAppLifecycleOperation {

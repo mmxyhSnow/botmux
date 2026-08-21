@@ -55,6 +55,7 @@ vi.mock('../src/core/worker-pool.js', () => ({
   sweepDeadPidMarkers: vi.fn(),
   getCurrentCliVersion: vi.fn(() => '1.0.0-test'),
   restoreUsageLimitRuntimeState: vi.fn(),
+  ensureOrdinaryTurnRecoveryAttached: vi.fn(),
   // Default: promotion succeeds. A specific test overrides this to false to
   // exercise the restore-time transient-failure quarantine path.
   promoteQueuedActivationTail: vi.fn(() => true),
@@ -115,7 +116,7 @@ vi.mock('../src/core/worker-pool.js', () => ({
     const store = await import('../src/services/session-store.js');
     const s = store.getSession(sid);
     if (s && s.status !== 'closed') store.closeSession(sid);
-    return { ok: true, alreadyClosed: false };
+    return { ok: true, outcome: 'closed', alreadyClosed: false };
   }),
 }));
 
@@ -172,11 +173,11 @@ vi.mock('../src/core/session-activity.js', () => ({
   markSessionActivity: vi.fn(),
 }));
 
-import { restoredWorkerTurnId, restoreActiveSessions, resumeSession } from '../src/core/session-manager.js';
+import { restoreActiveSessions, resumeSession } from '../src/core/session-manager.js';
 import {
   closeSession,
+  ensureOrdinaryTurnRecoveryAttached,
   forkAdoptWorker,
-  forkWorker,
   killStalePids,
   promoteQueuedActivationTail,
   restoreUsageLimitRuntimeState,
@@ -195,6 +196,7 @@ beforeEach(() => {
   sessionStore.init();
   wp.registry = null;
   vi.mocked(closeSession).mockClear();
+  vi.mocked(ensureOrdinaryTurnRecoveryAttached).mockClear();
   vi.mocked(promoteQueuedActivationTail).mockReset();
   vi.mocked(promoteQueuedActivationTail).mockReturnValue(true);
 });
@@ -222,46 +224,6 @@ function makeClosedSession(overrides: Partial<Parameters<typeof sessionStore.cre
 }
 
 describe('resumeSession', () => {
-    it('只为自洽的重启会话恢复精确 turn 绑定', () => {
-      expect(restoredWorkerTurnId({
-        scope: 'chat',
-        quoteTargetId: 'om_current',
-        currentReplyTarget: { rootMessageId: 'om_root', turnId: 'om_current', updatedAt: new Date().toISOString() },
-      })).toBe('om_current');
-      expect(restoredWorkerTurnId({
-        scope: 'chat',
-        quoteTargetId: 'om_current',
-        currentReplyTarget: { rootMessageId: 'om_root', turnId: 'om_stale', updatedAt: new Date().toISOString() },
-      })).toBeUndefined();
-      expect(restoredWorkerTurnId({ scope: 'chat', quoteTargetId: 'om_current' })).toBeUndefined();
-      expect(restoredWorkerTurnId({ scope: 'thread', quoteTargetId: 'om_current' })).toBe('om_current');
-    });
-
-    it('重启重挂存活 tmux 会话时把自洽 turn 传给新 worker', async () => {
-      daemonConfig.backendType = 'tmux';
-      vi.mocked(TmuxBackend.probeSession).mockReturnValue('alive');
-      const s = sessionStore.createSession('oc_restore_turn', 'om_restore_root', 'Restored turn', 'group');
-      s.larkAppId = 'app_test';
-      s.scope = 'chat';
-      s.cliId = 'claude-code';
-      s.workingDir = '/tmp/proj';
-      s.quoteTargetId = 'om_turn_current';
-      s.currentReplyTarget = {
-        rootMessageId: 'om_restore_root',
-        turnId: 'om_turn_current',
-        updatedAt: new Date().toISOString(),
-      };
-      sessionStore.updateSession(s);
-
-      await restoreActiveSessions(new Map<string, DaemonSession>());
-
-      expect(forkWorker).toHaveBeenCalledWith(
-        expect.objectContaining({ session: expect.objectContaining({ sessionId: s.sessionId }) }),
-        '',
-        { resume: true, turnId: 'om_turn_current' },
-      );
-    });
-
   describe('error branches', () => {
     it('returns not_found for an unknown session id', async () => {
       const r = await resumeSession('no-such-id', new Map());
@@ -520,7 +482,7 @@ describe('resumeSession', () => {
         cleanupStarted();
         await paused;
         sessionStore.closeSession(sid);
-        return { ok: true, alreadyClosed: false } as any;
+        return { ok: true, outcome: 'closed', alreadyClosed: false } as any;
       });
 
       const resuming = resumeSession(closed.sessionId, map);
@@ -608,6 +570,36 @@ describe('resumeSession', () => {
       expect(restored?.session.sessionId).toBe(materialized.sessionId);
       expect(restored?.session.rootMessageId).toBe('om_materialized_root');
       expect(restored?.session.replyThreadAliases?.om_materialized_root).toBeDefined();
+    });
+
+    it('re-attaches persisted ordinary-turn recovery only after the winning owner is restored', async () => {
+      const recovering = sessionStore.createSession(
+        'oc_recovery',
+        'om_recovery',
+        'recovering turn',
+        'group',
+      );
+      recovering.larkAppId = 'app_test';
+      recovering.scope = 'thread';
+      recovering.cliId = 'claude-code';
+      recovering.workingDir = '/tmp/proj';
+      recovering.ordinaryTurnRecovery = {
+        logicalTurnId: 'om_original',
+        currentTurnId: 'om_original',
+        continuationsStarted: 0,
+        status: 'backoff',
+        nextAttemptAt: Date.now() + 2_000,
+        lastErrorCode: 'provider_unexpected_eof',
+      };
+      sessionStore.updateSession(recovering);
+      const map = new Map<string, DaemonSession>();
+
+      await restoreActiveSessions(map);
+
+      const restored = map.get(sessionKey('om_recovery', 'app_test'));
+      expect(restored?.session.sessionId).toBe(recovering.sessionId);
+      expect(ensureOrdinaryTurnRecoveryAttached).toHaveBeenCalledTimes(1);
+      expect(ensureOrdinaryTurnRecoveryAttached).toHaveBeenCalledWith(restored);
     });
 
     it.each([

@@ -26,6 +26,7 @@ vi.mock('@larksuiteoapi/node-sdk', () => {
   class FakeClient { constructor(public opts: Record<string, unknown>) {} }
   return { Client: FakeClient };
 });
+
 vi.mock('node-pty', () => ({
   spawn: vi.fn(() => ({
     onData: vi.fn(),
@@ -332,6 +333,7 @@ describe('two-phase turn reactions', () => {
     expect(mocks.addReaction).not.toHaveBeenCalledWith(APP, 'om_a', 'DONE');
   });
 });
+
 /**
  * Source-level pin: the screen_update handler must only flip ✋→✅ after a real
  * busy period (working/analyzing → idle|limited). Cold-start starting→idle
@@ -506,3 +508,5 @@ describe('turn reaction screen_update behavioral gate', () => {
     expect(ds.pendingAckReactions?.map(a => a.messageId)).toEqual(['om_a']);
   });
 });
+
+

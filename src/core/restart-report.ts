@@ -7,15 +7,10 @@
  * daemon startup wiring.
  */
 import { githubAuthHeaders, type GithubAuthResolveOptions } from './github-auth.js';
-import type { CodexAppProgressOverview } from '../types.js';
-import type {
-  RestartKind,
-  RestartSource,
-  SourceDeploymentIntent,
-} from '../services/restart-intent-store.js';
+import type { RestartKind } from '../services/restart-intent-store.js';
 import { claimRestartIntentForReport } from '../services/restart-intent-store.js';
 import { countActiveSessionsOnDisk } from '../services/session-store.js';
-import { resolveLiveIdentity } from '../utils/live-identity.js';
+import { botmuxVersion } from '../utils/install-info.js';
 import { t, localeForBot, type Locale } from '../i18n/index.js';
 
 export const GITHUB_REPO = 'deepcoldy/botmux';
@@ -34,48 +29,11 @@ export interface RestartReportInput {
   /** Version delta for update/rollback; changelog is update-only. */
   oldVersion?: string;
   newVersion?: string;
-  /** 发起维护时记录的具体原因。 */
-  reason?: string;
-  /** 手动维护的真实触发入口。 */
-  source?: RestartSource;
-  /** 官方源码同步在本次新 daemon 中完成的部署留痕结果。 */
-  sourceDeployment?: { releaseTag: string; deployTag?: string; error?: string };
   changelog?: string;
 }
 
 function vtag(v: string): string {
   return v.startsWith('v') ? v : `v${v}`;
-}
-
-/** 将与待恢复轮次精确匹配的结构化进度压成可读摘要。 */
-export function buildRestartTurnProgressText(
-  overview: CodexAppProgressOverview,
-  locale?: Locale,
-): string {
-  const lines = [
-    t('restart.turn_progress_stage', { value: overview.stage }, locale),
-    t('restart.turn_progress_current', { value: overview.current }, locale),
-  ];
-  if (overview.completed.length > 0) {
-    lines.push(t('restart.turn_progress_completed', {
-      value: overview.completed.join('；'),
-    }, locale));
-  }
-  if (overview.evidence?.length) {
-    lines.push(t('restart.turn_progress_evidence', {
-      value: overview.evidence.join('；'),
-    }, locale));
-  }
-  if (overview.delivery?.length) {
-    lines.push(t('restart.turn_progress_delivery', {
-      value: overview.delivery.join('；'),
-    }, locale));
-  }
-  if (overview.blocker) {
-    lines.push(t('restart.turn_progress_blocker', { value: overview.blocker }, locale));
-  }
-  lines.push(t('restart.turn_progress_next', { value: overview.next }, locale));
-  return lines.join('\n');
 }
 
 /** The human-facing markdown body of the report. Pure — unit tested. */
@@ -87,12 +45,6 @@ export function buildRestartReportText(input: RestartReportInput, locale?: Local
       ? t('restart.rolled_back_restarted', undefined, locale)
       : t('restart.restarted', undefined, locale));
 
-  const reasonKey = input.kind === 'manual' && input.source
-    ? `restart.reason_${input.source}`
-    : `restart.reason_${input.kind}`;
-  const reason = input.reason?.trim() || t(reasonKey, undefined, locale);
-  lines.push(t('restart.reason', { reason }, locale));
-
   if (input.kind !== 'manual' && input.oldVersion && input.newVersion) {
     lines.push(t('restart.version_delta', { old: vtag(input.oldVersion), new: vtag(input.newVersion) }, locale));
   } else {
@@ -102,11 +54,6 @@ export function buildRestartReportText(input: RestartReportInput, locale?: Local
   lines.push(t('restart.unfinished_sessions', { count: input.sessionCount }, locale));
   if (input.dashboardUrl) lines.push(t('restart.dashboard', { url: input.dashboardUrl }, locale));
   if (input.dashboardLocalUrl) lines.push(t('restart.dashboard_local', { url: input.dashboardLocalUrl }, locale));
-  if (input.sourceDeployment?.deployTag) {
-    lines.push(t('restart.source_deploy_succeeded', { tag: input.sourceDeployment.deployTag }, locale));
-  } else if (input.sourceDeployment?.error) {
-    lines.push(t('restart.source_deploy_failed', { error: input.sourceDeployment.error }, locale));
-  }
 
   if (input.kind === 'update' && input.changelog && input.changelog.trim()) {
     lines.push('');
@@ -143,10 +90,6 @@ export interface RestartReportWiring {
   dashboardLocalUrl?: string | undefined;
   /** Send the interactive card as a p2p DM to the owner. */
   sendCard: (openId: string, cardJson: string) => Promise<void>;
-  /** 生产 wiring 通过已登记的 owner 通知策略投递；测试或旧调用可继续只提供 sendCard。 */
-  deliverCard?: (openId: string, cardJson: string) => Promise<void>;
-  /** 源码同步重启后的运行态验收；缺省时明确告警且不创建 deploy 标签。 */
-  finalizeSourceDeployment?: (intent: SourceDeploymentIntent) => Promise<{ deployTag: string }>;
   githubAuth?: GithubAuthResolveOptions;
   /** Injectable clock for deterministic tests. */
   now?: number | (() => number);
@@ -183,24 +126,11 @@ export async function sendRestartReportIfPending(w: RestartReportWiring): Promis
   }
   if (claim.state !== 'claimed') return;
   const intent = claim.intent;
-  let sourceDeployment: RestartReportInput['sourceDeployment'];
-  if (intent.sourceDeployment) {
-    try {
-      if (!w.finalizeSourceDeployment) throw new Error('source deployment finalizer unavailable');
-      const finalized = await w.finalizeSourceDeployment(intent.sourceDeployment);
-      sourceDeployment = { releaseTag: intent.sourceDeployment.releaseTag, deployTag: finalized.deployTag };
-      log(`source deployment finalized (${finalized.deployTag})`);
-    } catch (error) {
-      const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 300);
-      sourceDeployment = { releaseTag: intent.sourceDeployment.releaseTag, error: message };
-      log(`source deployment finalization failed: ${message}`);
-    }
-  }
   if (!w.ownerOpenId) { log('restart-report: no owner configured — skipping DM'); return; }
 
   const locale = localeForBot(w.primaryLarkAppId);
   const sessionCount = countActiveSessionsOnDisk();
-  const version = resolveLiveIdentity().display;
+  const version = botmuxVersion();
   let changelog: string | undefined;
   if (intent.kind === 'update' && intent.newVersion) {
     changelog = (await fetchChangelog(intent.newVersion, { auth: w.githubAuth }))
@@ -214,13 +144,10 @@ export async function sendRestartReportIfPending(w: RestartReportWiring): Promis
     dashboardLocalUrl: w.dashboardLocalUrl,
     oldVersion: intent.oldVersion,
     newVersion: intent.newVersion,
-    reason: intent.reason,
-    source: intent.source,
-    sourceDeployment,
     changelog,
   }, locale);
   try {
-    await (w.deliverCard ?? w.sendCard)(w.ownerOpenId, card);
+    await w.sendCard(w.ownerOpenId, card);
     log(`restart-report sent (kind=${intent.kind}, sessions=${sessionCount})`);
   } catch (e) {
     log(`restart-report send failed: ${e instanceof Error ? e.message : e}`);

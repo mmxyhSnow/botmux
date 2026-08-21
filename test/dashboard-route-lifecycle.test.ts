@@ -4,6 +4,7 @@ import {
   createDashboardRouteState,
   loadAndRenderDashboardRoute,
 } from '../src/dashboard/web/route-lifecycle.js';
+import { findDashboardRoute } from '../src/dashboard/web/dashboard-routes.js';
 import type { DashboardRouteRenderer } from '../src/dashboard/web/dashboard-routes.js';
 
 function deferred<T>() {
@@ -13,6 +14,11 @@ function deferred<T>() {
 }
 
 describe('dashboard route lifecycle', () => {
+  it('registers feedback analytics as a lazy dashboard route', async () => {
+    const route = findDashboardRoute('#/feedback');
+    expect(route?.id).toBe('feedback');
+    expect(await route?.load()).toEqual(expect.any(Function));
+  });
   it('does not run a stale lazy route renderer after a newer route commits', async () => {
     const state = createDashboardRouteState();
     const root = { textContent: '' } as unknown as HTMLElement;
@@ -73,7 +79,6 @@ describe('dashboard route lifecycle', () => {
     const overviewDispose = vi.fn();
     const whiteboardsDispose = vi.fn();
     const settingsDispose = vi.fn();
-    const customCapabilitiesDispose = vi.fn();
     const skillsDispose = vi.fn();
     const groupsDispose = vi.fn();
     const rolesDispose = vi.fn();
@@ -91,9 +96,6 @@ describe('dashboard route lifecycle', () => {
     }));
     vi.doMock('../src/dashboard/web/settings-page.js', () => ({
       renderSettingsPage: vi.fn(() => settingsDispose),
-    }));
-    vi.doMock('../src/dashboard/web/custom-capabilities-page.js', () => ({
-      renderCustomCapabilitiesPage: vi.fn(() => customCapabilitiesDispose),
     }));
     vi.doMock('../src/dashboard/web/skills-page.js', () => ({
       renderSkillsPage: vi.fn(() => skillsDispose),
@@ -128,9 +130,6 @@ describe('dashboard route lifecycle', () => {
     const settingsRender = await routes.findDashboardRoute('#/settings')!.load();
     expect(settingsRender(root)).toBe(settingsDispose);
 
-    const customCapabilitiesRender = await routes.findDashboardRoute('#/custom-capabilities')!.load();
-    expect(customCapabilitiesRender(root)).toBe(customCapabilitiesDispose);
-
     const skillsRender = await routes.findDashboardRoute('#/skills')!.load();
     expect(skillsRender(root)).toBe(skillsDispose);
 
@@ -158,7 +157,6 @@ describe('dashboard route lifecycle', () => {
     vi.doUnmock('../src/dashboard/web/overview-page.js');
     vi.doUnmock('../src/dashboard/web/whiteboards-page.js');
     vi.doUnmock('../src/dashboard/web/settings-page.js');
-    vi.doUnmock('../src/dashboard/web/custom-capabilities-page.js');
     vi.doUnmock('../src/dashboard/web/skills-page.js');
     vi.doUnmock('../src/dashboard/web/groups-page.js');
     vi.doUnmock('../src/dashboard/web/roles-page.js');

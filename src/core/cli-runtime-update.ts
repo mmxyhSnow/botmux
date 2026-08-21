@@ -20,11 +20,8 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { get as httpsGet } from 'node:https';
 import { basename, dirname, join, parse, resolve } from 'node:path';
-import { ProxyAgent } from 'proxy-agent';
 import { isNewerVersion, parseVersion } from './update-check.js';
-import { githubAuthHeaders } from './github-auth.js';
 import { localeForBot, t, type Locale } from '../i18n/index.js';
 import {
   isValidNpmPackageName,
@@ -61,7 +58,15 @@ export interface CliRuntimeUpdateEntry {
   cliId: 'codex';
   runtimeId: string;
   displayName: string;
+  /** Executable path as discovered at probe time. Display-only: it may be a
+   * short-lived launcher symlink (e.g. FNM's per-shell `fnm_multishells`), so
+   * it must never be part of the persisted identity. */
   binPath: string;
+  /** Canonical realpath of the installation this entry tracks, captured when
+   * the entry was written. This is the stable persistence identity: a rotating
+   * `binPath` that resolves here must reuse the same TTL/notification state
+   * instead of minting a fresh row every tick. */
+  installationPath: string;
   provider: CliRuntimeUpdateProvider;
   /** Explicit npm source, when configured. Persisted so source changes can
    * invalidate the TTL/status cache instead of inheriting another package. */
@@ -107,18 +112,6 @@ export interface CodexUpdateProbeDeps {
   fetchLatest?: () => Promise<string | null>;
   fetchNpmLatest?: (packageName: string) => Promise<string | null>;
   resolveNpmPackage?: (binPath: string) => NpmPackageProvenance | null;
-}
-
-/** Codex 官方发布页中适合直接展示给用户的高层更新摘要。 */
-export interface CodexReleaseNotes {
-  summary: string;
-  url: string;
-}
-
-export interface CodexReleaseNotesDeps {
-  fetchImpl?: typeof fetch;
-  fetchHtml?: (url: string) => Promise<string>;
-  timeoutMs?: number;
 }
 
 export interface CliRuntimeUpdateAuditDeps {
@@ -180,6 +173,13 @@ function validEntry(raw: unknown): ValidatedStoreEntry | null {
   const v = raw as Record<string, unknown>;
   if (v.cliId !== 'codex' || typeof v.binPath !== 'string' || !v.binPath) return null;
   if (typeof v.lastCheckedAt !== 'number' || !Number.isFinite(v.lastCheckedAt)) return null;
+  // Entries written before stable-identity keying lack installationPath. Derive
+  // it once from the persisted binPath: for a still-present install that is its
+  // realpath; for a dead rotating symlink it degrades to the raw path, which is
+  // exactly what the old key already used, so nothing regresses.
+  const installationPath = typeof v.installationPath === 'string' && v.installationPath
+    ? v.installationPath
+    : canonicalInstallationPath(v.binPath);
   const current = typeof v.current === 'string' && parseVersion(v.current) ? v.current : null;
   const runtimeId = typeof v.runtimeId === 'string' && v.runtimeId ? v.runtimeId : 'codex';
   const displayName = typeof v.displayName === 'string' && v.displayName ? v.displayName : 'Codex';
@@ -219,6 +219,7 @@ function validEntry(raw: unknown): ValidatedStoreEntry | null {
       runtimeId,
       displayName,
       binPath: v.binPath,
+      installationPath,
       provider,
       ...(packageName ? { packageName } : {}),
       // Recompute instead of trusting persisted input. Besides hardening corrupted
@@ -344,170 +345,6 @@ async function fetchLatestNpmVersion(packageName: string): Promise<string | null
     if (!response.ok) return null;
     const body = await response.json() as { version?: unknown };
     return typeof body.version === 'string' && parseVersion(body.version) ? body.version : null;
-  } catch {
-    return null;
-  }
-}
-
-const CODEX_RELEASES_BASE = 'https://github.com/openai/codex/releases/tag';
-const CODEX_RELEASE_API_BASE = 'https://api.github.com/repos/openai/codex/releases/tags';
-const MAX_RELEASE_HTML_BYTES = 2 * 1024 * 1024;
-const MAX_RELEASE_SUMMARY_CHARS = 6_000;
-
-/** 将普通语义版本号转成 Codex 仓库使用的 `rust-v*` 标签。 */
-function codexReleaseTag(version: string): string {
-  return `rust-v${version.replace(/^v/i, '')}`;
-}
-
-/** 将版本号转成 Codex 官方 GitHub Release 页地址。 */
-function codexReleaseUrl(version: string): string {
-  return `${CODEX_RELEASES_BASE}/${encodeURIComponent(codexReleaseTag(version))}`;
-}
-
-/** 去掉发布说明尾部冗长的 PR 编号，保留真正面向用户的功能描述。 */
-function cleanReleaseBullet(value: string): string {
-  return value
-    .replace(/\s*\((?:\[#\d+\]\([^)]+\)(?:\s*,\s*)?)+\)\s*$/, '')
-    .replace(/\s*\(\s*(?:#\d+\s*(?:,\s*)?)+\)\s*$/, '')
-    .trim();
-}
-
-/** 限制飞书卡片摘要体积，且不产出空内容。 */
-function capReleaseSummary(lines: string[]): string | null {
-  const summary = lines.join('\n').trim();
-  if (!summary) return null;
-  return summary.length <= MAX_RELEASE_SUMMARY_CHARS
-    ? summary
-    : `${summary.slice(0, MAX_RELEASE_SUMMARY_CHARS - 1).trimEnd()}…`;
-}
-
-/** 只保留 GitHub Release 的高层章节，排除后面的逐提交 Changelog。 */
-function releaseSummaryFromMarkdown(markdown: string): string | null {
-  const lines: string[] = [];
-  for (const rawLine of markdown.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    const heading = line.match(/^##\s+(.+)$/)?.[1]?.trim();
-    if (heading) {
-      if (/^changelog$/i.test(heading)) break;
-      lines.push(`**${heading}**`);
-      continue;
-    }
-    const bullet = line.match(/^[-*]\s+(.+)$/)?.[1];
-    if (bullet) lines.push(`- ${cleanReleaseBullet(bullet)}`);
-  }
-  return capReleaseSummary(lines);
-}
-
-/** 解码发布页文本里常见的 HTML 实体与数字实体。 */
-function decodeHtml(value: string): string {
-  return value.replace(/&(#x?[0-9a-f]+|amp|lt|gt|quot|apos);/gi, (_match, entity: string) => {
-    const normalized = entity.toLowerCase();
-    if (normalized === 'amp') return '&';
-    if (normalized === 'lt') return '<';
-    if (normalized === 'gt') return '>';
-    if (normalized === 'quot') return '"';
-    if (normalized === 'apos') return "'";
-    const radix = normalized.startsWith('#x') ? 16 : 10;
-    const rawCode = normalized.replace(/^#x?/, '');
-    const code = Number.parseInt(rawCode, radix);
-    return Number.isFinite(code) ? String.fromCodePoint(code) : _match;
-  });
-}
-
-/** 将单个标题或列表项 HTML 转为可在卡片中展示的纯文本。 */
-function htmlFragmentText(fragment: string): string {
-  return decodeHtml(fragment
-    .replace(/<code[^>]*>/gi, '`')
-    .replace(/<\/code>/gi, '`')
-    .replace(/<[^>]+>/g, ' '))
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/** GitHub API 被共享出口限流时，从公开 Release HTML 回退提取同一份摘要。 */
-function releaseSummaryFromHtml(html: string): string | null {
-  const bodyStart = html.search(/<div[^>]*data-test-selector=["']body-content["'][^>]*>/i);
-  if (bodyStart < 0) return null;
-  const body = html.slice(bodyStart);
-  const lines: string[] = [];
-  const tokens = body.matchAll(/<h2[^>]*>([\s\S]*?)<\/h2>|<li[^>]*>([\s\S]*?)<\/li>/gi);
-  for (const token of tokens) {
-    if (token[1] !== undefined) {
-      const heading = htmlFragmentText(token[1]);
-      if (/^changelog$/i.test(heading)) break;
-      lines.push(`**${heading}**`);
-      continue;
-    }
-    const bullet = cleanReleaseBullet(htmlFragmentText(token[2] ?? ''));
-    if (bullet) lines.push(`- ${bullet}`);
-  }
-  return capReleaseSummary(lines);
-}
-
-/** 通过宿主代理下载发布页，并对超时和响应体体积设硬限。 */
-function fetchHtmlWithProxy(url: string, timeoutMs = 10_000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const request = httpsGet(url, {
-      agent: new ProxyAgent(),
-      headers: { 'User-Agent': 'botmux' },
-      timeout: timeoutMs,
-    }, (response) => {
-      if (response.statusCode !== 200) {
-        response.resume();
-        reject(new Error(`release page returned ${response.statusCode ?? 'unknown'}`));
-        return;
-      }
-      let size = 0;
-      const chunks: Buffer[] = [];
-      response.on('data', (chunk: Buffer) => {
-        size += chunk.length;
-        if (size > MAX_RELEASE_HTML_BYTES) {
-          request.destroy(new Error('release page exceeded size limit'));
-          return;
-        }
-        chunks.push(chunk);
-      });
-      response.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    });
-    request.on('timeout', () => request.destroy(new Error('release page timed out')));
-    request.on('error', reject);
-  });
-}
-
-/** 获取指定 Codex 版本的官方更新摘要；API 失败时自动回退公开发布页。 */
-export async function fetchCodexReleaseNotes(
-  version: string,
-  deps: CodexReleaseNotesDeps = {},
-): Promise<CodexReleaseNotes | null> {
-  const releaseUrl = codexReleaseUrl(version);
-  const fetchImpl = deps.fetchImpl ?? fetch;
-  try {
-    const response = await fetchImpl(`${CODEX_RELEASE_API_BASE}/${encodeURIComponent(codexReleaseTag(version))}`, {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'botmux',
-        ...githubAuthHeaders(),
-      },
-      signal: AbortSignal.timeout(deps.timeoutMs ?? 8_000),
-    });
-    if (response.ok) {
-      const body = await response.json() as { body?: unknown; html_url?: unknown };
-      const summary = typeof body.body === 'string' ? releaseSummaryFromMarkdown(body.body) : null;
-      if (summary) {
-        return {
-          summary,
-          url: typeof body.html_url === 'string' && body.html_url ? body.html_url : releaseUrl,
-        };
-      }
-    }
-  } catch {
-    // 继续尝试不受 GitHub API 共享限流影响的公开发布页。
-  }
-
-  try {
-    const html = await (deps.fetchHtml ?? ((url) => fetchHtmlWithProxy(url, deps.timeoutMs ?? 10_000)))(releaseUrl);
-    const summary = releaseSummaryFromHtml(html);
-    return summary ? { summary, url: releaseUrl } : null;
   } catch {
     return null;
   }
@@ -712,13 +549,32 @@ export async function probeCodexRuntimeUpdate(
   return probeCliRuntimeUpdate(target, deps);
 }
 
-function targetKey(target: Pick<CliRuntimeUpdateTarget, 'runtimeId' | 'binPath'>): string {
-  return `${target.runtimeId}:${target.binPath}`;
+/** Canonicalize an executable path to a stable filesystem identity. A present
+ * install resolves through every launcher symlink to its real file; a dead or
+ * rotated symlink (e.g. an expired `fnm_multishells` entry) has no realpath, so
+ * we fall back to a normalized absolute path. */
+function canonicalInstallationPath(binPath: string): string {
+  try { return realpathSync(binPath); }
+  catch { return resolve(binPath); }
 }
 
-function targetInstallationKey(target: Pick<CliRuntimeUpdateTarget, 'binPath'>): string {
-  try { return realpathSync(target.binPath); }
-  catch { return resolve(target.binPath); }
+/** Persisted identity of a tracked runtime. Keyed by the canonical installation
+ * path, not the raw `binPath`: FNM hands each new shell a fresh
+ * `/run/user/.../fnm_multishells/<pid>_.../bin/codex` symlink that all resolve
+ * to one npm install, so keying by raw path would mint a new row (losing the
+ * 24h TTL and per-version notification watermark) on every hourly tick. */
+function targetKey(target: Pick<CliRuntimeUpdateTarget, 'runtimeId' | 'binPath'>): string {
+  return `${target.runtimeId}:${canonicalInstallationPath(target.binPath)}`;
+}
+
+/** Key an already-persisted entry by its stored canonical installation path.
+ * Unlike a live target the entry's rotating `binPath` may no longer resolve, so
+ * the value frozen at write time is the authoritative identity. In-memory or
+ * legacy stores that never passed through the reader may lack it; fall back to
+ * canonicalizing the raw path so those callers still get a stable key. */
+function entryKey(entry: Pick<CliRuntimeUpdateEntry, 'runtimeId' | 'installationPath' | 'binPath'>): string {
+  const installationPath = entry.installationPath || canonicalInstallationPath(entry.binPath);
+  return `${entry.runtimeId}:${installationPath}`;
 }
 
 /** De-duplicate only identical update sources. If two bots assign different
@@ -732,7 +588,7 @@ function dedupeCandidates(targets: CliRuntimeUpdateCandidate[]): CliRuntimeUpdat
   }>();
   for (const target of targets) {
     if (!target.binPath) continue;
-    const key = targetInstallationKey(target);
+    const key = canonicalInstallationPath(target.binPath);
     const sourceFingerprint = updateSourceFingerprint(target.provider, target.packageName);
     const existing = grouped.get(key);
     if (!existing) {
@@ -762,6 +618,16 @@ function dedupeTargets(targets: CliRuntimeUpdateTarget[]): CliRuntimeUpdateTarge
   return dedupeCandidates(targets);
 }
 
+/** Group key for reconciling a persisted entry / live target onto its update
+ * source. A runtimeId can host multiple installs and an installation can be
+ * re-pointed at a different package, so identity is (runtimeId, source
+ * fingerprint). Uses a `\u0000` separator so neither half can forge the
+ * boundary, written as a source escape (not a literal NUL byte) to keep the
+ * file text-tool friendly. */
+function sourceGroupKey(runtimeId: string, sourceFingerprint: string): string {
+  return `${runtimeId}\u0000${sourceFingerprint}`;
+}
+
 /** Project persisted status onto the runtimes configured right now. The
  * monitor eventually prunes stale entries, but Dashboard reads can happen
  * immediately after an agent/runtime edit; filtering here prevents an old
@@ -777,7 +643,7 @@ export function filterCliRuntimeUpdateEntriesForTargets(
   const current = new Map(dedupeTargets(refreshedTargets).map((target) => [targetKey(target), target]));
   const visible: CliRuntimeUpdateEntry[] = [];
   for (const entry of entries) {
-    const target = current.get(targetKey(entry));
+    const target = current.get(entryKey(entry));
     if (!target) continue;
     if (updateSourceFingerprint(entry.provider, entry.packageName)
         !== updateSourceFingerprint(target.provider, target.packageName)) continue;
@@ -891,19 +757,90 @@ export async function runCliRuntimeUpdateAudit(deps: CliRuntimeUpdateAuditDeps):
   ));
   const targets = dedupeTargets(refreshedTargets);
   const configuredKeys = new Set(targets.map(targetKey));
-  /** 已拿到更新内容并成功发卡后才推进水位；失败会在下个小时继续尝试。 */
-  const notifyPending = async (key: string, entry: CliRuntimeUpdateEntry): Promise<void> => {
-    if (!entry.updateAvailable || !entry.latest || entry.lastNotifiedVersion === entry.latest || !deps.notify) return;
-    try {
-      await deps.notify(entry);
-      entry.lastNotifiedVersion = entry.latest;
-      store.entries[key] = entry;
-      deps.writeStore(store);
-      log(`owner notified for ${entry.binPath}: ${entry.current} → ${entry.latest}`);
-    } catch (error) {
-      log(`owner notification failed for ${entry.binPath}: ${error instanceof Error ? error.message : error}`);
+
+  // Reconcile persisted keys onto stable canonical identities before any TTL
+  // decision. Two things move an entry:
+  //   1. Reindex: an entry keyed by a historical raw path whose install is
+  //      still present collapses onto its realpath identity (entryKey).
+  //   2. Migrate: a legacy entry whose raw path is already dead (a rotated FNM
+  //      launcher symlink from before this build) is adopted onto the live
+  //      target's stable key, but only when exactly one orphan shares the
+  //      target's runtimeId + sourceFingerprint — so a rotating path stops
+  //      minting fresh rows and the post-upgrade tick keeps its watermark
+  //      instead of notifying once more.
+  const reconciled: Record<string, CliRuntimeUpdateEntry> = {};
+  let reindexed = false;
+  for (const [oldKey, entry] of Object.entries(store.entries)) {
+    const key = entryKey(entry);
+    if (key !== oldKey) reindexed = true;
+    const existing = reconciled[key];
+    if (!existing) {
+      reconciled[key] = entry;
+    } else {
+      // Duplicate identity (e.g. two raw-path keys for one live install): keep
+      // the freshest row and drop the rest.
+      reindexed = true;
+      if (entry.lastCheckedAt > existing.lastCheckedAt) reconciled[key] = entry;
     }
-  };
+  }
+  store.entries = reconciled;
+  storeChanged ||= reindexed;
+
+  // Orphans are reconciled entries not already sitting on a configured target
+  // key. Only a *stale* orphan — installationPath no longer on disk (a dead
+  // rotating FNM launcher, or a removed install) — may be adopted. An orphan
+  // whose installationPath still resolves to a real file is a genuinely
+  // different install; adopting it would splice its watermark onto another
+  // installation, so it is pruned and re-probed under its own identity. Group
+  // by (runtimeId, sourceFingerprint) so a target only adopts an unambiguous
+  // one.
+  const orphansBySource = new Map<string, { key: string; entry: CliRuntimeUpdateEntry }[]>();
+  for (const [key, entry] of Object.entries(store.entries)) {
+    if (configuredKeys.has(key)) continue;
+    if (existsSync(entry.installationPath)) continue;
+    const group = sourceGroupKey(
+      entry.runtimeId,
+      entry.sourceFingerprint ?? updateSourceFingerprint(entry.provider, entry.packageName),
+    );
+    (orphansBySource.get(group) ?? orphansBySource.set(group, []).get(group)!).push({ key, entry });
+  }
+  // A group's watermark can only be reattributed when *both* sides are
+  // unambiguous: exactly one stale orphan AND exactly one live install lacking
+  // an entry. When a runtimeId+source hosts two distinct installs (allowed —
+  // they keep independent TTL/watermark by canonical path), there is no way to
+  // decide which install the dead orphan's state belonged to, so migrating by
+  // target iteration order would silently graft a stale watermark onto an
+  // arbitrary install and suppress its next probe. In that case migrate none;
+  // the ambiguous orphan is pruned below and each install re-probes under its
+  // own identity.
+  const liveTargetsNeedingEntry = new Map<string, number>();
+  for (const target of targets) {
+    if (store.entries[targetKey(target)]) continue;
+    const group = sourceGroupKey(
+      target.runtimeId,
+      updateSourceFingerprint(target.provider, target.packageName),
+    );
+    liveTargetsNeedingEntry.set(group, (liveTargetsNeedingEntry.get(group) ?? 0) + 1);
+  }
+  for (const target of targets) {
+    const key = targetKey(target);
+    if (store.entries[key]) continue;
+    const group = sourceGroupKey(
+      target.runtimeId,
+      updateSourceFingerprint(target.provider, target.packageName),
+    );
+    const candidates = orphansBySource.get(group);
+    if (!candidates || candidates.length !== 1) continue;
+    if (liveTargetsNeedingEntry.get(group) !== 1) continue;
+    const { key: oldKey, entry } = candidates[0]!;
+    delete store.entries[oldKey];
+    orphansBySource.delete(group);
+    // Rebind identity to the live installation; status/watermark carry over.
+    store.entries[key] = { ...entry, binPath: target.binPath, installationPath: canonicalInstallationPath(target.binPath) };
+    storeChanged = true;
+    log(`migrated ${target.displayName} store identity onto ${key}`);
+  }
+
   let pruned = false;
   for (const key of Object.keys(store.entries)) {
     if (configuredKeys.has(key)) continue;
@@ -914,6 +851,7 @@ export async function runCliRuntimeUpdateAudit(deps: CliRuntimeUpdateAuditDeps):
 
   for (const target of targets) {
     const key = targetKey(target);
+    const installationPath = canonicalInstallationPath(target.binPath);
     const previous = store.entries[key];
     const sourceFingerprint = updateSourceFingerprint(target.provider, target.packageName);
     const previousSourceFingerprint = previous
@@ -921,10 +859,7 @@ export async function runCliRuntimeUpdateAudit(deps: CliRuntimeUpdateAuditDeps):
         ?? updateSourceFingerprint(previous.provider, previous.packageName)
       : undefined;
     const sameSource = previousSourceFingerprint === sourceFingerprint;
-    if (previous && sameSource && now - previous.lastCheckedAt < CLI_RUNTIME_UPDATE_CHECK_INTERVAL_MS) {
-      await notifyPending(key, previous);
-      continue;
-    }
+    if (previous && sameSource && now - previous.lastCheckedAt < CLI_RUNTIME_UPDATE_CHECK_INTERVAL_MS) continue;
     // Status and notification watermarks belong to one exact provider/package.
     // A source edit must start clean even when its first probe fails.
     const reusablePrevious = sameSource ? previous : undefined;
@@ -945,6 +880,7 @@ export async function runCliRuntimeUpdateAudit(deps: CliRuntimeUpdateAuditDeps):
         runtimeId: target.runtimeId,
         displayName: target.displayName,
         binPath: target.binPath,
+        installationPath,
         provider: target.provider,
         ...(target.packageName ? { packageName: target.packageName } : {}),
         sourceFingerprint,
@@ -964,6 +900,7 @@ export async function runCliRuntimeUpdateAudit(deps: CliRuntimeUpdateAuditDeps):
         runtimeId: target.runtimeId,
         displayName: target.displayName,
         binPath: target.binPath,
+        installationPath,
         provider: target.provider,
         ...(target.packageName ? { packageName: target.packageName } : {}),
         sourceFingerprint,
@@ -980,7 +917,17 @@ export async function runCliRuntimeUpdateAudit(deps: CliRuntimeUpdateAuditDeps):
     }
     store.entries[key] = next;
     deps.writeStore(store);
-    await notifyPending(key, next);
+
+    if (!next.updateAvailable || !next.latest || next.lastNotifiedVersion === next.latest || !deps.notify) continue;
+    try {
+      await deps.notify(next);
+      next.lastNotifiedVersion = next.latest;
+      store.entries[key] = next;
+      deps.writeStore(store);
+      log(`owner notified for ${target.displayName}: ${next.current} → ${next.latest}`);
+    } catch (error) {
+      log(`owner notification failed for ${target.displayName}: ${error instanceof Error ? error.message : error}`);
+    }
   }
 }
 
@@ -995,7 +942,7 @@ function escapeLarkMarkdown(value: string): string {
 
 export function buildCliRuntimeUpdateCard(
   entry: CliRuntimeUpdateEntry,
-  opts: { dashboardUrl?: string; locale?: Locale; releaseNotes?: CodexReleaseNotes } = {},
+  opts: { dashboardUrl?: string; locale?: Locale } = {},
 ): string {
   const locale = opts.locale;
   const markdownDisplayName = escapeLarkMarkdown(entry.displayName);
@@ -1004,11 +951,6 @@ export function buildCliRuntimeUpdateCard(
     t('cli_update.version_delta', { current: entry.current ?? '?', latest: entry.latest ?? '?' }, locale),
     t('cli_update.binary', { path: `\`${inlineCode(entry.binPath)}\`` }, locale),
   ];
-  if (opts.releaseNotes) {
-    lines.push(t('cli_update.release_notes', undefined, locale));
-    lines.push(opts.releaseNotes.summary);
-    lines.push(t('cli_update.release_details', { url: opts.releaseNotes.url }, locale));
-  }
   if (entry.installTarget) lines.push(t('cli_update.install_target', { path: `\`${inlineCode(entry.installTarget)}\`` }, locale));
   if (entry.updateCommand) lines.push(t('cli_update.command', { command: `\`${inlineCode(entry.updateCommand)}\`` }, locale));
   lines.push(t('cli_update.manual_only', undefined, locale));
@@ -1046,13 +988,9 @@ export function startCliRuntimeUpdateMonitor(wiring: CliRuntimeUpdateMonitorWiri
         notify: async (entry) => {
           const owner = wiring.ownerOpenId();
           if (!owner) throw new Error('no primary owner configured');
-          if (!entry.latest) throw new Error('latest version unavailable');
-          const releaseNotes = await fetchCodexReleaseNotes(entry.latest);
-          if (!releaseNotes) throw new Error(`release notes unavailable for ${entry.latest}`);
           const card = buildCliRuntimeUpdateCard(entry, {
             dashboardUrl: wiring.dashboardUrl?.(),
             locale: localeForBot(wiring.primaryLarkAppId),
-            releaseNotes,
           });
           await wiring.sendCard(owner, card);
         },

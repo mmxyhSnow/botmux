@@ -160,14 +160,6 @@ async function runNodeImpl(
     throw err;
   }
 
-  // 诊断日志虽不决定运行结果，但 runNode 返回前必须冲刷完毕；否则测试清理或
-  // 上层回收 attemptDir 时，后台 mkdir/appendFile 会与递归删除形成竞态。
-  const pendingDiagnosticWrites = new Set<Promise<void>>();
-  const queueDiagnostic = (path: string, line: string): void => {
-    const write = appendLine(path, line).finally(() => pendingDiagnosticWrites.delete(write));
-    pendingDiagnosticWrites.add(write);
-  };
-
   // Register a close waiter before activation so even a child that fails in
   // its first tick cannot escape the bind-failure drain path below.
   let outerCloseSeen = false;
@@ -187,7 +179,7 @@ async function runNodeImpl(
   // EventEmitter error and crash the daemon. Once the main settle state
   // exists, forward the first deferred error into its ordinary failure path.
   worker.on('error', (err) => {
-    queueDiagnostic(stderrPath(req), `[worker] process error: ${err.message}`);
+    void appendLine(stderrPath(req), `[worker] process error: ${err.message}`);
     if (forwardWorkerError) forwardWorkerError(err);
     else deferredWorkerError ??= err;
   });
@@ -197,7 +189,7 @@ async function runNodeImpl(
       attemptDir: req.attemptDir,
       armed: armedFence,
       onCleanupError: (err) => {
-        queueDiagnostic(stderrPath(req), `[v3] worker fence close failed: ${err instanceof Error ? err.message : String(err)}`);
+        void appendLine(stderrPath(req), `[v3] worker fence close failed: ${err instanceof Error ? err.message : String(err)}`);
       },
     });
   } catch (bindError) {
@@ -299,7 +291,7 @@ async function runNodeImpl(
           ptyLogPath,
         });
       } catch (err) {
-        queueDiagnostic(stderrPath(req), `[v3] onSessionReady callback failed: ${err instanceof Error ? err.message : String(err)}`);
+        void appendLine(stderrPath(req), `[v3] onSessionReady callback failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -315,7 +307,7 @@ async function runNodeImpl(
       // If close+SIGTERM cannot stop it, use the same bounded hard fallback as
       // cancellation; never leave the runtime waiting forever on a wedged child.
       sigkillTimer = setTimeout(() => {
-        queueDiagnostic(stderrPath(req), `[v3] worker exit grace expired; escalating to SIGKILL`);
+        void appendLine(stderrPath(req), `[v3] worker exit grace expired; escalating to SIGKILL`);
         try { worker.kill('SIGKILL'); } catch { /* worker may be gone */ }
       }, 250 + deps.cancelGraceMs);
     }
@@ -324,7 +316,7 @@ async function runNodeImpl(
       if (settled || cancelRequested || pendingResult) return;
       if (status === 'cancelled') return;
       pendingResult = { status, reason };
-      queueDiagnostic(stderrPath(req), `[v3] worker outcome claimed status=${status} reason=${reason}; waiting for worker exit`);
+      void appendLine(stderrPath(req), `[v3] worker outcome claimed status=${status} reason=${reason}; waiting for worker exit`);
       requestWorkerExit();
     }
 
@@ -350,11 +342,11 @@ async function runNodeImpl(
         clearTimeout(sigkillTimer);
         sigkillTimer = undefined;
       }
-      queueDiagnostic(stderrPath(req), `[v3] cancel signal received; sending close+SIGINT`);
+      void appendLine(stderrPath(req), `[v3] cancel signal received; sending close+SIGINT`);
       try { worker.send({ type: 'close' }); } catch { /* already gone */ }
       try { worker.kill('SIGINT'); } catch { /* already gone */ }
       sigkillTimer = setTimeout(() => {
-        queueDiagnostic(stderrPath(req), `[v3] cancel grace expired; escalating to SIGKILL`);
+        void appendLine(stderrPath(req), `[v3] cancel grace expired; escalating to SIGKILL`);
         try { worker.kill('SIGKILL'); } catch { /* already gone */ }
       }, deps.cancelGraceMs);
     }
@@ -404,7 +396,7 @@ async function runNodeImpl(
         // PTY, file descriptors, or sandbox cleanup, so no IPC message may
         // settle cancellation; only ChildProcess 'close' below is the fence.
         if (event.type === 'claude_exit') {
-          queueDiagnostic(stderrPath(req), `[worker] cli exited while cancellation waits for worker exit`);
+          void appendLine(stderrPath(req), `[worker] cli exited while cancellation waits for worker exit`);
         }
         return;
       }
@@ -421,7 +413,7 @@ async function runNodeImpl(
           }
           break;
         case 'final_output':
-          queueDiagnostic(stdoutPath(req), event.content);
+          void appendLine(stdoutPath(req), event.content);
           armQuiesce();
           break;
         case 'screen_update':
@@ -434,11 +426,11 @@ async function runNodeImpl(
           }
           break;
         case 'error':
-          queueDiagnostic(stderrPath(req), `[worker] ${event.message}`);
+          void appendLine(stderrPath(req), `[worker] ${event.message}`);
           finish('fail', 'worker-error');
           break;
         case 'claude_exit':
-          queueDiagnostic(stderrPath(req), `[worker] cli exit code=${event.code ?? 'null'} signal=${event.signal ?? 'null'}`);
+          void appendLine(stderrPath(req), `[worker] cli exit code=${event.code ?? 'null'} signal=${event.signal ?? 'null'}`);
           finish(event.code === 0 ? 'ok' : 'fail', 'cli-exit');
           break;
       }
@@ -462,13 +454,10 @@ async function runNodeImpl(
       if (quiesceTimer) clearTimeout(quiesceTimer);
       if (manifestTimer) clearTimeout(manifestTimer);
       cancelSignal?.removeEventListener('abort', onAbort);
-      const resolveAfterDiagnostics = (result: RunNodeResult): void => {
-        void Promise.allSettled([...pendingDiagnosticWrites]).then(() => resolve(result));
-      };
       if (cancelRequested) {
         settled = true;
-        queueDiagnostic(stderrPath(req), `[v3] worker closed after cancellation code=${code ?? 'null'}`);
-        resolveAfterDiagnostics({
+        void appendLine(stderrPath(req), `[v3] worker closed after cancellation code=${code ?? 'null'}`);
+        resolve({
           status: 'cancelled',
           manifestPath,
           cancelReason,
@@ -479,8 +468,8 @@ async function runNodeImpl(
       settled = true;
       const status = pendingResult?.status ?? (code === 0 ? 'ok' : 'fail');
       const reason = pendingResult?.reason ?? 'worker-exit';
-      queueDiagnostic(stderrPath(req), `[v3] worker closed status=${status} reason=${reason} code=${code ?? 'null'}`);
-      resolveAfterDiagnostics({ status, manifestPath, sessionInfo: sessionInfo() });
+      void appendLine(stderrPath(req), `[v3] worker closed status=${status} reason=${reason} code=${code ?? 'null'}`);
+      resolve({ status, manifestPath, sessionInfo: sessionInfo() });
     });
 
     try {

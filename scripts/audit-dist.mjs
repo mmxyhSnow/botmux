@@ -63,7 +63,4 @@ if (existsSync(resolve(distDir, 'dashboard-web/terminal-replay.html'))) {
 if (stale.length > 0) {
   throw new Error(`retired Workflow v2 build artifacts survived:\n${stale.map((p) => `- ${p}`).join('\n')}`);
 }
-if (!existsSync(resolve(distDir, 'custom-capabilities.json'))) {
-  throw new Error('custom capability manifest missing from dist');
-}
 console.log('[build-audit] retired Workflow v2 artifacts absent');

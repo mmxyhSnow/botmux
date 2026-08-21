@@ -16,10 +16,6 @@ export interface AskApiBody {
   questions: AskQuestion[];
   /** Already in milliseconds. CLI side converts from `--timeout` seconds. */
   timeoutMs: number;
-  /** true 时 daemon 用活跃会话反查本轮发送者，调用方不能自行指定 open_id。 */
-  lockToTurnCaller?: boolean;
-  /** 同一 Codex turn 的连续提问标识；普通 ask 不携带。 */
-  flowId?: string;
   /** Per-invocation identity (hook generates once, reuses across reconnect
    *  retries) so a re-POST after a daemon restart re-attaches to the same ask.
    *  Optional — legacy callers omit it and the broker synthesizes one. */
@@ -45,8 +41,6 @@ export type AskApiBodyError =
   | 'bad_questions'
   | 'bad_question_shape'
   | 'bad_multiSelect'
-  | 'bad_lockToTurnCaller'
-  | 'bad_flowId'
   | 'bad_requestId'
   | 'bad_originKind';
 
@@ -106,15 +100,6 @@ export function parseAskBody(raw: unknown): AskApiBody | { error: AskApiBodyErro
   ) {
     return { error: 'bad_timeoutMs' };
   }
-  if (r.lockToTurnCaller !== undefined && typeof r.lockToTurnCaller !== 'boolean') {
-    return { error: 'bad_lockToTurnCaller' };
-  }
-  if (
-    r.flowId !== undefined
-    && (typeof r.flowId !== 'string' || !r.flowId.trim() || r.flowId.length > 512)
-  ) {
-    return { error: 'bad_flowId' };
-  }
   // Optional invocation identity. When present, must be a sane short string
   // (used verbatim as a persistence filename segment after sanitization).
   let requestId: string | undefined;
@@ -168,8 +153,6 @@ export function parseAskBody(raw: unknown): AskApiBody | { error: AskApiBodyErro
     rootMessageId: r.rootMessageId as string | null,
     questions,
     timeoutMs: r.timeoutMs,
-    ...(r.lockToTurnCaller === true ? { lockToTurnCaller: true } : {}),
-    ...(typeof r.flowId === 'string' ? { flowId: r.flowId.trim() } : {}),
     ...(requestId !== undefined ? { requestId } : {}),
     ...(originKind !== undefined ? { originKind } : {}),
   };

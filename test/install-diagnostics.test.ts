@@ -1,44 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  checkNode,
-  analyzeInstalls,
-  customDeploymentVersionFromTags,
-  officialVersionFromTags,
-  type InstallProbeDeps,
-} from '../src/utils/install-diagnostics.js';
-
-describe('officialVersionFromTags', () => {
-  it('忽略自定义部署标签和 canary，只展示对齐的官方正式版', () => {
-    expect(officialVersionFromTags([
-      'deploy/v3.7.1-custom.1',
-      'v3.9.0-canary.1',
-      'v3.7.1',
-      'v3.7.0',
-    ])).toBe('3.7.1');
-  });
-});
-
-describe('customDeploymentVersionFromTags', () => {
-  it('读取同一提交上最新的候选或部署版本', () => {
-    expect(customDeploymentVersionFromTags([
-      'deploy/v3.7.1-custom.2',
-      'release/v3.7.1-custom.3',
-      'deploy/v3.7.1-custom.10',
-    ])).toBe('3.7.1-custom.10');
-  });
-
-  it('没有 deploy 标签时仍展示候选版本', () => {
-    expect(customDeploymentVersionFromTags(['v3.7.1', 'release/v3.7.1-custom.3']))
-      .toBe('3.7.1-custom.3');
-  });
-
-  it('同号候选和部署并存时保持相同版本号', () => {
-    expect(customDeploymentVersionFromTags([
-      'release/v3.7.1-custom.4',
-      'deploy/v3.7.1-custom.4',
-    ])).toBe('3.7.1-custom.4');
-  });
-});
+import { checkNode, analyzeInstalls, type InstallProbeDeps } from '../src/utils/install-diagnostics.js';
 
 describe('checkNode', () => {
   it('ok at/above the required major', () => {

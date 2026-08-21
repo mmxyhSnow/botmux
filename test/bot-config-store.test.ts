@@ -87,8 +87,41 @@ describe('bot-config store', () => {
     expect(keys).toContain('skills');
     expect(keys).toContain('silentTurnReactions');
     expect(keys).toContain('codexAppCleanInput');
-    expect(keys).toContain('codexAppImmediateProgressCard');
-    expect(keys).toContain('topicStatusDisplay');
+    expect(keys).toContain('feedback');
+  });
+
+  it('strictly normalizes feedback JSON through the shared config field', async () => {
+    const { store } = await loaded();
+    const spec = store.findConfigField('feedback')!;
+    expect(store.coerceConfigValue(spec, '{"enabled":true}')).toMatchObject({
+      ok: true,
+      value: { enabled: true, audience: 'requester' },
+    });
+    expect(store.coerceConfigValue(spec, '{"enabled":true,"audience":"all"}')).toEqual({ ok: false, reason: 'invalid_json' });
+  });
+
+  it('persists bot and per-chat feedback layers and updates the live registry', async () => {
+    const { registry, store } = await loaded();
+    expect(await store.setBotFeedbackPolicy('app_default', { enabled: true, allowReselect: true })).toMatchObject({ ok: true });
+    expect(readConfig().feedback).toMatchObject({ enabled: true, allowReselect: true });
+    expect(registry.getBot('app_default').config.feedback).toMatchObject({ enabled: true, allowReselect: true });
+
+    expect(await store.setChatFeedbackPolicy('app_default', 'oc_chat', { enabled: false })).toMatchObject({ ok: true });
+    expect(readConfig().chatFeedbackPolicies.oc_chat).toEqual({ enabled: false });
+    expect(registry.getBot('app_default').config.chatFeedbackPolicies?.oc_chat).toEqual({ enabled: false });
+
+    expect(await store.setChatFeedbackPolicy('app_default', 'oc_chat', null)).toMatchObject({ ok: true });
+    expect(readConfig().chatFeedbackPolicies).toBeUndefined();
+    expect(registry.getBot('app_default').config.chatFeedbackPolicies).toBeUndefined();
+  });
+
+  it('rejects invalid feedback layers without changing disk or live memory', async () => {
+    const { registry, store } = await loaded({ feedback: { enabled: true } });
+    const beforeDisk = readConfig();
+    const beforeMemory = structuredClone(registry.getBot('app_default').config);
+    expect(await store.setChatFeedbackPolicy('app_default', 'oc_chat', { buttons: {} } as any)).toMatchObject({ ok: false, reason: 'invalid_policy' });
+    expect(readConfig()).toEqual(beforeDisk);
+    expect(registry.getBot('app_default').config).toEqual(beforeMemory);
   });
 
   it('parseBooleanValue accepts on/off variants and rejects junk', async () => {
@@ -217,20 +250,6 @@ describe('bot-config store', () => {
     expect(off.codexAppCleanInput).toBeUndefined();
     expect(invalid.codexAppCleanInput).toBeUndefined();
     expect(missing.codexAppCleanInput).toBeUndefined();
-  });
-
-  it('parses codexAppImmediateProgressCard strictly and preserves explicit false', async () => {
-    const { registry } = await freshModules();
-    const [on, off, invalid, missing] = registry.parseBotConfigsFromText(JSON.stringify([
-      { larkAppId: 'progress-on', larkAppSecret: 's', cliId: 'codex-app', codexAppImmediateProgressCard: true },
-      { larkAppId: 'progress-off', larkAppSecret: 's', cliId: 'codex-app', codexAppImmediateProgressCard: false },
-      { larkAppId: 'progress-invalid', larkAppSecret: 's', cliId: 'codex-app', codexAppImmediateProgressCard: 'true' },
-      { larkAppId: 'progress-missing', larkAppSecret: 's', cliId: 'codex-app' },
-    ]));
-    expect(on.codexAppImmediateProgressCard).toBe(true);
-    expect(off.codexAppImmediateProgressCard).toBe(false);
-    expect(invalid.codexAppImmediateProgressCard).toBeUndefined();
-    expect(missing.codexAppImmediateProgressCard).toBeUndefined();
   });
 
   it('parses substituteMode, retaining a disabled config\'s targets', async () => {
@@ -433,20 +452,6 @@ describe('bot-config store', () => {
     expect(registry.getBot('app_default').config.usageDisplay).toBeUndefined();
   });
 
-  it('topicStatusDisplay persists opt-in modes and clears the default off mode', async () => {
-    const { registry, store } = await loaded();
-    const spec = store.findConfigField('topicStatusDisplay')!;
-    expect(spec.enumValues).toEqual(['off', 'reply-preview', 'bot-root']);
-
-    await store.applyConfigField('app_default', spec, 'bot-root');
-    expect(readConfig().topicStatusDisplay).toBe('bot-root');
-    expect(registry.getBot('app_default').config.topicStatusDisplay).toBe('bot-root');
-
-    await store.applyConfigField('app_default', spec, 'off');
-    expect(readConfig().topicStatusDisplay).toBeUndefined();
-    expect(registry.getBot('app_default').config.topicStatusDisplay).toBeUndefined();
-  });
-
   it('codexAppCleanInput is immediate, default-off, and deletes its key when disabled', async () => {
     const { registry, store } = await loaded({ cliId: 'codex-app' });
     const spec = store.findConfigField('codexAppCleanInput')!;
@@ -461,29 +466,6 @@ describe('bot-config store', () => {
     await store.applyConfigField('app_default', spec, false);
     expect(readConfig().codexAppCleanInput).toBeUndefined();
     expect(registry.getBot('app_default').config.codexAppCleanInput).toBeUndefined();
-  });
-
-  it('codexAppImmediateProgressCard defaults on and preserves explicit off', async () => {
-    const { registry, store } = await loaded({ cliId: 'codex-app' });
-    const spec = store.findConfigField('codexAppImmediateProgressCard')!;
-    expect(spec.effect).toBe('immediate');
-    expect(registry.getBot('app_default').config.codexAppImmediateProgressCard).toBeUndefined();
-    expect(store.getConfigSnapshot('app_default')).toMatchObject({
-      ok: true,
-      rows: expect.arrayContaining([
-        expect.objectContaining({ key: 'codexAppImmediateProgressCard', value: 'on' }),
-      ]),
-    });
-
-    const disabled = await store.applyConfigField('app_default', spec, false);
-    expect(disabled).toMatchObject({ ok: true, oldText: 'on', newText: 'off', effect: 'immediate' });
-    expect(readConfig().codexAppImmediateProgressCard).toBe(false);
-    expect(registry.getBot('app_default').config.codexAppImmediateProgressCard).toBe(false);
-
-    const enabled = await store.applyConfigField('app_default', spec, true);
-    expect(enabled).toMatchObject({ ok: true, oldText: 'off', newText: 'on', effect: 'immediate' });
-    expect(readConfig().codexAppImmediateProgressCard).toBeUndefined();
-    expect(registry.getBot('app_default').config.codexAppImmediateProgressCard).toBeUndefined();
   });
 
   it('silentTurnReactions writes true / deletes key on false (keeps bots.json tidy)', async () => {
@@ -515,6 +497,27 @@ describe('bot-config store', () => {
     expect(r2.ok).toBe(true);
     expect(readConfig().maxLiveWorkers).toBeUndefined();
     expect(registry.getBot('app_default').config.maxLiveWorkers).toBeUndefined();
+  });
+
+  it('session owner reminder config round-trips and hot-updates the registered Bot', async () => {
+    const { registry } = await loaded();
+    const reminderStore = await import('../src/services/session-owner-reminder-config-store.js');
+    const value = {
+      enabled: true,
+      intervalMinutes: 30,
+      text: '请继续处理。',
+      states: ['idle', 'tui_prompt'],
+    };
+    const saved = await reminderStore.updateSessionOwnerReminderConfig('app_default', value);
+    expect(saved).toEqual({ ok: true, config: value });
+    expect(readConfig().sessionOwnerReminder).toEqual(value);
+    expect(registry.getBot('app_default').config.sessionOwnerReminder).toEqual(value);
+
+    expect(await reminderStore.updateSessionOwnerReminderConfig('app_default', {
+      ...value,
+      text: '<at user_id="ou_other"></at>',
+    })).toEqual({ ok: false, reason: 'invalid_session_owner_reminder' });
+    expect(readConfig().sessionOwnerReminder).toEqual(value);
   });
 
   it('coerceConfigValue(number) accepts positive integers and rejects junk/≤0/fractions', async () => {

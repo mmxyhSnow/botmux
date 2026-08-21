@@ -17,24 +17,12 @@ import { readProcessStartIdentity } from '../core/session-marker.js';
 import { withFileLockSync } from '../utils/file-lock.js';
 
 export type RestartKind = 'manual' | 'update' | 'rollback';
-export type RestartSource = 'cli' | 'ai' | 'dashboard';
-
-export interface SourceDeploymentIntent {
-  releaseTag: string;
-  expectedHead: string;
-}
 
 export interface RestartIntentPayload {
   kind: RestartKind;
   /** Present for an update or rollback: the version delta to report. */
   oldVersion?: string;
   newVersion?: string;
-  /** 发起方提供的具体维护原因；缺省时由卡片按 kind 给出可理解的原因。 */
-  reason?: string;
-  /** 触发本次维护的真实入口；旧数据缺省时按普通 CLI 处理。 */
-  source?: RestartSource;
-  /** 源码同步专用：新 daemon 验收后再写 deploy 标签，禁止安装阶段提前留痕。 */
-  sourceDeployment?: SourceDeploymentIntent;
   /** ISO 8601 timestamp the breadcrumb was written. */
   at: string;
 }
@@ -67,47 +55,8 @@ function writeRestartIntentUnlocked(dir: string, intent: RestartIntent): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const path = restartIntentPathIn(dir);
   const tmp = `${path}.${process.pid}.tmp`;
-  const reason = normalizeRestartReason(intent.reason);
-  const source = normalizeRestartSource(intent.source);
-  const sourceDeployment = normalizeSourceDeployment(intent.sourceDeployment);
-  writeFileSync(tmp, JSON.stringify({ ...intent, reason, source, sourceDeployment }, null, 2) + '\n');
+  writeFileSync(tmp, JSON.stringify(intent, null, 2) + '\n');
   renameSync(tmp, path);
-}
-
-/** 将维护原因压成适合飞书卡片单行展示的短文本，避免换行和超长内容撑满卡片。 */
-export function normalizeRestartReason(raw: unknown): string | undefined {
-  if (typeof raw !== 'string') return undefined;
-  const value = raw.replace(/\s+/g, ' ').trim();
-  return value ? value.slice(0, 200) : undefined;
-}
-
-/** 只接受维护通知支持的固定触发来源，避免把任意外部文本带进卡片。 */
-export function normalizeRestartSource(raw: unknown): RestartSource | undefined {
-  return raw === 'cli' || raw === 'ai' || raw === 'dashboard' ? raw : undefined;
-}
-
-/** 只持久化固定候选标签和完整 SHA，避免 Dashboard 请求注入任意 Git 参数。 */
-export function normalizeSourceDeployment(raw: unknown): SourceDeploymentIntent | undefined {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const value = raw as Record<string, unknown>;
-  if (Object.keys(value).some(key => key !== 'releaseTag' && key !== 'expectedHead')) return undefined;
-  if (typeof value.releaseTag !== 'string' || !/^release\/v\d+\.\d+\.\d+-custom\.\d+$/.test(value.releaseTag)) {
-    return undefined;
-  }
-  if (typeof value.expectedHead !== 'string' || !/^[0-9a-f]{40}$/.test(value.expectedHead)) return undefined;
-  return { releaseTag: value.releaseTag, expectedHead: value.expectedHead };
-}
-
-/**
- * 显式来源优先；未声明时仅在 Botmux 托管轮次环境中判定为 AI，
- * 普通宿主终端保持为 CLI，避免再次把执行主体误写成管理员。
- */
-export function resolveRestartSource(
-  raw: unknown,
-  env: Record<string, string | undefined> = process.env,
-): RestartSource {
-  return normalizeRestartSource(raw)
-    ?? (env.BOTMUX_SESSION_ID && env.BOTMUX_TURN_ID ? 'ai' : 'cli');
 }
 
 export function clearRestartIntentTo(dir: string): void {
@@ -123,9 +72,6 @@ function payloadOf(intent: RestartIntent): RestartIntentPayload {
     at: intent.at,
     ...(intent.oldVersion !== undefined ? { oldVersion: intent.oldVersion } : {}),
     ...(intent.newVersion !== undefined ? { newVersion: intent.newVersion } : {}),
-    ...(intent.reason !== undefined ? { reason: intent.reason } : {}),
-    ...(intent.source !== undefined ? { source: intent.source } : {}),
-    ...(intent.sourceDeployment !== undefined ? { sourceDeployment: intent.sourceDeployment } : {}),
   };
 }
 
@@ -153,11 +99,7 @@ function readRaw(dir: string): RestartIntent | null {
   try {
     const v = JSON.parse(readFileSync(path, 'utf-8'));
     if (v && typeof v === 'object' && typeof v.kind === 'string' && typeof v.at === 'string') {
-      return {
-        ...v,
-        source: normalizeRestartSource(v.source),
-        sourceDeployment: normalizeSourceDeployment(v.sourceDeployment),
-      } as RestartIntent;
+      return v as RestartIntent;
     }
   } catch {
     /* corrupt → treated as absent (and cleaned up by consume) */
@@ -306,18 +248,12 @@ export function hasPreparedRestartIntentTo(dir: string, nowMs: number): boolean 
 /** Write a `manual` breadcrumb only when no *fresh* breadcrumb already exists —
  *  so a maintenance-written `update` breadcrumb is not clobbered
  *  by the `botmux restart` it spawns. */
-export function writeManualIntentIfAbsentTo(
-  dir: string,
-  nowMs: number,
-  atIso: string,
-  reason?: string,
-  source: RestartSource = 'cli',
-): void {
+export function writeManualIntentIfAbsentTo(dir: string, nowMs: number, atIso: string): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   withFileLockSync(restartIntentPathIn(dir), () => {
     const existing = readRaw(dir);
     if (existing && isFresh(existing, nowMs)) return;
-    writeRestartIntentUnlocked(dir, { kind: 'manual', reason, source, at: atIso });
+    writeRestartIntentUnlocked(dir, { kind: 'manual', at: atIso });
   });
 }
 
@@ -397,20 +333,6 @@ export function clearRestartLease(id: string): void {
   clearRestartLeaseTo(config.session.dataDir, id);
 }
 
-export function writeManualIntentIfAbsent(
-  nowMs: number = Date.now(),
-  reason?: string,
-  source: RestartSource = resolveRestartSource(undefined),
-): void {
-  writeManualIntentIfAbsentTo(
-    config.session.dataDir,
-    nowMs,
-    new Date(nowMs).toISOString(),
-    reason,
-    source,
-  );
-}
-
 export function claimRestartIntentForReport(
   nowMs: number = Date.now(),
 ): RestartIntentReportClaim {
@@ -419,4 +341,8 @@ export function claimRestartIntentForReport(
 
 export function hasPreparedRestartIntent(nowMs: number = Date.now()): boolean {
   return hasPreparedRestartIntentTo(config.session.dataDir, nowMs);
+}
+
+export function writeManualIntentIfAbsent(nowMs: number = Date.now()): void {
+  writeManualIntentIfAbsentTo(config.session.dataDir, nowMs, new Date(nowMs).toISOString());
 }

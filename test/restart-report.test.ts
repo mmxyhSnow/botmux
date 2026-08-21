@@ -3,12 +3,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { countActiveSessionsOnDisk } from '../src/services/session-store.js';
-import {
-  buildRestartReportText,
-  buildRestartTurnProgressText,
-  sendRestartReportIfPending,
-  fetchChangelog,
-} from '../src/core/restart-report.js';
+import { buildRestartReportText, sendRestartReportIfPending, fetchChangelog } from '../src/core/restart-report.js';
 import {
   commitRestartIntentAttemptTo,
   restartIntentPathIn,
@@ -46,24 +41,7 @@ describe('countActiveSessionsOnDisk', () => {
 });
 
 describe('buildRestartReportText', () => {
-  it('renders persisted structured progress for restart recovery', () => {
-    const progress = buildRestartTurnProgressText({
-      stage: '运行态切换',
-      current: '切换生产进程',
-      completed: ['完成合入', '完成构建与推送'],
-      next: '核对进程状态',
-      evidence: ['commit abc123'],
-      delivery: ['origin/custom/prod'],
-    });
-    expect(progress).toContain('阶段：运行态切换');
-    expect(progress).toContain('当前：切换生产进程');
-    expect(progress).toContain('已完成：完成合入；完成构建与推送');
-    expect(progress).toContain('验证：commit abc123');
-    expect(progress).toContain('交付：origin/custom/prod');
-    expect(progress).toContain('下一步：核对进程状态');
-  });
-
-  it('plain CLI restart: version + session count + neutral source, no changelog', () => {
+  it('plain restart: version + session count + dashboard link, no changelog', () => {
     const md = buildRestartReportText({
       kind: 'manual',
       version: '2.65.0',
@@ -73,41 +51,7 @@ describe('buildRestartReportText', () => {
     expect(md).toContain('2.65.0');
     expect(md).toContain('3');
     expect(md).toContain('http://10.0.0.1:7891/?t=abc');
-    expect(md).toContain('维护原因：通过 CLI 触发服务重启');
-    expect(md).not.toContain('管理员');
     expect(md.toLowerCase()).not.toContain('changelog');
-  });
-
-  it('shows AI attribution when the restart caller declares the AI source', () => {
-    const md = buildRestartReportText({
-      kind: 'manual',
-      source: 'ai',
-      version: '3.7.1',
-      sessionCount: 50,
-    });
-    expect(md).toContain('维护原因：AI 按用户授权执行服务重启');
-    expect(md).not.toContain('管理员');
-  });
-
-  it('shows Dashboard attribution for dashboard-triggered restarts', () => {
-    const md = buildRestartReportText({
-      kind: 'manual',
-      source: 'dashboard',
-      version: '3.7.1',
-      sessionCount: 50,
-    });
-    expect(md).toContain('维护原因：通过 Dashboard 触发服务重启');
-  });
-
-  it('shows the concrete maintenance reason when the restart caller provides one', () => {
-    const md = buildRestartReportText({
-      kind: 'manual',
-      version: '3.7.1',
-      sessionCount: 36,
-      reason: '上线维护通知卡片的原因说明',
-    });
-    expect(md).toContain('维护原因：上线维护通知卡片的原因说明');
-    expect(md).not.toContain('维护原因：管理员手动重启服务');
   });
 
   it('adds a local ip:port fallback line when the dashboard link is a platform URL', () => {
@@ -145,7 +89,6 @@ describe('buildRestartReportText', () => {
     });
     expect(md).toContain('2.64.0');
     expect(md).toContain('2.65.0');
-    expect(md).toContain('维护原因：已安装新版本，重启以应用更新');
     expect(md).toContain('修复了 X');
     expect(md).toContain('新增 Y');
   });
@@ -162,30 +105,6 @@ describe('buildRestartReportText', () => {
     expect(md).toContain('2.65.0');
   });
 
-  it('shows post-restart source deployment success or failure explicitly', () => {
-    const succeeded = buildRestartReportText({
-      kind: 'update',
-      version: '3.8.0-custom.1',
-      sessionCount: 0,
-      sourceDeployment: {
-        releaseTag: 'release/v3.8.0-custom.1',
-        deployTag: 'deploy/v3.8.0-custom.1',
-      },
-    });
-    const failed = buildRestartReportText({
-      kind: 'update',
-      version: '3.8.0-custom.1',
-      sessionCount: 0,
-      sourceDeployment: {
-        releaseTag: 'release/v3.8.0-custom.1',
-        error: '运行 HEAD 不一致',
-      },
-    });
-    expect(succeeded).toContain('部署留痕：deploy/v3.8.0-custom.1');
-    expect(failed).toContain('未创建 deploy 标签');
-    expect(failed).toContain('运行 HEAD 不一致');
-  });
-
   it('rollback restart reports the old→new delta without a changelog', () => {
     const md = buildRestartReportText({
       kind: 'rollback',
@@ -196,7 +115,6 @@ describe('buildRestartReportText', () => {
       changelog: 'must not be shown',
     });
     expect(md).toContain('已回退并重启');
-    expect(md).toContain('维护原因：已回退版本，重启以应用目标版本');
     expect(md).toContain('3.1.0');
     expect(md).toContain('3.0.0');
     expect(md).not.toContain('must not be shown');
@@ -230,11 +148,7 @@ describe('sendRestartReportIfPending', () => {
   }
 
   it('consumes a fresh intent and DMs the owner a card with the session count + dashboard link', async () => {
-    writeRestartIntentTo(dir, {
-      kind: 'manual',
-      reason: '部署维护通知卡片增强',
-      at: new Date(T0).toISOString(),
-    });
+    writeRestartIntentTo(dir, { kind: 'manual', at: new Date(T0).toISOString() });
     writeFileSync(join(dir, 'sessions-cli_primary.json'), JSON.stringify({ s1: { status: 'active' }, s2: { status: 'active' } }));
     const { w, sent } = fakeWiring();
 
@@ -243,51 +157,8 @@ describe('sendRestartReportIfPending', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0].openId).toBe('ou_owner');
     expect(sent[0].card).toContain('http://10.0.0.1:7891/?t=tok');
-    expect(sent[0].card).toContain('部署维护通知卡片增强');
     expect(sent[0].card).toContain('2'); // two active sessions
     expect(existsSync(restartIntentPathIn(dir))).toBe(false); // consumed
-  });
-
-  it('finalizes a source deployment before sending the restart report', async () => {
-    const sourceDeployment = {
-      releaseTag: 'release/v3.8.0-custom.1',
-      expectedHead: 'a'.repeat(40),
-    };
-    writeRestartIntentTo(dir, {
-      kind: 'update',
-      oldVersion: '3.7.1',
-      newVersion: '3.8.0',
-      sourceDeployment,
-      at: new Date(T0).toISOString(),
-    });
-    const finalizeSourceDeployment = vi.fn(async () => ({ deployTag: 'deploy/v3.8.0-custom.1' }));
-    const { w, sent } = fakeWiring({ finalizeSourceDeployment });
-
-    await sendRestartReportIfPending(w);
-
-    expect(finalizeSourceDeployment).toHaveBeenCalledWith(sourceDeployment);
-    expect(sent[0].card).toContain('deploy/v3.8.0-custom.1');
-  });
-
-  it('alerts the owner and leaves deploy absent when source deployment validation fails', async () => {
-    writeRestartIntentTo(dir, {
-      kind: 'update',
-      oldVersion: '3.7.1',
-      newVersion: '3.8.0',
-      sourceDeployment: {
-        releaseTag: 'release/v3.8.0-custom.1',
-        expectedHead: 'a'.repeat(40),
-      },
-      at: new Date(T0).toISOString(),
-    });
-    const { w, sent } = fakeWiring({
-      finalizeSourceDeployment: async () => { throw new Error('运行 HEAD 不一致'); },
-    });
-
-    await sendRestartReportIfPending(w);
-
-    expect(sent[0].card).toContain('未创建 deploy 标签');
-    expect(sent[0].card).toContain('运行 HEAD 不一致');
   });
 
   it('stays silent when there is no intent (crash / pm2 auto-restart)', async () => {

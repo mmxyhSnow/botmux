@@ -38,7 +38,7 @@ export interface CodexAppLivenessPoll {
 
 export interface CodexAppActivityApplyResult {
   accepted: boolean;
-  phase?: 'submitted' | 'progress' | 'waiting' | 'completed';
+  phase?: 'submitted' | 'progress' | 'completed';
   /** A previously rejected inter-turn prompt became authoritative. */
   shouldReplayPrompt?: boolean;
 }
@@ -138,7 +138,6 @@ interface ActiveTurn {
   stalled: boolean;
   notified: boolean;
   reattachObservation: boolean;
-  waitingForUser: boolean;
 }
 
 export class CodexAppTurnLiveness {
@@ -168,7 +167,6 @@ export class CodexAppTurnLiveness {
       stalled: false,
       notified: false,
       reattachObservation: false,
-      waitingForUser: false,
     });
     return handle;
   }
@@ -183,7 +181,6 @@ export class CodexAppTurnLiveness {
       stalled: false,
       notified: false,
       reattachObservation: true,
-      waitingForUser: false,
     });
     return handle;
   }
@@ -210,16 +207,6 @@ export class CodexAppTurnLiveness {
     // let an older runner timestamp move the worker's clock backwards.
     active.lastActivityAtMs = Math.max(active.lastActivityAtMs, nowMs);
     active.stalled = false;
-    active.waitingForUser = false;
-  }
-
-  /** 显式用户选择期间暂停停滞计时；选择完成后的 progress 会重新起算。 */
-  noteWaitingForUser(nowMs = Date.now()): void {
-    const active = this.turns[0];
-    if (!active) return;
-    active.lastActivityAtMs = Math.max(active.lastActivityAtMs, nowMs);
-    active.stalled = false;
-    active.waitingForUser = true;
   }
 
   /**
@@ -242,7 +229,6 @@ export class CodexAppTurnLiveness {
     // this turn. Its own timeout begins when it becomes runner-current.
     next.lastActivityAtMs = Math.max(next.lastActivityAtMs, nowMs);
     next.stalled = false;
-    next.waitingForUser = false;
     return false;
   }
 
@@ -258,7 +244,6 @@ export class CodexAppTurnLiveness {
     if (wasCurrent && this.turns[0]) {
       this.turns[0].lastActivityAtMs = Math.max(this.turns[0].lastActivityAtMs, nowMs);
       this.turns[0].stalled = false;
-      this.turns[0].waitingForUser = false;
     }
     return { cancelled: true, shouldReplayPrompt: this.consumeDeferredPrompt() };
   }
@@ -296,15 +281,6 @@ export class CodexAppTurnLiveness {
   poll(nowMs = Date.now()): CodexAppLivenessPoll {
     const active = this.turns[0];
     if (!active) return { active: false, stalled: false, newlyStalled: false, shouldNotify: false };
-    if (active.waitingForUser) {
-      return {
-        active: true,
-        stalled: false,
-        newlyStalled: false,
-        shouldNotify: false,
-        turnId: active.turnId,
-      };
-    }
 
     const timedOut = nowMs - active.lastActivityAtMs >= this.timeoutMs;
     const newlyStalled = timedOut && !active.stalled;
@@ -366,7 +342,7 @@ export function applyTrustedCodexAppActivityMarker(
   if (!payload || typeof payload !== 'object') return { accepted: false };
   const marker = payload as Record<string, unknown>;
   const phase = marker.phase;
-  if (phase !== 'submitted' && phase !== 'progress' && phase !== 'waiting' && phase !== 'completed') {
+  if (phase !== 'submitted' && phase !== 'progress' && phase !== 'completed') {
     return { accepted: false };
   }
   const runnerAtMs = typeof marker.atMs === 'number' && Number.isFinite(marker.atMs)
@@ -383,7 +359,6 @@ export function applyTrustedCodexAppActivityMarker(
     };
   }
   if (phase === 'submitted') tracker.noteSubmitted(atMs);
-  else if (phase === 'waiting') tracker.noteWaitingForUser(atMs);
   else tracker.noteActivity(atMs);
   return { accepted: true, phase };
 }

@@ -11,9 +11,6 @@ import {
   clearRestartLeaseTo,
   hasActiveRestartLeaseTo,
   writeManualIntentIfAbsentTo,
-  normalizeRestartReason,
-  normalizeSourceDeployment,
-  resolveRestartSource,
   writeRestartAttemptIntentTo,
   commitRestartIntentAttemptTo,
   claimRestartIntentForReportTo,
@@ -44,31 +41,6 @@ describe('restart-intent store', () => {
       oldVersion: '3.1.0',
       newVersion: '3.0.0',
     });
-  });
-
-  it('round-trips a validated source deployment candidate', () => {
-    const sourceDeployment = {
-      releaseTag: 'release/v3.8.0-custom.1',
-      expectedHead: 'a'.repeat(40),
-    };
-    writeRestartIntentTo(dir, {
-      kind: 'update',
-      oldVersion: '3.7.1',
-      newVersion: '3.8.0',
-      sourceDeployment,
-      at: iso(T0),
-    });
-    expect(consumeRestartIntentTo(dir, T0 + 5_000)).toMatchObject({ sourceDeployment });
-  });
-
-  it('drops malformed source deployment metadata', () => {
-    expect(normalizeSourceDeployment({ releaseTag: 'deploy/v3.8.0-custom.1', expectedHead: 'a'.repeat(40) }))
-      .toBeUndefined();
-    expect(normalizeSourceDeployment({
-      releaseTag: 'release/v3.8.0-custom.1',
-      expectedHead: 'a'.repeat(40),
-      command: 'git tag',
-    })).toBeUndefined();
   });
 
   it('clears a rollback intent when restart launch fails', () => {
@@ -110,30 +82,8 @@ describe('restart-intent store', () => {
   });
 
   it('writeManualIntentIfAbsent writes a manual intent when none exists', () => {
-    writeManualIntentIfAbsentTo(dir, T0, iso(T0), '  发布维护通知卡片\n增强  ', 'ai');
-    expect(consumeRestartIntentTo(dir, T0 + 1_000)).toMatchObject({
-      kind: 'manual',
-      reason: '发布维护通知卡片 增强',
-      source: 'ai',
-    });
-  });
-
-  it('normalizes and limits a caller-provided maintenance reason', () => {
-    expect(normalizeRestartReason('  修复\n卡片  ')).toBe('修复 卡片');
-    expect(normalizeRestartReason('   ')).toBeUndefined();
-    expect(normalizeRestartReason('x'.repeat(250))).toHaveLength(200);
-  });
-
-  it('infers AI only from a managed Botmux turn and otherwise keeps the real source', () => {
-    expect(resolveRestartSource(undefined, {
-      BOTMUX_SESSION_ID: 'session-a',
-      BOTMUX_TURN_ID: 'turn-a',
-    })).toBe('ai');
-    expect(resolveRestartSource('dashboard', {
-      BOTMUX_SESSION_ID: 'session-a',
-      BOTMUX_TURN_ID: 'turn-a',
-    })).toBe('dashboard');
-    expect(resolveRestartSource(undefined, {})).toBe('cli');
+    writeManualIntentIfAbsentTo(dir, T0, iso(T0));
+    expect(consumeRestartIntentTo(dir, T0 + 1_000)).toMatchObject({ kind: 'manual' });
   });
 
   it('writeManualIntentIfAbsent does NOT clobber an existing fresh richer intent', () => {

@@ -109,9 +109,10 @@ export async function addChatGrant(
     return { write: created || qChanged || expiryChanged, result: { created } };
   });
   if (!r.ok) return r;
-  // 即使磁盘已存在授权，也要修复可能因热更新或跨进程时序落后的 daemon 内存态。
-  const map = (bot.config.chatGrants ??= {});
-  if (!map[chatId]?.includes(openId)) map[chatId] = [...(map[chatId] ?? []), openId];
+  if (r.result.created) {
+    const map = (bot.config.chatGrants ??= {});
+    if (!map[chatId]?.includes(openId)) map[chatId] = [...(map[chatId] ?? []), openId];
+  }
   applyGrantQuota(bot.config, qk, quota); // 同步内存
   applyGrantExpiry(bot.config, qk, expiresAt);
   logger.info(`[grant:${larkAppId}] +chat ${chatId} ${openId}${quota ? ` quota=${quota}` : ''}${expiresAt ? ` expiresAt=${expiresAt}` : ''}`);

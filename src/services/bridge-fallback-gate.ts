@@ -49,8 +49,8 @@
  *     nextBoundaryMs) — without that, a model that's still mid-tool-use
  *     for turn N+1 could leak a send credit into turn N's window.
  */
-import { createHash } from 'node:crypto';
 import { normaliseForFingerprint } from './bridge-turn-queue.js';
+import { CODEX_RATE_LIMIT_ERROR_CODE } from './codex-transcript.js';
 
 const MATERIAL_FINAL_LENGTH_RATIO = 2;
 const MATERIAL_FINAL_MIN_EXTRA_CHARS = 120;
@@ -64,6 +64,30 @@ export const BRIDGE_NOTHING_TO_SEND_SENTINEL = 'BOTMUX_NOTHING_TO_SEND';
  *  instruction surface moved to the new name. */
 export const BRIDGE_NO_REPLY_SENTINEL_LEGACY = 'BOTMUX_NO_REPLY';
 
+const OAI_MEMORY_CITATION_OPEN = '<oai-mem-citation>';
+const OAI_MEMORY_CITATION_SUFFIX = /^<oai-mem-citation>\s*<citation_entries>(?:(?!<\/citation_entries>)[\s\S])*?<\/citation_entries>\s*<rollout_ids>(?:(?!<\/rollout_ids>)[\s\S])*?<\/rollout_ids>\s*<\/oai-mem-citation>\s*$/;
+
+/** Remove TraeX/Codex's internal memory-attribution envelope when it is a
+ * complete suffix of an outbound answer. The rollout keeps the block in its
+ * source transcript; only the copy headed to a user-facing surface is cleaned.
+ *
+ * Deliberately conservative:
+ *   - the block must begin at a line boundary and be the final non-whitespace
+ *     content;
+ *   - both required child sections and every closing tag must be present;
+ *   - inline/mid-body mentions, malformed blocks, and fenced examples (whose
+ *     closing fence follows the XML) are preserved verbatim. */
+export function stripTrailingOaiMemoryCitation(text: string): string {
+  const start = text.lastIndexOf(OAI_MEMORY_CITATION_OPEN);
+  if (start < 0) return text;
+  if (start > 0 && text[start - 1] !== '\n' && text[start - 1] !== '\r') return text;
+  if (!OAI_MEMORY_CITATION_SUFFIX.test(text.slice(start))) return text;
+
+  // Remove the blank-line separator that belonged to the metadata suffix, but
+  // otherwise leave the visible answer byte-for-byte unchanged.
+  return text.slice(0, start).replace(/[ \t]*(?:\r?\n[ \t]*)+$/, '');
+}
+
 const BRIDGE_SENTINEL_TOKENS: readonly string[] = [
   BRIDGE_NOTHING_TO_SEND_SENTINEL,
   BRIDGE_NO_REPLY_SENTINEL_LEGACY,
@@ -71,6 +95,7 @@ const BRIDGE_SENTINEL_TOKENS: readonly string[] = [
 
 export function isBridgeNothingToSendFinal(finalText: string | undefined): boolean {
   if (finalText === undefined) return false;
+  const visibleFinalText = stripTrailingOaiMemoryCitation(finalText);
   // "Genuine silence" signal: the final, after stripping a trailing sentinel
   // line, has NOTHING left. This is the #554 case the sentinel exists for — the
   // model was triggered (e.g. ambient group chatter, or a message addressed to
@@ -86,8 +111,8 @@ export function isBridgeNothingToSendFinal(finalText: string | undefined): boole
   // that already `botmux send`-ed is still suppressed, but an un-sent answer is
   // delivered instead of lost). Only a final that is EMPTY once the sentinel is
   // stripped counts as silence here.
-  return stripTrailingBridgeSentinelLine(finalText).trim().length === 0
-    && hasTrailingBridgeSentinelLine(finalText);
+  return stripTrailingBridgeSentinelLine(visibleFinalText).trim().length === 0
+    && hasTrailingBridgeSentinelLine(visibleFinalText);
 }
 
 /** True when the LAST non-empty line of `finalText` is exactly a sentinel token
@@ -153,27 +178,23 @@ export function stripTrailingBridgeSentinelLine(finalText: string): string {
  *  NON-ADOPT: strip a trailing sentinel line so the literal token never reaches
  *  Lark (prose+sentinel = the "did work, forgot to send" shape → post the prose).
  *
- *  ADOPT: return the text VERBATIM. The adopted CLI is botmux-unaware, transcript
- *  drain is its only channel to Lark, and it may legitimately output the literal
- *  sentinel string as content. shouldSuppressBridgeEmit(adoptMode) already
- *  refuses to interpret the sentinel; stripping here would break that contract
- *  (a real answer ending in the token would be truncated, and a verbatim token
- *  reply would be dropped by the caller's empty-guard). Callers must gate their
- *  own "skip if empty after post" check on !adoptMode to match.
+ *  ADOPT: preserve sentinel text verbatim. The adopted CLI is botmux-unaware,
+ *  transcript drain is its only channel to Lark, and it may legitimately output
+ *  that literal sentinel as content. Internal memory-citation metadata is still
+ *  removed in both modes because it is never user-facing answer content.
  *
  *  Shared by emitReadyTurns and emitReadyCodexTurns so the per-mode rule lives in
  *  one place and is unit-tested directly. codex-app does not use adopt and drives
  *  its own strip on the deliverable content path. */
 export function bridgePostText(finalText: string, adoptMode: boolean): string {
-  return adoptMode ? finalText : stripTrailingBridgeSentinelLine(finalText);
+  const withoutMemoryCitation = stripTrailingOaiMemoryCitation(finalText);
+  return adoptMode ? withoutMemoryCitation : stripTrailingBridgeSentinelLine(withoutMemoryCitation);
 }
 
 export interface BridgeSendMarker {
   sentAtMs: number;
   messageId?: string;
-  turnId?: string;
   contentLength?: number;
-  contentHash?: string;
   /** Bounded, whitespace-compacted copy for dashboard session previews.
    *  The fallback gate still uses contentLength only. */
   previewText?: string;
@@ -190,8 +211,6 @@ export interface BridgeGateInput {
   /** Transcript final text for this turn, when available. Lets structured
    *  send markers distinguish final-answer sends from earlier progress sends. */
   finalText?: string;
-  /** Botmux 的稳定轮次 id；新版显式发送回执用它避免跨轮次借用。 */
-  turnId?: string;
   /** Explicit transcript terminal semantics. Undefined preserves the
    * historical "assistant_final means completed" behavior. */
   terminalStatus?: 'completed' | 'failed' | 'ambiguous';
@@ -221,16 +240,16 @@ export function buildBridgeSendPreviewText(content: string): string | undefined 
 
 export function buildBridgeSendMarkerContent(
   content: string,
-): Pick<BridgeSendMarker, 'contentLength' | 'contentHash' | 'previewText'> | undefined {
-  const normalized = normaliseForFingerprint(content);
+): Pick<BridgeSendMarker, 'contentLength' | 'previewText'> | undefined {
+  const visibleContent = stripTrailingOaiMemoryCitation(content);
+  const normalized = normaliseForFingerprint(visibleContent);
   if (!normalized) return undefined;
   return {
     // Length stays fingerprint-normalized: the fallback gate compares it against
     // normalise(finalText).length, so it must not count preview-only newlines.
     contentLength: normalized.length,
-    contentHash: createHash('sha256').update(normalized).digest('hex'),
     // Preview keeps newlines — derive it from the raw body, NOT `normalized`.
-    previewText: buildBridgeSendPreviewText(content),
+    previewText: buildBridgeSendPreviewText(visibleContent),
   };
 }
 
@@ -248,42 +267,18 @@ function finalIsMateriallyLongerThanSends(finalLength: number, markers: readonly
     && finalLength - maxSentLength >= MATERIAL_FINAL_MIN_EXTRA_CHARS;
 }
 
-function markerSetCoversFinal(
-  markers: readonly BridgeSendMarker[],
-  finalText: string | undefined,
-): BridgeSendMarker | undefined {
-  if (markers.length === 0) return undefined;
+function markerSetCoversFinal(markers: readonly BridgeSendMarker[], finalText: string | undefined): boolean {
+  if (markers.length === 0) return false;
 
   // Back-compat: old marker files only have sentAtMs/messageId. Keep the old
   // conservative behavior for those entries instead of risking duplicates.
-  const legacy = markers.find(marker => !hasStructuredContentMarker(marker));
-  if (legacy) return legacy;
+  if (markers.some(m => !hasStructuredContentMarker(m))) return true;
 
   const finalNormalized = normaliseForFingerprint(finalText ?? '');
-  if (!finalNormalized) return markers[markers.length - 1];
+  if (!finalNormalized) return true;
 
   const structuredMarkers = markers.filter(hasStructuredContentMarker);
-  if (finalIsMateriallyLongerThanSends(finalNormalized.length, structuredMarkers)) return undefined;
-  return structuredMarkers.reduce((longest, marker) =>
-    marker.contentLength >= longest.contentLength ? marker : longest);
-}
-
-/** 返回足以覆盖本轮最终结论的显式发送回执，供 Worker 把 provider message id
- * 一并交给 Daemon 落账；旧 marker 没有 turnId 时仍按时间窗兼容。 */
-export function coveringBridgeSendMarker(
-  turn: BridgeGateInput,
-  nextBoundaryMs: number | undefined,
-  markers: readonly BridgeSendMarker[],
-  adoptMode: boolean,
-): BridgeSendMarker | undefined {
-  if (adoptMode || turn.isLocal || turn.markTimeMs === undefined) return undefined;
-  const lower = turn.markTimeMs;
-  const upper = nextBoundaryMs ?? Number.POSITIVE_INFINITY;
-  const markersInWindow = markers.filter(marker =>
-    marker.sentAtMs >= lower
-    && marker.sentAtMs < upper
-    && (!turn.turnId || !marker.turnId || marker.turnId === turn.turnId));
-  return markerSetCoversFinal(markersInWindow, turn.finalText);
+  return !finalIsMateriallyLongerThanSends(finalNormalized.length, structuredMarkers);
 }
 
 export function shouldSuppressBridgeEmit(
@@ -313,8 +308,11 @@ export function shouldSuppressBridgeEmit(
   //     stripped prose is forwarded by the length check below (markers empty →
   //     markerSetCoversFinal=false → not suppressed → caller posts it).
   // A final WITHOUT a trailing sentinel keeps the pure length-based behavior.
-  if (turn.finalText !== undefined
-      && hasTrailingBridgeSentinelLine(turn.finalText)
+  const visibleFinalText = turn.finalText === undefined
+    ? undefined
+    : stripTrailingOaiMemoryCitation(turn.finalText);
+  if (visibleFinalText !== undefined
+      && hasTrailingBridgeSentinelLine(visibleFinalText)
       && markersInWindow.length > 0) {
     return true;
   }
@@ -323,10 +321,10 @@ export function shouldSuppressBridgeEmit(
   // length used for the material-longer check must match what actually posts —
   // otherwise the trailing sentinel line inflates the final past a same-content
   // `botmux send` and defeats dedup.
-  const gatedFinal = turn.finalText === undefined
+  const gatedFinal = visibleFinalText === undefined
     ? undefined
-    : stripTrailingBridgeSentinelLine(turn.finalText);
-  return markerSetCoversFinal(markersInWindow, gatedFinal) !== undefined;
+    : stripTrailingBridgeSentinelLine(visibleFinalText);
+  return markerSetCoversFinal(markersInWindow, gatedFinal);
 }
 
 /** Some structured CLIs can report a durable completed turn while their
@@ -381,4 +379,36 @@ export function shouldEmitFailedBridgeFallback(
   if (turn.isLocal) return false;
   if (turn.terminalStatus !== 'failed') return false;
   return !shouldSuppressBridgeEmit(turn, nextBoundaryMs, markers, adoptMode);
+}
+
+/** Which fallback content the worker should post for a ready structured turn.
+ *  Extracted from emitReadyCodexTurns so the rate-limit skip — which depends
+ *  on whether the CLI owns a dedicated structured rate-limit notification
+ *  chain (Codex only today) — is testable without a live worker.
+ *
+ *  Rate-limit contract: a `codex_rate_limited` terminal is handed to the
+ *  CLI's dedicated chain when one exists, so the generic failed fallback is
+ *  skipped to avoid double-posting. A CLI WITHOUT the chain (e.g. TRAE) must
+ *  fall through to the generic failed fallback — otherwise a 429 turn posts
+ *  nothing at all, regressing "misleading but visible" into "silent". */
+export type StructuredFallbackKind = 'failed' | 'final' | 'empty_completed' | 'none';
+
+export function structuredFallbackKind(
+  turn: BridgeGateInput & { terminalErrorCode?: string },
+  nextBoundaryMs: number | undefined,
+  markers: readonly BridgeSendMarker[],
+  adoptMode: boolean,
+  hasDedicatedRateLimitChain: boolean,
+): StructuredFallbackKind {
+  const rateLimitHandled = hasDedicatedRateLimitChain
+    && turn.terminalErrorCode === CODEX_RATE_LIMIT_ERROR_CODE;
+  if (!rateLimitHandled
+    && shouldEmitFailedBridgeFallback(turn, nextBoundaryMs, markers, adoptMode)) {
+    return 'failed';
+  }
+  if (turn.finalText && turn.finalText.trim()) return 'final';
+  if (shouldEmitEmptyCompletedBridgeFallback(turn, nextBoundaryMs, markers, adoptMode)) {
+    return 'empty_completed';
+  }
+  return 'none';
 }

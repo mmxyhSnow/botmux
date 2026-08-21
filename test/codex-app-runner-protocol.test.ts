@@ -5,7 +5,6 @@ import {
   CODEX_APP_INPUT_PREFIX,
   decodeCodexAppRunnerInput,
   normalizeAppRunnerFinalMarker,
-  normalizeCodexAppProgressMarker,
   normalizeCodexAppLifecycleEvent,
   projectAppRunnerFinalIds,
 } from '../src/services/codex-app-runner-protocol.js';
@@ -114,7 +113,6 @@ describe('app runner final marker normalization', () => {
 
   it('rejects malformed final markers', () => {
     expect(normalizeAppRunnerFinalMarker({ content: 42, appTurnId: 'x' })).toBeUndefined();
-    expect(normalizeAppRunnerFinalMarker({ content: 'x', outcome: 'unknown' })).toBeUndefined();
     expect(normalizeAppRunnerFinalMarker(null)).toBeUndefined();
   });
 
@@ -136,29 +134,6 @@ describe('app runner final marker normalization', () => {
     const base = { inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, cacheCreateTokens: 0 };
     expect(normalizeAppRunnerFinalMarker({ content: 'done', usage: { ...base, inputTokens: -1 } }).usage).toBeUndefined();
     expect(normalizeAppRunnerFinalMarker({ content: 'done', usage: { ...base, outputTokens: 2.5 } }).usage).toBeUndefined();
-  });
-});
-
-describe('Codex App progress marker normalization', () => {
-  it('accepts only turn-bound non-empty assistant progress', () => {
-    expect(normalizeCodexAppProgressMarker({
-      content: '代码检查已经完成。',
-      updatedAtMs: 123,
-      replyTurnId: 'om_turn',
-    })).toEqual({
-      content: '代码检查已经完成。',
-      updatedAtMs: 123,
-      replyTurnId: 'om_turn',
-    });
-  });
-
-  it.each([
-    { content: '', updatedAtMs: 123, replyTurnId: 'om_turn' },
-    { content: 'ok', updatedAtMs: -1, replyTurnId: 'om_turn' },
-    { content: 'ok', updatedAtMs: 123, replyTurnId: '' },
-    { content: 'ok', updatedAtMs: 123, replyTurnId: 'om_turn', hidden: true },
-  ])('rejects malformed progress marker %#', marker => {
-    expect(normalizeCodexAppProgressMarker(marker)).toBeUndefined();
   });
 });
 
